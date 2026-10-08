@@ -1,0 +1,27 @@
+# build / dist
+build/
+dist/
+dist_*/
+*.spec
+__pycache__/
+*.pyc
+# binaries lớn (ffmpeg lấy từ gói imageio-ffmpeg, xem README)
+vendor/
+# dữ liệu chạy thử
+Video/
+*.mp4
+*.part.mp4
+*.snap
+probe_output.txt
+probe_map.png
+re/*.out
+*.log
+# không đưa lên public
+docs/
+CLAUDE.md
+re/
+probe.py
+probe.bat
+render_snap.py
+tests/*
+!tests/test_*.py
