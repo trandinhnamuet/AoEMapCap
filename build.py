@@ -5,7 +5,8 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 os.chdir(ROOT)
 cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--windowed", "--uac-admin",
        "--name", "AoE-MapCap", "--icon", "assets/app.ico", "--add-data", "assets/app.ico;assets",
-       "--add-binary", "vendor/ffmpeg.exe;.", "--distpath", "dist_gui", "--workpath", "build", "run_app.py"]
+       "--add-binary", "vendor/ffmpeg.exe;.", "--hidden-import", "glcontext.wgl",   # trình xem replay (moderngl)
+       "--distpath", "dist_gui", "--workpath", "build", "run_app.py"]
 r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
 if r.returncode != 0:
     print(r.stdout[-2000:], r.stderr[-2000:]); sys.exit(1)

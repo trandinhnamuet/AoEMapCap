@@ -15,6 +15,25 @@ VISIBILITY_ROWS = 0x7D70C8       # mảng con trỏ hàng (theo y); mỗi hàng:
 
 # ---- SETTINGS ----------------------------------------------------------------
 SETTINGS_GLOBAL = 0x3F4          # -> GLOBAL (thế giới game); 0 khi chưa vào trận
+# Thiết lập ván (RE 2026-10-09: hàm ghi log "game started" 0x506D60 và các getter 0x507990..0x507B60, 0x41BF50..):
+SETTINGS_READ_START = 0x980      # đọc một khối [0x980, 0xAF0) + 2 dword ở +0x30/+0x34
+SETTINGS_READ_END = 0xAF0
+SETTINGS_RANDOM_GAME = 0x30      # int32 "randomgame"
+SETTINGS_RANDOM_MAP = 0x34       # int32 "randommap"
+SETTINGS_FULL_TECH = 0x985       # byte "fulltech"
+SETTINGS_TEAMS = 0x994           # byte[người chơi-1]: đội + 1 (log in ra team-1; 0 = không đội)
+SETTINGS_CIVS = 0xA94            # byte[người chơi-1]: nền văn minh trong thiết lập (chưa đối chiếu giá trị "ngẫu nhiên")
+SETTINGS_PLAYERS = 0xAC4         # byte[người chơi-1]: "players=" trong log (chưa rõ nghĩa)
+SETTINGS_MAP_SIZE = 0xA7C        # int32 0..5 -> chuỗi 10611..10616 (Rất nhỏ .. Siêu lớn)
+SETTINGS_MAP_TYPE = 0xA80        # int32 0..8 -> chuỗi 10602.. (Quần đảo nhỏ, Quần đảo lớn, Bờ biển, Nội địa, Đất cao,
+                                 #   Lục địa, Địa Trung Hải, Đồi cao, Cửa biển hẹp)
+SETTINGS_VICTORY = 0xA8C         # int32 0..9 điều kiện thắng (0 Standard? log: Default/Standard/Time(%d)/Score(%d))
+SETTINGS_VICTORY_VALUE = 0xA90   # int32 tham số (thời gian / điểm)
+SETTINGS_REVEAL_MAP = 0xAD9      # byte
+SETTINGS_RESOURCES = 0xADC       # int32 0 mặc định, 1 thấp, 2 vừa, 3 cao
+SETTINGS_START_AGE = 0xAE0       # int32 0 mặc định, 1 đồ đá, 2 công cụ, 3 đồ đồng, 4 đồ sắt
+SETTINGS_FLAG_AE4 = 0xAE4        # byte (chưa rõ)
+SETTINGS_DEATHMATCH = 0xAE5      # byte DeathMatch
 
 # ---- GLOBAL (thế giới) -------------------------------------------------------
 GLOBAL_TIME_MS = 0x04            # uint32, thời gian game tính bằng ms (đồng hồ hh:mm:ss = /1000)
@@ -24,6 +43,7 @@ GLOBAL_PLAYER_COUNT = 0x3C       # int16, số người chơi kể cả Gaia (in
 GLOBAL_PLAYERS = 0x40            # -> mảng con trỏ PLAYER
 GLOBAL_GAMEINFO = 0x58           # -> đối tượng thông tin ván (tên người chơi ở [+0x14])
 GLOBAL_CUR_PLAYER_ID = 0x7C      # int16, id người chơi đang điều khiển (người xem)
+GLOBAL_GAME_OVER = 0x1D          # byte: 1 khi ván kết thúc (ghi ở 0x52088B/0x5208D0; log "GAME OVER!" 0x520711 đọc nó)
 
 # ---- GAMEINFO names object: obj = [[GLOBAL+0x58]+0x14] --------------------------
 GAMEINFO_NAMES_OBJ = 0x14
@@ -68,6 +88,9 @@ RESEARCH_TABLE = 0x08            #    +8 -> bảng công nghệ của thế gi�
 RESEARCH_ENTRY_SIZE = 8
 RESEARCH_ENTRY_STATE = 4         #    int16: 0 chưa mở, 1 có thể nghiên cứu, 2 đang nghiên cứu, 3 đã xong
 RESEARCH_STATE_DONE = 3          #    (0x4ECD0D ghi 3 khi hoàn thành; 0x4ED3D0 ghi 2 khi bắt đầu)
+RESEARCH_STATE_ACTIVE = 2
+RESEARCH_ENTRY_PROGRESS = 0      #    float giây đã nghiên cứu; 0x4ECE34 cộng dồn, xong khi >= thời gian của công nghệ
+                                 #    (bản ghi 0x3C byte của bảng thế giới, int16 +0x1E = thời gian DAT)
 PLAYER_READ_SIZE = 0x240
 ATTR_FOOD, ATTR_WOOD, ATTR_STONE, ATTR_GOLD = 0, 1, 2, 3
 ATTR_POP_ROOM, ATTR_AGE, ATTR_POP = 4, 6, 11
@@ -82,7 +105,11 @@ PLAYER_LIST_A = 0x28             # -> danh sách unit (header; [+4] = node đầ
 PLAYER_LIST_B = 0x30             # -> danh sách unit thứ hai (vẽ trước trên minimap)
 PLAYER_GLOBAL = 0x3C             # -> GLOBAL
 PLAYER_ID = 0x4A                 # int16
-PLAYER_TYPE = 0x80               # byte (1 = một loại người chơi, đối chiếu lúc probe)
+PLAYER_TYPE = 0x80               # = PLAYER_GAME_STATUS (tên cũ; header .aoerec lưu ở trường 'ptype')
+PLAYER_GAME_STATUS = 0x80        # byte: 0 đang chơi, 1 thắng, 2 thua. RE 2026-10-09: Player vtable+4 = set_game_status
+                                 # 0x45CB90 (ghi +0x80; trạng thái 2 khi chưa đầu hàng báo sự kiện 6 "bị đánh bại");
+                                 # log "GAME OVER!" 0x520746: +0x80 == 1 -> "Player #%d Won" ngược lại "Lost"
+PLAYER_RESIGNED = 0x81           # byte: 1 = đã đầu hàng (vtable+8 = resign 0x45CBF0: đặt +0x81 = 1, set_game_status(2))
 PLAYER_DIPLOMACY = 0xB0          # int32[..] thái độ với từng người chơi
 PLAYER_EXPLORED_MASK = 0xD4      # dword: mask so với ô tầm nhìn -> đã khám phá
 PLAYER_VISIBLE_MASK = 0xD8       # dword: mask -> đang nhìn thấy
@@ -109,6 +136,10 @@ UNIT_POS_Y = 0x3C                # float, hàng
 UNIT_POS_Z = 0x40                # float (độ cao), suy đoán
 UNIT_STATUS = 0x48               # byte trạng thái: 2 bình thường, >=3 đang chết / cây đã đốn
 UNIT_TYPE_BYTE = 0x4E            # byte loại đối tượng (25 = doppelganger, còn lại trùng type của unitdef)
+UNIT_RES_AMOUNT = 0x44           # float lượng tài nguyên đang chứa: gỗ của cây, thực của xác thú/bụi quả/ruộng,
+                                 # vàng/đá của mỏ, đồ dân đang mang (RE 2026-10-09: 0x4A8950 lấy từ def+0x70[k] khi
+                                 # def+0x88[k] == 0, loại ở def+0x6A[k])
+UNIT_RES_TYPE = 0x4C             # int16 loại tài nguyên đang chứa (0 thực, 1 gỗ, 2 đá, 3 vàng; -1 không có)
 UNIT_READ_SIZE = 0x60
 UNIT_SPRITE_LIST = 0x18          # -> danh sách sprite (RE: RGE_Object init 0x4A8200, vẽ 0x4A8A60 gọi [list]->vtable+0xC)
 
@@ -158,6 +189,29 @@ UNITDEF_FOG_VISIBLE = 0x65       # byte: vẫn hiện trên minimap khi ô chỉ
 UNITDEF_MINIMAP_MODE = 0x8E      # byte 0..3: 0 không vẽ, 3 = dùng màu riêng
 UNITDEF_MINIMAP_COLOR = 0x90     # byte palette index (khi mode = 3)
 UNITDEF_READ_SIZE = 0xA0
+# Chỉ số (RE 2026-10-09 từ các hàm nạp empires.dat: loại 10 = 0x441FA0, 20 = 0x43F640, 30 = 0x4416D0,
+# 40 = 0x43ED70, 50 = 0x43FC30, 70 = 0x4EEF40; hàm đọc file 0x46CA00). Mỗi người chơi có bản sao def riêng,
+# công nghệ sửa trực tiếp bản sao đó -> đọc ở đây là chỉ số đã nâng cấp.
+UNITDEF_LOS = 0x28               # float tầm nhìn
+UNITDEF_SPEED = 0xB8             # float tốc độ chạy (loại >= 20)
+UNITDEF_BASE_ARMOR = 0x100       # byte giáp gốc (loại >= 50)
+UNITDEF_ARMOR_COUNT = 0x102      # int16 số mục giáp, UNITDEF_ARMORS -> mảng {int16 class, int16 amount}
+UNITDEF_ARMORS = 0x104
+UNITDEF_ATTACK_COUNT = 0x108     # int16 số mục công, UNITDEF_ATTACKS -> mảng {int16 class, int16 amount}
+UNITDEF_ATTACKS = 0x10C
+UNITDEF_MAX_RANGE = 0x114        # float
+UNITDEF_RELOAD = 0x120           # float thời gian giữa hai đòn (giây)
+UNITDEF_ACCURACY = 0x126         # int16 %
+UNITDEF_MIN_RANGE = 0x138        # float
+UNITDEF_DISP_MELEE_ARMOR = 0x13C # int16 giáp hiển thị gốc (= max(giáp gốc, giáp lớp != 3) lúc nạp DAT)
+UNITDEF_DISP_ATTACK = 0x13E      # int16 công hiển thị gốc
+UNITDEF_DISP_RANGE = 0x140       # float tầm hiển thị gốc
+UNITDEF_DISP_RELOAD = 0x144      # float
+UNITDEF_COSTS = 0x148            # 3 x {int16 loại, int16 số lượng, int16 cờ} (loại >= 70)
+UNITDEF_TRAIN_TIME = 0x15A       # int16 giây
+UNITDEF_DISP_PIERCE = 0x160      # int16 giáp xuyên hiển thị gốc (= max giáp lớp 3)
+ARMOR_CLASS_PIERCE = 3           # lớp giáp/công 3 = xuyên (tên, đạn); khác = cận chiến
+UNITDEF_STATS_SIZE = 0x168
 
 UNIT_TYPE_LIVING = 70
 UNIT_TYPE_BUILDING = 80

@@ -1,0 +1,311 @@
+"""Bảng các trận đã ghi (tkinter), thay cho hộp chọn file.
+
+    MatchTable(parent, folder, on_open)    -> khung bảng (nhúng vào giao diện chính AoE-MapCap)
+    PickerWindow(master, folder, on_open)  -> cửa sổ riêng chứa bảng + nút
+    pick_match(folder) -> đường dẫn hoặc None  (AoE-Replay chạy riêng, tự tạo Tk)
+"""
+import os
+import queue
+import sys
+import threading
+import time
+import tkinter as tk
+from tkinter import filedialog, ttk
+
+from .library import Library, fmt_duration
+
+COLUMNS = (
+    ("date", "Ngày đánh", 120, "w"),
+    ("name", "Người chơi", 150, "w"),
+    ("civ", "Quân", 100, "w"),
+    ("result", "Kết quả", 120, "w"),
+    ("format", "Map", 70, "center"),
+    ("mode", "Thể thức", 95, "w"),
+    ("kind", "Bản đồ", 150, "w"),
+    ("dur", "Thời lượng", 80, "e"),
+)
+RESULT_TAG = {"Thắng": "win", "Thua": "lose", "Đầu hàng": "lose"}
+
+
+class MatchTable(ttk.Frame):
+    """Bảng trận: đọc thông tin ở luồng nền, sắp theo cột, lọc theo tên, dòng chi tiết đội hình."""
+
+    def __init__(self, parent, folder, on_open=None, show_dir_button=True):
+        super().__init__(parent)
+        self.on_open = on_open
+        self.q = queue.Queue()
+        self.infos = {}
+        self.sort_key = ("date", True)
+        self._gen = 0
+        self.folder = folder
+        self._build(show_dir_button)
+        self.set_folder(folder)
+        self.after(100, self._poll)
+
+    def _build(self, show_dir_button):
+        bar = ttk.Frame(self)
+        bar.pack(fill="x", pady=(0, 4))
+        ttk.Label(bar, text="Thư mục:").pack(side="left")
+        self.var_dir = tk.StringVar()
+        ttk.Label(bar, textvariable=self.var_dir, foreground="#555").pack(side="left", padx=6)
+        if show_dir_button:
+            ttk.Button(bar, text="Đổi thư mục...", command=self._choose_dir).pack(side="right")
+        ttk.Button(bar, text="Làm mới", command=self.reload).pack(side="right", padx=(4, 0))
+        self.var_find = tk.StringVar()
+        ttk.Entry(bar, textvariable=self.var_find, width=18).pack(side="right", padx=(4, 12))
+        ttk.Label(bar, text="Tìm tên:").pack(side="right")
+        self.var_find.trace_add("write", lambda *_: self._refill())
+
+        mid = ttk.Frame(self)
+        mid.pack(fill="both", expand=True)
+        self.tree = ttk.Treeview(mid, columns=[c[0] for c in COLUMNS], show="headings", selectmode="browse")
+        for key, label, w, anchor in COLUMNS:
+            self.tree.heading(key, text=label, command=lambda k=key: self._sort(k))
+            self.tree.column(key, width=w, anchor=anchor, stretch=key in ("name", "kind"))
+        self.tree.tag_configure("win", foreground="#1b7a1b")
+        self.tree.tag_configure("lose", foreground="#b02020")
+        self.tree.tag_configure("muted", foreground="#888888")
+        sb = ttk.Scrollbar(mid, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.tree.bind("<Double-1>", lambda e: self.open_selected())
+        self.tree.bind("<Return>", lambda e: self.open_selected())
+        self.tree.bind("<<TreeviewSelect>>", lambda e: self._show_detail())
+        self.var_detail = tk.StringVar(value="")
+        ttk.Label(self, textvariable=self.var_detail, foreground="#333", justify="left", wraplength=900).pack(
+            fill="x", pady=(6, 0))
+        self.var_status = tk.StringVar(value="")
+        self.bind("<Configure>", lambda e: self._wrap(e.width))
+
+    def _wrap(self, width):
+        for w in self.winfo_children():
+            if isinstance(w, ttk.Label) and str(w.cget("textvariable")) == str(self.var_detail):
+                w.configure(wraplength=max(300, width - 20))
+
+    # ---- dữ liệu ---------------------------------------------------------------------------
+    def set_folder(self, folder):
+        self.folder = folder
+        self.var_dir.set(folder)
+        self.infos = {}
+        self.tree.delete(*self.tree.get_children())
+        self.reload()
+
+    def reload(self):
+        self._gen += 1
+        gen = self._gen
+        threading.Thread(target=self._load, args=(self.folder, gen), daemon=True).start()
+
+    def _load(self, folder, gen):
+        lib = Library(folder)
+        files = lib.files()
+        self.q.put(("count", gen, len(files), [os.path.normpath(p) for p in files]))
+        for i, p in enumerate(files):
+            if gen != self._gen:
+                return
+            self.q.put(("info", gen, os.path.normpath(p), lib.info(p), i + 1, len(files)))
+        lib.save()
+        self.q.put(("done", gen, len(files)))
+
+    def _poll(self):
+        changed = False
+        while True:
+            try:
+                msg = self.q.get_nowait()
+            except queue.Empty:
+                break
+            if msg[1] != self._gen:
+                continue
+            if msg[0] == "count":
+                live = set(msg[3])
+                for p in list(self.infos):
+                    if p not in live:
+                        del self.infos[p]
+                        changed = True
+                self.var_status.set("Chưa có trận nào được ghi." if msg[2] == 0 else f"Đang đọc {msg[2]} trận…")
+            elif msg[0] == "info":
+                _, _, p, info, k, n = msg
+                self.infos[p] = info
+                changed = True
+                self.var_status.set(f"Đang đọc {k}/{n} trận…")
+            elif msg[0] == "done":
+                self.var_status.set(f"{msg[2]} trận. Bấm đúp hoặc Enter để xem; bấm tiêu đề cột để sắp xếp."
+                                    if msg[2] else "Chưa có trận nào được ghi.")
+        if changed:
+            self._refill()
+        try:
+            self.after(150, self._poll)
+        except tk.TclError:
+            pass
+
+    @staticmethod
+    def _row(info):
+        if "error" in info:
+            return (time.strftime("%d/%m/%Y %H:%M", time.localtime(info.get("created", 0))), info["file"], "",
+                    "lỗi đọc file", "", "", info["error"][:40], ""), "muted"
+        vals = (time.strftime("%d/%m/%Y %H:%M", time.localtime(info["created"])), info["recorder"],
+                info["recorder_civ"], info["result"], info["format"], info["civ_mode"], info["map"],
+                fmt_duration(info["duration_ms"]))
+        return vals, RESULT_TAG.get(info["result"], "")
+
+    def _refill(self):
+        sel = self.tree.selection()
+        sel_path = sel[0] if sel else None
+        self.tree.delete(*self.tree.get_children())
+        find = self.var_find.get().strip().lower()
+        key, desc = self.sort_key
+        idx = [c[0] for c in COLUMNS].index(key)
+
+        def sort_val(item):
+            _p, info = item
+            if key == "date":
+                return info.get("created", 0)
+            if key == "dur":
+                return info.get("duration_ms", 0)
+            return str(self._row(info)[0][idx]).lower()
+        for p, info in sorted(self.infos.items(), key=sort_val, reverse=desc):
+            if find:
+                hay = " ".join([info.get("file", "")] + [pl.get("name", "") for pl in info.get("players", [])] +
+                               [str(v) for v in self._row(info)[0]]).lower()
+                if find not in hay:
+                    continue
+            vals, tag = self._row(info)
+            self.tree.insert("", "end", iid=p, values=vals, tags=(tag,) if tag else ())
+        if sel_path and self.tree.exists(sel_path):
+            self.tree.selection_set(sel_path)
+        elif self.tree.get_children():
+            first = self.tree.get_children()[0]
+            self.tree.selection_set(first)
+            self.tree.focus(first)
+        self._show_detail()
+
+    def _sort(self, key):
+        k, desc = self.sort_key
+        self.sort_key = (key, not desc if k == key else key in ("date", "dur"))
+        self._refill()
+
+    def _show_detail(self):
+        info = self.infos.get(self.selected_path() or "")
+        if not info or "error" in info:
+            self.var_detail.set("")
+            return
+        by_team = {}
+        for pl in info.get("players", []):
+            st = {1: " (thắng)", 2: " (đầu hàng)" if pl.get("resigned") else " (thua)"}.get(pl.get("status"), "")
+            by_team.setdefault(pl["team"], []).append(f"{pl['name']} – {pl['civ']}{st}")
+        teams = "   |   ".join(f"Đội {t}: " + ", ".join(v) for t, v in sorted(by_team.items()))
+        note = "" if info.get("new_format") else "   (file ghi trước 09/10/2026: chưa có kết quả và thiết lập ván)"
+        self.var_detail.set(f"{info['file']}   ·   {teams}{note}")
+
+    def selected_path(self):
+        sel = self.tree.selection()
+        return sel[0] if sel else None
+
+    def open_selected(self):
+        p = self.selected_path()
+        if p and self.on_open:
+            self.on_open(p)
+
+    def _choose_dir(self):
+        d = filedialog.askdirectory(parent=self, initialdir=self.folder, title="Chọn thư mục chứa file .aoerec")
+        if d:
+            self.set_folder(os.path.normpath(d))
+
+    def stop(self):
+        self._gen += 1
+
+
+class PickerWindow:
+    """Cửa sổ riêng: bảng trận + nút Xem replay / Mở file khác / Đóng."""
+
+    def __init__(self, master, folder, on_open, title="Chọn trận để xem replay", standalone=False):
+        self.standalone = standalone
+        self.result = None
+        self.on_open = on_open
+        self.top = master if standalone else tk.Toplevel(master)
+        self.top.title(title)
+        self.top.minsize(760, 380)
+        self.top.geometry("1000x540")
+        self.table = MatchTable(self.top, folder, self._open)
+        self.table.pack(fill="both", expand=True, padx=10, pady=(8, 4))
+        bot = ttk.Frame(self.top)
+        bot.pack(fill="x", padx=10, pady=(4, 10))
+        ttk.Label(bot, textvariable=self.table.var_status, foreground="#666").pack(side="left")
+        ttk.Button(bot, text="Đóng", command=self._close).pack(side="right", padx=4)
+        ttk.Button(bot, text="Mở file khác...", command=self._open_other).pack(side="right", padx=4)
+        ttk.Button(bot, text="Xem replay", command=self.table.open_selected).pack(side="right", padx=4)
+        self.top.protocol("WM_DELETE_WINDOW", self._close)
+
+    # tương thích với mã/test cũ
+    @property
+    def tree(self):
+        return self.table.tree
+
+    @property
+    def var_status(self):
+        return self.table.var_status
+
+    @property
+    def var_find(self):
+        return self.table.var_find
+
+    @property
+    def var_detail(self):
+        return self.table.var_detail
+
+    def set_folder(self, folder):
+        self.table.set_folder(folder)
+
+    def _sort(self, key):
+        self.table._sort(key)
+
+    def _show_detail(self):
+        self.table._show_detail()
+
+    def _open(self, path=None):
+        path = path or self.table.selected_path()
+        if not path:
+            return
+        if self.standalone:
+            self.result = path
+            self.top.destroy()
+        elif self.on_open:
+            self.on_open(path)
+
+    def _open_other(self):
+        p = filedialog.askopenfilename(parent=self.top, initialdir=self.table.folder, title="Chọn dữ liệu trận",
+                                       filetypes=[("Dữ liệu thô AoE-MapCap", "*.aoerec"), ("Tất cả", "*.*")])
+        if p:
+            self._open(p)
+
+    def _close(self):
+        self.table.stop()
+        self.top.destroy()
+
+
+def app_icon():
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    p = os.path.join(base, "assets", "app.ico")
+    return p if os.path.exists(p) else ""
+
+
+def default_folder():
+    """Thư mục Video\\Raw cạnh exe / thư mục làm việc, nếu có."""
+    base = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else sys.argv[0]))
+    for d in (os.path.join(base, "Video", "Raw"), os.path.join(os.getcwd(), "Video", "Raw"),
+              os.path.join(base, "dist", "Video", "Raw")):
+        if os.path.isdir(d):
+            return d
+    return base
+
+
+def pick_match(folder=None):
+    root = tk.Tk()
+    try:
+        if app_icon():
+            root.iconbitmap(default=app_icon())
+    except Exception:  # noqa: BLE001
+        pass
+    w = PickerWindow(root, folder or default_folder(), None, title="AoE-Replay — chọn trận", standalone=True)
+    root.mainloop()
+    return w.result

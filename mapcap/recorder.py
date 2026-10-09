@@ -62,6 +62,9 @@ ENCODER_ARGS = {
     "h264_qsv": ["-c:v", "h264_qsv", "-global_quality", "23"],
     "h264_amf": ["-c:v", "h264_amf", "-quality", "balanced", "-rc", "cqp", "-qp_i", "23", "-qp_p", "23"],
     "libx264": ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", "2"],
+    # khung rất lớn (> 4096 px, chỉ CPU): bỏ lookahead/B-frame để libx264 tốn ~1,2 GB thay vì 2–4 GB ở 9216x4690, nhanh gấp đôi
+    "libx264_big": ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", "2",
+                    "-x264-params", "rc-lookahead=0:sync-lookahead=0:ref=1:bframes=0"],
 }
 
 
@@ -125,8 +128,8 @@ class VideoWriter:
         try:
             self.proc.stdin.write(data)
         except OSError as e:  # BrokenPipe: ffmpeg đã chết (encoder từ chối kích thước, hết đĩa, ...)
-            err = self._err().strip() or str(e)
-            raise RuntimeError(f"ffmpeg ({self.encoder}) thoát khi đang nhận khung {self.size[0]}x{self.size[1]}: {err[-400:]}")
+            err = " | ".join(ln.strip() for ln in (self._err() or str(e)).splitlines() if ln.strip())
+            raise RuntimeError(f"ffmpeg ({self.encoder}) thoát khi đang nhận khung {self.size[0]}x{self.size[1]}: {err[-1500:]}")
         self.frames += 1
 
     def _err(self):

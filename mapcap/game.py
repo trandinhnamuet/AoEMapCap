@@ -43,6 +43,8 @@ class UnitInfo:
     frame: int = -1           # khung hiện tại của sprite chính (-1: sprite tĩnh / không có)
     gid2: int = -1            # sprite phụ (lửa khói, hiệu ứng) nếu có
     frame2: int = -1
+    res_type: int = -1        # unit+0x4C loại tài nguyên đang chứa (0 thực, 1 gỗ, 2 đá, 3 vàng)
+    res_amount: float = 0.0   # unit+0x44 lượng còn lại (cây, xác thú, bụi quả, ruộng, mỏ) / đang mang (dân)
 
     @property
     def is_dead(self):
@@ -68,6 +70,13 @@ class PlayerInfo:
     attrs: tuple = ()         # thuộc tính float (PLAYER+0x50): 0 thực, 1 gỗ, 2 đá, 3 vàng, 11 dân số...
     techs: frozenset = None   # id công nghệ đã nghiên cứu xong; None = chưa đọc được
     tech_times: dict = None   # id công nghệ -> time_ms game lúc lần đầu thấy đã xong (tích luỹ từ đầu bản ghi)
+    researching: dict = None  # id công nghệ đang nghiên cứu -> giây đã nghiên cứu (trạng thái 2)
+    resigned: int = 0         # PLAYER+0x81: 1 = đã đầu hàng (ptype = PLAYER+0x80: 0 đang chơi, 1 thắng, 2 thua)
+    diplomacy: tuple = ()     # PLAYER+0xB0 int32 theo từng người chơi (thái độ ngoại giao, giá trị thô)
+
+    @property
+    def game_status(self):
+        return self.ptype
 
     def attr(self, k, default=None):
         return self.attrs[k] if k is not None and 0 <= k < len(self.attrs) else default
@@ -96,6 +105,9 @@ class Snapshot:
     tile_units_ptr: np.ndarray = None  # uint32 [h, w] con trỏ danh sách vật thể trên ô (+0x10)
     static_units: list = None      # vật thể gắn với ô (cây rừng...), vẽ thành lớp riêng trong video
     static_version: int = 0        # tăng mỗi lần quét lại -> bộ vẽ video dựng lại lớp tĩnh
+    game_over: int = 0             # GLOBAL+0x1D: 1 khi ván đã kết thúc
+    match: dict = None             # thiết lập ván (GameReader.match_settings), đọc một lần mỗi trận
+    def_stats: dict = None         # địa chỉ def -> chỉ số (công, giáp, tầm...); chỉ có ở mẫu vừa đọc lại (3 s/lần)
 
     @property
     def cur_player(self):
@@ -224,7 +236,9 @@ class GameReader:
         if kind == O.UNIT_KIND_DOPPEL:
             uid = -(ua >> 2)          # id riêng, âm, ổn định theo địa chỉ (id của game cho doppel không dùng được)
         return UnitInfo(uid=uid, x=x, y=y, z=z, owner_index=owner, udef=udef, flags=raw[O.UNIT_FLAGS],
-                        angle=raw[O.UNIT_ANGLE] & 7, hp=hp, status=raw[O.UNIT_STATUS], addr=ua, kind=kind)
+                        angle=raw[O.UNIT_ANGLE] & 7, hp=hp, status=raw[O.UNIT_STATUS], addr=ua, kind=kind,
+                        res_type=struct.unpack_from("<h", raw, O.UNIT_RES_TYPE)[0],
+                        res_amount=struct.unpack_from("<f", raw, O.UNIT_RES_AMOUNT)[0])
 
     def _finish_doppels(self, units, players):
         """Doppelganger: thay unitdef/màu bằng của vật thể gốc (đọc thêm phần +0x8C..+0xB0)."""
@@ -278,6 +292,71 @@ class GameReader:
         return self.mem.u32(g + O.GLOBAL_TIME_MS) if g else None
 
     # ---- unit def ------------------------------------------------------------
+    STATS_EVERY = 3.0          # giây: đọc lại chỉ số mọi def đã gặp (bắt nâng cấp công nghệ)
+
+    def def_stats(self, addrs):
+        """Chỉ số của các def (đã nâng cấp theo công nghệ của người chơi sở hữu bản sao def): dict addr -> dict."""
+        addrs = list(addrs)
+        raws = self.bulk.read_many(addrs, O.UNITDEF_STATS_SIZE)
+        lists = []
+        out = {}
+        for a in addrs:
+            raw = raws.get(a)
+            if raw is None or len(raw) < O.UNITDEF_STATS_SIZE:
+                raw = self.mem.try_read(a, O.UNITDEF_STATS_SIZE)
+            if not raw or len(raw) < O.UNITDEF_STATS_SIZE:
+                continue
+            utype = raw[O.UNITDEF_TYPE]
+            st = {"lang": struct.unpack_from("<h", raw, O.UNITDEF_LANG_NAME)[0],
+                  "hp": struct.unpack_from("<h", raw, O.UNITDEF_HP)[0],
+                  "los": round(struct.unpack_from("<f", raw, O.UNITDEF_LOS)[0], 3)}
+            if utype >= 20:
+                st["speed"] = round(struct.unpack_from("<f", raw, O.UNITDEF_SPEED)[0], 3)
+            if utype >= 50:                          # 50 combat, 60 missile, 70, 80 đều kế thừa loại 50
+                f = lambda off: round(struct.unpack_from("<f", raw, off)[0], 3)  # noqa: E731
+                h = lambda off: struct.unpack_from("<h", raw, off)[0]  # noqa: E731
+                st.update({"armor0": raw[O.UNITDEF_BASE_ARMOR], "range": f(O.UNITDEF_MAX_RANGE),
+                           "min_range": f(O.UNITDEF_MIN_RANGE), "reload": f(O.UNITDEF_RELOAD),
+                           "accuracy": h(O.UNITDEF_ACCURACY), "d_melee": h(O.UNITDEF_DISP_MELEE_ARMOR),
+                           "d_attack": h(O.UNITDEF_DISP_ATTACK), "d_range": f(O.UNITDEF_DISP_RANGE),
+                           "d_reload": f(O.UNITDEF_DISP_RELOAD)})
+                for key, cnt_off, ptr_off in (("attacks", O.UNITDEF_ATTACK_COUNT, O.UNITDEF_ATTACKS),
+                                              ("armors", O.UNITDEF_ARMOR_COUNT, O.UNITDEF_ARMORS)):
+                    n = h(cnt_off)
+                    ptr = struct.unpack_from("<I", raw, ptr_off)[0]
+                    st[key] = []
+                    if 0 < n <= 32 and ptr:
+                        lists.append((a, key, ptr, n))
+            if utype >= 70:
+                h = lambda off: struct.unpack_from("<h", raw, off)[0]  # noqa: E731
+                st["train"] = h(O.UNITDEF_TRAIN_TIME)
+                st["d_pierce"] = h(O.UNITDEF_DISP_PIERCE)
+                st["costs"] = [(h(O.UNITDEF_COSTS + 6 * k), h(O.UNITDEF_COSTS + 6 * k + 2)) for k in range(3)
+                               if h(O.UNITDEF_COSTS + 6 * k) >= 0 and h(O.UNITDEF_COSTS + 6 * k + 2) > 0]
+            out[a] = st
+        if lists:
+            lraws = self.bulk.read_many([p for _a, _k, p, _n in lists], 4 * 32)
+            for a, key, ptr, n in lists:
+                b = lraws.get(ptr)
+                if b is None or len(b) < 4 * n:
+                    b = self.mem.try_read(ptr, 4 * n)
+                if b and len(b) >= 4 * n:
+                    vals = struct.unpack_from(f"<{2 * n}h", b)
+                    out[a][key] = [(vals[2 * k], vals[2 * k + 1]) for k in range(n)]
+        return out
+
+    def maybe_def_stats(self):
+        """Mỗi STATS_EVERY giây (hoặc khi có def mới): chỉ số mọi def đã gặp; ngược lại None."""
+        now = time.time()
+        known = len(self._def_cache)
+        if now - getattr(self, "_stats_t", 0.0) < self.STATS_EVERY and known == getattr(self, "_stats_n", -1):
+            return None
+        self._stats_t, self._stats_n = now, known
+        try:
+            return self.def_stats(self._def_cache.keys())
+        except Exception:  # noqa: BLE001
+            return None
+
     def unit_def(self, addr):
         d = self._def_cache.get(addr)
         if d is not None:
@@ -454,8 +533,8 @@ class GameReader:
             except MemoryError_:
                 continue
             nu = self._parse_unit(raw, u.addr, u.owner_index, udef)
-            if nu.is_dead != u.is_dead or nu.udef is not u.udef:
-                changed += 1
+            if nu.is_dead != u.is_dead or nu.udef is not u.udef or int(nu.res_amount) != int(u.res_amount):
+                changed += 1            # kể cả gỗ/thực/vàng còn lại đổi -> bản ghi vật thể tĩnh mới
             out.append(nu)
         return out, changed
 
@@ -476,6 +555,9 @@ class GameReader:
             if not data:
                 return None
             st = np.frombuffer(data, np.int16)[O.RESEARCH_ENTRY_STATE // 2::O.RESEARCH_ENTRY_SIZE // 2]
+            prog = np.frombuffer(data, np.float32)[O.RESEARCH_ENTRY_PROGRESS // 4::O.RESEARCH_ENTRY_SIZE // 4]
+            active = np.nonzero(st == O.RESEARCH_STATE_ACTIVE)[0].tolist()
+            self._researching = {int(t): round(float(prog[t]), 1) for t in active}
             return frozenset(np.nonzero(st == O.RESEARCH_STATE_DONE)[0].tolist())
         except (MemoryError_, struct.error):
             return None
@@ -500,6 +582,40 @@ class GameReader:
         return names
 
     # ---- snapshot -------------------------------------------------------------
+    def match_settings(self, g, count):
+        """Thiết lập ván (bản đồ, đội, nền văn minh chọn, tài nguyên...), đọc một lần cho mỗi GLOBAL."""
+        cache = getattr(self, "_match_cache", None)
+        if cache is not None and cache[0] == g:
+            return cache[1]
+        info = None
+        try:
+            s = self.settings()
+            blk = self.mem.read(s + O.SETTINGS_READ_START, O.SETTINGS_READ_END - O.SETTINGS_READ_START)
+
+            def b(off):
+                return blk[off - O.SETTINGS_READ_START]
+
+            def i32(off):
+                return struct.unpack_from("<i", blk, off - O.SETTINGS_READ_START)[0]
+            n = max(0, count - 1)
+            info = {
+                "random_game": self.mem.i32(s + O.SETTINGS_RANDOM_GAME), "random_map": self.mem.i32(s + O.SETTINGS_RANDOM_MAP),
+                "map_type": i32(O.SETTINGS_MAP_TYPE), "map_size": i32(O.SETTINGS_MAP_SIZE),
+                "victory": i32(O.SETTINGS_VICTORY), "victory_value": i32(O.SETTINGS_VICTORY_VALUE),
+                "resources": i32(O.SETTINGS_RESOURCES), "start_age": i32(O.SETTINGS_START_AGE),
+                "reveal_map": b(O.SETTINGS_REVEAL_MAP), "full_tech": b(O.SETTINGS_FULL_TECH),
+                "deathmatch": b(O.SETTINGS_DEATHMATCH), "flag_ae4": b(O.SETTINGS_FLAG_AE4),
+                # mảng theo người chơi 1..n (chỉ số 0 của mảng = người chơi 1)
+                "teams": [b(O.SETTINGS_TEAMS + k) - 1 for k in range(n)],
+                "civs": [b(O.SETTINGS_CIVS + k) for k in range(n)],
+                "slots": [b(O.SETTINGS_PLAYERS + k) for k in range(n)],
+                "raw": bytes(blk),                     # giữ nguyên khối để phân tích sau (368 byte)
+            }
+        except Exception:  # noqa: BLE001
+            info = None
+        self._match_cache = (g, info)
+        return info
+
     def snapshot(self, with_units=True):
         self.bulk.begin_frame()
         try:
@@ -584,7 +700,10 @@ class GameReader:
                 index=i, addr=p, pid=pid, name=names.get(i, f"P{i}"), mm_color=mm_color,
                 explored_mask=struct.unpack_from("<I", raw, O.PLAYER_EXPLORED_MASK)[0],
                 visible_mask=struct.unpack_from("<I", raw, O.PLAYER_VISIBLE_MASK)[0],
-                ptype=raw[O.PLAYER_TYPE])
+                ptype=raw[O.PLAYER_GAME_STATUS])
+            pl.resigned = raw[O.PLAYER_RESIGNED]
+            nd = max(0, min(count, (O.PLAYER_EXPLORED_MASK - O.PLAYER_DIPLOMACY) // 4))
+            pl.diplomacy = struct.unpack_from(f"<{nd}i", raw, O.PLAYER_DIPLOMACY) if nd else ()
             n_attr = struct.unpack_from("<h", raw, O.PLAYER_ATTR_COUNT)[0]
             aptr = struct.unpack_from("<I", raw, O.PLAYER_ATTRS)[0]
             if 0 < n_attr <= 512 and aptr:
@@ -594,7 +713,9 @@ class GameReader:
                     pl.attrs = struct.unpack_from(f"<{n}f", ab)
             if O.PLAYER_CIV is not None:
                 pl.civ = raw[O.PLAYER_CIV]
+            self._researching = None
             pl.techs = self._read_techs(raw, p)
+            pl.researching = self._researching
             if pl.techs is not None:
                 tt = self._tech_times.setdefault(i, {})
                 for tid in pl.techs:
@@ -609,6 +730,8 @@ class GameReader:
                         terrain_colors=terrain_colors, reveal=reveal, cur_player_index=cur_index,
                         players=players, addrs={"settings": self.settings(), "global": g, "mapinfo": m},
                         tile_dx=tile_dx, tile_dy=tile_dy, tile_border=tile_border, tile_units_ptr=tile_units_ptr)
+        snap.game_over = mem.u8(g + O.GLOBAL_GAME_OVER)
+        snap.match = self.match_settings(g, count)
 
         if with_units:
             headers = []
@@ -640,13 +763,16 @@ class GameReader:
                 snap.units.append(u)
                 players[u.owner_index].unit_count += 1
             snap.units.extend(self.doppels.update(snap))
+            snap.def_stats = self.maybe_def_stats()
         return snap
 
     UNIT_RAW_DT = np.dtype({
-        "names": ["uid", "defp", "ownerp", "splist", "hp", "angle", "flags", "x", "y", "z", "status", "kind"],
-        "formats": ["<i4", "<u4", "<u4", "<u4", "<f4", "u1", "u1", "<f4", "<f4", "<f4", "u1", "u1"],
+        "names": ["uid", "defp", "ownerp", "splist", "hp", "angle", "flags", "x", "y", "z", "status", "kind",
+                  "ramount", "rtype"],
+        "formats": ["<i4", "<u4", "<u4", "<u4", "<f4", "u1", "u1", "<f4", "<f4", "<f4", "u1", "u1", "<f4", "<i2"],
         "offsets": [O.UNIT_ID, O.UNIT_DEF, O.UNIT_OWNER, O.UNIT_SPRITE_LIST, O.UNIT_HP, O.UNIT_ANGLE, O.UNIT_FLAGS,
-                    O.UNIT_POS_X, O.UNIT_POS_Y, O.UNIT_POS_Z, O.UNIT_STATUS, O.UNIT_TYPE_BYTE],
+                    O.UNIT_POS_X, O.UNIT_POS_Y, O.UNIT_POS_Z, O.UNIT_STATUS, O.UNIT_TYPE_BYTE, O.UNIT_RES_AMOUNT,
+                    O.UNIT_RES_TYPE],
         "itemsize": O.UNIT_READ_SIZE})
 
     @staticmethod
@@ -683,6 +809,7 @@ class GameReader:
         uid = rec["uid"].tolist(); hp = rec["hp"].tolist(); ang = rec["angle"].tolist(); fl = rec["flags"].tolist()
         xs = rec["x"].tolist(); ys = rec["y"].tolist(); zs = rec["z"].tolist(); st = rec["status"].tolist()
         kd = rec["kind"].tolist(); sl = rec["splist"].tolist(); dp = defps.tolist()
+        ram = rec["ramount"].tolist(); rty = rec["rtype"].tolist()
         for i in range(len(ua)):
             if not ok[i]:
                 continue
@@ -692,7 +819,7 @@ class GameReader:
             k = kd[i]
             u = UnitInfo(uid=(-(ua[i] >> 2) if k == O.UNIT_KIND_DOPPEL else uid[i]), x=xs[i], y=ys[i], z=zs[i],
                          owner_index=owners[i], udef=udef, flags=fl[i], angle=ang[i] & 7, hp=hp[i], status=st[i],
-                         addr=ua[i], kind=k)
+                         addr=ua[i], kind=k, res_type=rty[i], res_amount=ram[i])
             out.append(u)
             lists.append(sl[i])
         if self.read_sprites:

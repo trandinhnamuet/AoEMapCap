@@ -38,19 +38,21 @@ class Config:
     fog_style: str = "dim"                  # dim = làm tối đều (mặc định); dither = lưới chấm như game
     map_outline: float = 0.35
     record_video: bool = True
-    stills_interval: float = 5.0             # phút game; 0 = tắt
+    stills_interval: float = 0.0             # phút game; 0 = tắt (từ v3 mặc định tắt: chỉ ghi dữ liệu trận)
     stills_scale: float = 0.5
     frozen_end_seconds: int = 180
     encoder: str = "auto"
     static_rescan_seconds: float = 60.0      # quét lại toàn bộ ô để tìm vật thể tĩnh mới
     static_refresh_seconds: float = 2.0      # đọc lại máu/trạng thái vật thể tĩnh (cây bị đốn -> hình gốc cây)
     record_mode: str = "raw"                 # raw = ghi dữ liệu thô trong trận, dựng video sau; live = vẽ ngay
-    render_after: bool = True                # raw: tự dựng video khi hết trận
+    render_after: bool = False               # raw: tự dựng video khi hết trận (từ v3 mặc định tắt; xuất video khi cần)
     render_width: int = 1920                 # raw: độ rộng video dựng tự động
     render_workers: int = 0                  # raw: số tiến trình dựng (0 = tự chọn)
     keep_raw: bool = True                    # raw: giữ file .aoerec sau khi dựng
     reader_process: bool = True              # raw: đọc + ghi trong tiến trình riêng (GIL riêng, nhịp đều hơn)
-    config_version: int = 2                  # tăng khi đổi mặc định quan trọng (v2: nhịp đọc = FPS)
+    render_cpus_in_game: str = "auto"        # CPU cho tiến trình dựng khi đang có trận: auto = E-core (8..), "8-15", "" = không ghim
+    config_version: int = 3                  # tăng khi đổi mặc định quan trọng (v2: nhịp đọc = FPS;
+                                             # v3: chỉ ghi dữ liệu trận, không tự dựng video / ảnh tĩnh)
 
     def fog_param(self):
         """Tham số sương mù cho bộ vẽ: 'dither' hoặc số fog_dim."""
@@ -78,7 +80,7 @@ class Config:
         self.speed = max(0.1, min(64.0, float(self.speed)))
         self.fog_dim = max(0.0, min(1.0, float(self.fog_dim)))
         self.map_outline = max(0.0, min(1.0, float(self.map_outline)))
-        self.stills_interval = max(0.0, float(self.stills_interval))
+        self.stills_interval = 0.0           # bỏ chụp ảnh toàn bản đồ định kỳ (yêu cầu 2026-10-09); xem replay thay thế
         self.stills_scale = max(0.1, min(1.0, float(self.stills_scale)))
         self.frozen_end_seconds = max(30, int(self.frozen_end_seconds))
         self.static_rescan_seconds = max(10.0, float(self.static_rescan_seconds))
@@ -109,9 +111,16 @@ def load_config(path=None):
                         setattr(cfg, f.name, f.type(raw))
                 except (TypeError, ValueError):
                     pass
-            if "config_version" not in s:          # cấu hình bản cũ: nâng nhịp đọc lên bằng FPS
+            ver = int(s.get("config_version", "1") or 1) if s.get("config_version", "").strip().isdigit() else 1
+            if ver < 2:                            # cấu hình bản cũ: nâng nhịp đọc lên bằng FPS
                 cfg.capture_fps = cfg.fps
-                cfg.config_version = 2
+            if ver < 3:                            # v3: xem replay là chính, video chỉ xuất khi cần
+                cfg.render_after = False
+                cfg.stills_interval = 0.0
+                cfg.record_mode = "raw"
+                cfg.keep_raw = True
+                cfg.record_video = True
+            cfg.config_version = 3
     return cfg.clamp()
 
 
@@ -379,6 +388,7 @@ class RawMatchRecorder:
         self.log = log
         self.game_dir = game_dir
         self.on_render_done = on_render_done
+        self.on_progress = None       # callable(frac, text) -> trạng thái GUI (Engine gán)
         self.writer = None
         self.path = None
         self.written = 0
@@ -420,7 +430,7 @@ class RawMatchRecorder:
             self.log(f"bắt đầu dựng video {os.path.basename(out)} ({self.cfg.render_width}px, {self.cfg.fps:g} fps)...")
             render_raw(self.path, out, width=self.cfg.render_width, fps=self.cfg.fps, speed=self.cfg.speed,
                        fog_dim=self.cfg.fog_param(), outline=self.cfg.map_outline, game_dir=self.game_dir,
-                       workers=self.cfg.render_workers or None, log=self.log)
+                       workers=self.cfg.render_workers or None, log=self.log, progress=self.on_progress)
             if not self.cfg.keep_raw:
                 try:
                     os.remove(self.path)
@@ -430,6 +440,9 @@ class RawMatchRecorder:
                 self.on_render_done(out)
         except Exception as e:  # noqa: BLE001
             self.log(f"lỗi dựng video: {e}")
+        finally:
+            if self.on_progress:
+                self.on_progress(1.0, None)
 
 
 class ProcRecorder(RawMatchRecorder):
@@ -496,18 +509,48 @@ def _close_reader(sreader):
 class Engine:
     """Vòng lặp ghi. Gọi run() trong luồng riêng; set stop_event để dừng an toàn."""
 
-    def __init__(self, cfg: Config, log, stop_event=None, status=None):
+    def __init__(self, cfg: Config, log, stop_event=None, status=None, progress=None):
         self.cfg = cfg
         self.log = log
         self.stop_event = stop_event or threading.Event()
         self.status = status or (lambda s: None)
+        # progress(label, text): tiến độ dựng video từng trận (text None = xong); mặc định đẩy vào status
+        self.progress = progress or (lambda label, text: self.status(f"dựng {label}: {text}") if text else None)
         self.state = "idle"
 
     def _set(self, s):
         self.state = s
         self.status(s)
+        from .offline import set_in_game
+        set_in_game(s == "đang ghi")
+
+    def _stop_rec(self, rec):
+        """Chốt trận đang ghi và nhớ lại file của phiên (để tóm tắt khi dừng)."""
+        path = rec.stop()
+        if path:
+            self.session_files.append(path)
+        return path
 
     def run(self):
+        """Chạy vòng ghi; khi kết thúc (dừng theo yêu cầu, lỗi, hết thời gian thử) luôn ghi một dòng tóm tắt."""
+        self.session_files = []
+        t0 = time.time()
+        reason = "lỗi"
+        try:
+            self._run()
+            reason = "theo yêu cầu" if self.stop_event.is_set() else "vòng ghi kết thúc"
+        finally:
+            n = len(self.session_files)
+            mins = (time.time() - t0) / 60
+            if n:
+                names = ", ".join(os.path.basename(p) for p in self.session_files[-5:])
+                self.log(f"đã dừng ghi ({reason}) sau {mins:.0f} phút: phiên này ghi {n} trận ({names}); "
+                         f"xem ở thẻ Trận đã ghi")
+            else:
+                self.log(f"đã dừng ghi ({reason}) sau {mins:.0f} phút: chưa ghi trận nào")
+            self._set("đã dừng")
+
+    def _run(self):
         cfg = self.cfg
         log = self.log
         out_dir = cfg.resolved_out_dir()
@@ -520,16 +563,27 @@ class Engine:
         ffmpeg = find_ffmpeg([cfg.game_dir])
         encoder = None
         record_video = cfg.record_video
-        if record_video and not ffmpeg:
-            log("KHÔNG tìm thấy ffmpeg. Chỉ chụp ảnh tĩnh.")
-            record_video = False
-        if record_video:
+        # chế độ dữ liệu thô chỉ cần ffmpeg khi tự xuất video sau trận
+        need_ffmpeg = cfg.record_mode == "live" or cfg.render_after
+        if record_video and need_ffmpeg and not ffmpeg:
+            if cfg.record_mode == "live":
+                log("KHÔNG tìm thấy ffmpeg. Chỉ chụp ảnh tĩnh.")
+                record_video = False
+            else:
+                log("KHÔNG tìm thấy ffmpeg: vẫn ghi dữ liệu trận, không tự xuất video.")
+                cfg.render_after = False
+        if record_video and need_ffmpeg and ffmpeg:
             encoder = cfg.encoder if cfg.encoder != "auto" else pick_encoder(ffmpeg, log=log)
-            log(f"mã hoá video: {encoder}; chế độ: {'ghi dữ liệu thô, dựng video sau trận' if cfg.record_mode == 'raw' else 'vẽ thời gian thực'}")
+            log(f"mã hoá video: {encoder}")
+        if record_video:
+            log("chế độ: " + ("vẽ video thời gian thực" if cfg.record_mode == "live" else
+                              "ghi dữ liệu trận (xem bằng Xem replay)" + (", tự xuất video sau trận" if cfg.render_after else "")))
+        if ffmpeg:
             recover_partials(ffmpeg, out_dir, log)
-        from .offline import cleanup_stale
+        from .offline import cleanup_stale, configure_affinity
         cleanup_stale(out_dir, log)
-        log(f"video lưu tại: {out_dir}")
+        configure_affinity(cfg.render_cpus_in_game)
+        log(f"dữ liệu lưu tại: {out_dir}")
 
         gfx = self._load_graphics(cfg.game_dir)
         interval_ms = int(cfg.stills_interval * 60_000)
@@ -551,6 +605,7 @@ class Engine:
                         return
                     self.stop_event.wait(2)
             if self.stop_event.is_set():
+                log("nhận lệnh dừng khi đang chờ game")
                 return
             log(f"thấy game: {proc.info['name']} (pid {proc.pid})")
             try:
@@ -605,7 +660,7 @@ class Engine:
                         if in_game_prev and not in_game:
                             log("rời trận")
                             if rec:
-                                rec.stop(); rec = None; sreader = _close_reader(sreader)
+                                self._stop_rec(rec); rec = None; sreader = _close_reader(sreader)
                             self._set("trong game, chờ trận")
                         in_game_prev = in_game
 
@@ -613,7 +668,7 @@ class Engine:
                             if last_time is not None and t + 60_000 < last_time:
                                 log("đồng hồ game reset: trận mới")
                                 if rec:
-                                    rec.stop(); rec = None; sreader = _close_reader(sreader)
+                                    self._stop_rec(rec); rec = None; sreader = _close_reader(sreader)
                                     self._set("trong game, chờ trận")
                                 game_no += 1
                                 last_mark = -1
@@ -625,7 +680,7 @@ class Engine:
                             frozen = time.time() - last_time_change
                             if rec and frozen > cfg.frozen_end_seconds:
                                 log(f"đồng hồ đứng {frozen:.0f}s: coi là hết trận")
-                                rec.stop(); rec = None; sreader = _close_reader(sreader)
+                                self._stop_rec(rec); rec = None; sreader = _close_reader(sreader)
                                 self._set("trong game, chờ trận")
                                 last_mark = 10 ** 9
                             try:
@@ -635,8 +690,10 @@ class Engine:
                                     statics.attach(snap)
                                     if cfg.record_mode == "raw" and cfg.reader_process:
                                         rec = ProcRecorder(cfg, cfg.raw_dir(), out_dir, f"tran{game_no}", log, gfx["dir"], proc.pid, stills)
+                                        rec.on_progress = (lambda lb: (lambda f, s: self.progress(lb, s)))(f"tran{game_no}")
                                     elif cfg.record_mode == "raw":
                                         rec = RawMatchRecorder(cfg, cfg.raw_dir(), out_dir, f"tran{game_no}", log, gfx["dir"])
+                                        rec.on_progress = (lambda lb: (lambda f, s: self.progress(lb, s)))(f"tran{game_no}")
                                     else:
                                         rec = MatchRecorder(vrender, ffmpeg, encoder, out_dir, fps=cfg.fps,
                                                             speed=cfg.speed, label=f"tran{game_no}", log=log)
@@ -654,7 +711,7 @@ class Engine:
                                     self.stop_event.wait(0.25)
                                     if not rec.rp.alive() and rec.rp.done_n is None:
                                         log("tiến trình ghi đã kết thúc bất thường" + (f": {rec.rp.error}" if rec.rp.error else ""))
-                                        rec.stop(); rec = None
+                                        self._stop_rec(rec); rec = None
                                         record_video = False
                                     elif time.time() >= next_log:
                                         now = time.time()
@@ -700,7 +757,7 @@ class Engine:
                                 sreader = _close_reader(sreader)
                                 if rec:
                                     try:
-                                        rec.stop()
+                                        self._stop_rec(rec)
                                     except Exception:  # noqa: BLE001
                                         pass
                                     rec = None
@@ -716,8 +773,10 @@ class Engine:
                             self.stop_event.wait(0.5)
             finally:
                 sreader = _close_reader(sreader)
+                if rec and self.stop_event.is_set():
+                    log("nhận lệnh dừng: đang chốt trận đang ghi...")
                 if rec:
-                    rec.stop()
+                    self._stop_rec(rec)
                     rec = None
             if self.stop_event.is_set():
                 log("đã dừng theo yêu cầu")

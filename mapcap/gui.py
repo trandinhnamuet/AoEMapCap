@@ -1,4 +1,10 @@
-"""Giao diện điều khiển AoE-MapCap Recorder (tkinter)."""
+"""Giao diện AoE-MapCap (tkinter): ghi trận và xem replay là chính; xuất video là tuỳ chọn.
+
+Bố cục: thanh trên (trạng thái, Bắt đầu ghi / Dừng) + ba thẻ:
+  Trận đã ghi : bảng trận (replay.picker.MatchTable) -> Xem replay / Xuất video... / Mở file khác / Mở thư mục
+  Cài đặt     : ghi trận (nhịp đọc, thư mục lưu) và xuất video (tự xuất sau trận, độ rộng, FPS, ...)
+  Nhật ký     : log của bộ ghi và các lượt xuất video
+"""
 import os
 import queue
 import subprocess
@@ -9,7 +15,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from .engine import Config, Engine, Logger, load_config, save_config
 
-APP_TITLE = "AoE-MapCap Recorder"
+APP_TITLE = "AoE-MapCap"
 
 
 def app_icon_path():
@@ -19,17 +25,88 @@ def app_icon_path():
     return p if os.path.exists(p) else ""
 
 
+FOG_LABELS = ("Làm tối đều", "Lưới chấm như game")
+
+
+class ExportDialog:
+    """Hộp thoại xuất video cho một trận: độ rộng, FPS, tua nhanh, sương mù, viền, mã hoá."""
+
+    def __init__(self, app, path):
+        self.app = app
+        self.path = path
+        cfg = app.cfg
+        top = self.top = tk.Toplevel(app.root)
+        top.title("Xuất video — " + os.path.basename(path))
+        top.transient(app.root)
+        top.resizable(False, False)
+        try:
+            top.iconbitmap(app_icon_path())
+        except Exception:  # noqa: BLE001
+            pass
+        pad = {"padx": 8, "pady": 4}
+        frm = ttk.Frame(top)
+        frm.pack(fill="both", padx=12, pady=10)
+        self.v_width = tk.IntVar(value=int(cfg.render_width))
+        self.v_fps = tk.IntVar(value=int(cfg.fps))
+        self.v_speed = tk.DoubleVar(value=cfg.speed)
+        self.v_fog = tk.StringVar(value=FOG_LABELS[1] if cfg.fog_style == "dither" else FOG_LABELS[0])
+        self.v_outline = tk.BooleanVar(value=cfg.map_outline > 0)
+        self.v_enc = tk.StringVar(value=cfg.encoder)
+        rows = [
+            ("Độ rộng video (px)", ttk.Combobox(frm, values=(1920, 2560, 3840, 9216), textvariable=self.v_width, width=10)),
+            ("FPS", ttk.Spinbox(frm, from_=1, to=60, textvariable=self.v_fps, width=8)),
+            ("Tua nhanh (1 = thời gian thật)", ttk.Combobox(frm, values=(1, 2, 4, 8, 16), textvariable=self.v_speed, width=10)),
+            ("Sương mù", ttk.Combobox(frm, values=FOG_LABELS, textvariable=self.v_fog, width=20, state="readonly")),
+            ("Mã hoá", ttk.Combobox(frm, values=("auto", "h264_nvenc", "h264_qsv", "h264_amf", "libx264"),
+                                    textvariable=self.v_enc, width=12)),
+        ]
+        for r, (label, widget) in enumerate(rows):
+            ttk.Label(frm, text=label).grid(row=r, column=0, sticky="w", **pad)
+            widget.grid(row=r, column=1, sticky="w", **pad)
+        ttk.Checkbutton(frm, text="Viền trắng mờ quanh bản đồ", variable=self.v_outline).grid(
+            row=len(rows), column=0, columnspan=2, sticky="w", **pad)
+        ttk.Label(frm, foreground="#666", wraplength=380, justify="left",
+                  text="9216 = kích cỡ gốc của game (rất nặng, chỉ libx264). Video lưu vào thư mục Video, "
+                       "tiến độ hiện ở thanh trạng thái.").grid(row=len(rows) + 1, column=0, columnspan=2, sticky="w", **pad)
+        bot = ttk.Frame(top)
+        bot.pack(fill="x", padx=12, pady=(0, 10))
+        ttk.Button(bot, text="Huỷ", command=top.destroy).pack(side="right", padx=4)
+        ttk.Button(bot, text="Xuất video", command=self._ok).pack(side="right", padx=4)
+        top.grab_set()
+
+    def _ok(self):
+        cfg = self.app.cfg
+        try:
+            cfg.render_width = int(self.v_width.get())
+            cfg.fps = float(self.v_fps.get())
+            cfg.speed = float(self.v_speed.get())
+        except (tk.TclError, ValueError) as e:
+            messagebox.showerror(APP_TITLE, f"Giá trị không hợp lệ: {e}", parent=self.top)
+            return
+        cfg.fog_style = "dither" if self.v_fog.get() == FOG_LABELS[1] else "dim"
+        cfg.map_outline = 0.35 if self.v_outline.get() else 0.0
+        cfg.encoder = self.v_enc.get() or "auto"
+        cfg.clamp()
+        self.app._save_cfg()
+        self.app._sync_settings_from_cfg()
+        self.top.destroy()
+        self.app.export_video(self.path)
+
+
 class App:
     def __init__(self, root):
         self.root = root
-        root.title(APP_TITLE)
-        root.minsize(560, 520)
+        root.title(APP_TITLE + " — ghi trận và xem replay")
+        root.minsize(900, 560)
+        root.geometry("1080x640")
         try:
             root.iconbitmap(default=app_icon_path())
         except Exception:  # noqa: BLE001
             pass
         self.cfg = load_config()
         self.q = queue.Queue()
+        self.state_text = "chưa ghi"
+        self.renders = {}            # label -> dòng tiến độ của lượt xuất video đang chạy
         self.engine = None
         self.thread = None
         self.stop_event = None
@@ -39,132 +116,176 @@ class App:
 
     # ---- giao diện ---------------------------------------------------------------
     def _build(self):
+        style = ttk.Style()
+        try:
+            style.configure("Big.TButton", font=("Segoe UI", 11, "bold"), padding=(14, 6))
+            style.configure("Title.TLabel", font=("Segoe UI", 15, "bold"))
+        except tk.TclError:
+            pass
+        head = ttk.Frame(self.root)
+        head.pack(fill="x", padx=12, pady=(10, 4))
+        ttk.Label(head, text="AoE-MapCap", style="Title.TLabel").pack(side="left")
+        self.btn_stop = ttk.Button(head, text="■ Dừng ghi", command=self._stop, state="disabled")
+        self.btn_stop.pack(side="right", padx=4)
+        self.btn_start = ttk.Button(head, text="● Bắt đầu ghi", style="Big.TButton", command=self._start)
+        self.btn_start.pack(side="right", padx=4)
+        self.lbl_status = ttk.Label(head, text="Trạng thái: chưa ghi", foreground="#555")
+        self.lbl_status.pack(side="left", padx=16)
+
+        self.nb = ttk.Notebook(self.root)
+        self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 10))
+        self._build_matches()
+        self._build_settings()
+        self._build_log()
+
+    def _build_matches(self):
+        from replay.picker import MatchTable
+        tab = ttk.Frame(self.nb)
+        self.nb.add(tab, text="  Trận đã ghi  ")
+        raw_dir = self.cfg.raw_dir()
+        os.makedirs(raw_dir, exist_ok=True)
+        self.table = MatchTable(tab, raw_dir, self._launch_replay, show_dir_button=False)
+        self.table.pack(fill="both", expand=True, padx=8, pady=(8, 4))
+        bot = ttk.Frame(tab)
+        bot.pack(fill="x", padx=8, pady=(4, 8))
+        ttk.Button(bot, text="▶ Xem replay", style="Big.TButton", command=self.table.open_selected).pack(side="left")
+        ttk.Button(bot, text="Xuất video...", command=self._export_selected).pack(side="left", padx=8)
+        ttk.Button(bot, text="Mở file khác...", command=self._open_other).pack(side="left")
+        ttk.Button(bot, text="Mở thư mục", command=self._open_dir).pack(side="left", padx=8)
+        ttk.Label(bot, textvariable=self.table.var_status, foreground="#666").pack(side="right")
+
+    def _build_settings(self):
+        tab = ttk.Frame(self.nb)
+        self.nb.add(tab, text="  Cài đặt  ")
         pad = {"padx": 8, "pady": 4}
-        frm = ttk.LabelFrame(self.root, text="Tuỳ chọn")
-        frm.pack(fill="x", padx=10, pady=8)
+        cfg = self.cfg
+        self.var_cap = tk.IntVar(value=int(cfg.capture_fps))
+        self.var_out = tk.StringVar(value=cfg.resolved_out_dir())
+        self.var_render_after = tk.BooleanVar(value=cfg.render_after)
+        self.var_rwidth = tk.IntVar(value=int(cfg.render_width))
+        self.var_fps = tk.IntVar(value=int(cfg.fps))
+        self.var_speed = tk.DoubleVar(value=cfg.speed)
+        self.var_fog = tk.StringVar(value=FOG_LABELS[1] if cfg.fog_style == "dither" else FOG_LABELS[0])
+        self.var_outline = tk.BooleanVar(value=cfg.map_outline > 0)
+        self.var_enc = tk.StringVar(value=cfg.encoder)
 
-        self.var_fps = tk.IntVar(value=int(self.cfg.fps))
-        self.var_cap = tk.IntVar(value=int(self.cfg.capture_fps))
-        self.var_width = tk.IntVar(value=int(self.cfg.video_width))
-        self.var_speed = tk.DoubleVar(value=self.cfg.speed)
-        self.var_outline = tk.BooleanVar(value=self.cfg.map_outline > 0)
-        self.var_fog = tk.StringVar(value="Lưới chấm như game" if self.cfg.fog_style == "dither" else "Làm tối đều")
-        self.var_video = tk.BooleanVar(value=self.cfg.record_video)
-        self.var_mode = tk.StringVar(value="Ghi dữ liệu thô, dựng video sau trận" if self.cfg.record_mode == "raw" else "Vẽ video ngay trong trận")
-        self.var_rwidth = tk.IntVar(value=int(self.cfg.render_width))
-        self.var_keep_raw = tk.BooleanVar(value=self.cfg.keep_raw)
-        self.var_stills = tk.DoubleVar(value=self.cfg.stills_interval)
-        self.var_out = tk.StringVar(value=self.cfg.resolved_out_dir())
-        self.var_enc = tk.StringVar(value=self.cfg.encoder)
+        rec = ttk.LabelFrame(tab, text="Ghi trận")
+        rec.pack(fill="x", padx=8, pady=(10, 6))
+        ttk.Label(rec, text="Nhịp đọc game (lần/giây)").grid(row=0, column=0, sticky="w", **pad)
+        ttk.Spinbox(rec, from_=1, to=60, textvariable=self.var_cap, width=8).grid(row=0, column=1, sticky="w", **pad)
+        ttk.Label(rec, text="25 = mượt như game; thấp hơn thì file nhỏ hơn", foreground="#666").grid(
+            row=0, column=2, sticky="w", **pad)
+        ttk.Label(rec, text="Thư mục lưu").grid(row=1, column=0, sticky="w", **pad)
+        ttk.Entry(rec, textvariable=self.var_out, width=60).grid(row=1, column=1, columnspan=2, sticky="we", **pad)
+        ttk.Button(rec, text="Chọn...", command=self._choose_dir, width=8).grid(row=1, column=3, sticky="w", **pad)
+        rec.columnconfigure(2, weight=1)
 
-        r = 0
-        ttk.Label(frm, text="FPS video (file mp4)").grid(row=r, column=0, sticky="w", **pad)
-        ttk.Spinbox(frm, from_=1, to=60, textvariable=self.var_fps, width=8).grid(row=r, column=1, sticky="w", **pad)
-        ttk.Label(frm, text="Nhịp đọc game (lần/giây)").grid(row=r, column=2, sticky="w", **pad)
-        ttk.Spinbox(frm, from_=1, to=60, textvariable=self.var_cap, width=8).grid(row=r, column=3, sticky="w", **pad)
-        r += 1
-        ttk.Label(frm, text="Độ rộng video (px)").grid(row=r, column=0, sticky="w", **pad)
-        ttk.Combobox(frm, values=(1280, 1600, 1920, 2560, 3840), textvariable=self.var_width, width=7).grid(row=r, column=1, sticky="w", **pad)
-        ttk.Label(frm, text="Tua nhanh khi phát").grid(row=r, column=2, sticky="w", **pad)
-        ttk.Combobox(frm, values=(1, 2, 4, 8, 16), textvariable=self.var_speed, width=7).grid(row=r, column=3, sticky="w", **pad)
-        r += 1
-        ttk.Label(frm, text="Ảnh tĩnh mỗi (phút game, 0 = tắt)").grid(row=r, column=0, sticky="w", **pad)
-        ttk.Spinbox(frm, from_=0, to=60, increment=1, textvariable=self.var_stills, width=8).grid(row=r, column=1, sticky="w", **pad)
-        ttk.Label(frm, text="Mã hoá").grid(row=r, column=2, sticky="w", **pad)
-        ttk.Combobox(frm, values=("auto", "h264_nvenc", "h264_qsv", "h264_amf", "libx264"), textvariable=self.var_enc, width=11).grid(row=r, column=3, sticky="w", **pad)
-        r += 1
-        ttk.Checkbutton(frm, text="Ghi video", variable=self.var_video).grid(row=r, column=0, sticky="w", **pad)
-        ttk.Checkbutton(frm, text="Viền trắng mờ quanh bản đồ", variable=self.var_outline).grid(row=r, column=1, columnspan=2, sticky="w", **pad)
-        r += 1
-        ttk.Label(frm, text="Sương mù").grid(row=r, column=0, sticky="w", **pad)
-        ttk.Combobox(frm, values=("Làm tối đều", "Lưới chấm như game"), textvariable=self.var_fog, width=20,
-                     state="readonly").grid(row=r, column=1, columnspan=2, sticky="w", **pad)
-        r += 1
-        ttk.Label(frm, text="Chế độ").grid(row=r, column=0, sticky="w", **pad)
-        ttk.Combobox(frm, values=("Ghi dữ liệu thô, dựng video sau trận", "Vẽ video ngay trong trận"),
-                     textvariable=self.var_mode, width=34, state="readonly").grid(row=r, column=1, columnspan=2, sticky="w", **pad)
-        r += 1
-        ttk.Label(frm, text="Độ rộng video dựng sau trận").grid(row=r, column=0, sticky="w", **pad)
-        ttk.Combobox(frm, values=(1920, 2560, 3840, 9216), textvariable=self.var_rwidth, width=7).grid(row=r, column=1, sticky="w", **pad)
-        ttk.Checkbutton(frm, text="Giữ file dữ liệu thô", variable=self.var_keep_raw).grid(row=r, column=2, columnspan=2, sticky="w", **pad)
-        r += 1
-        ttk.Label(frm, text="Thư mục lưu").grid(row=r, column=0, sticky="w", **pad)
-        ttk.Entry(frm, textvariable=self.var_out, width=44).grid(row=r, column=1, columnspan=2, sticky="we", **pad)
-        ttk.Button(frm, text="Chọn...", command=self._choose_dir, width=8).grid(row=r, column=3, sticky="w", **pad)
-        frm.columnconfigure(1, weight=1)
+        vid = ttk.LabelFrame(tab, text="Xuất video (tuỳ chọn)")
+        vid.pack(fill="x", padx=8, pady=6)
+        ttk.Checkbutton(vid, text="Tự xuất video sau mỗi trận (tốn CPU sau trận; mặc định tắt — dùng nút Xuất video... khi cần)",
+                        variable=self.var_render_after).grid(row=0, column=0, columnspan=4, sticky="w", **pad)
+        ttk.Label(vid, text="Độ rộng (px)").grid(row=1, column=0, sticky="w", **pad)
+        ttk.Combobox(vid, values=(1920, 2560, 3840, 9216), textvariable=self.var_rwidth, width=8).grid(
+            row=1, column=1, sticky="w", **pad)
+        ttk.Label(vid, text="FPS").grid(row=1, column=2, sticky="w", **pad)
+        ttk.Spinbox(vid, from_=1, to=60, textvariable=self.var_fps, width=8).grid(row=1, column=3, sticky="w", **pad)
+        ttk.Label(vid, text="Tua nhanh").grid(row=2, column=0, sticky="w", **pad)
+        ttk.Combobox(vid, values=(1, 2, 4, 8, 16), textvariable=self.var_speed, width=8).grid(
+            row=2, column=1, sticky="w", **pad)
+        ttk.Label(vid, text="Mã hoá").grid(row=2, column=2, sticky="w", **pad)
+        ttk.Combobox(vid, values=("auto", "h264_nvenc", "h264_qsv", "h264_amf", "libx264"), textvariable=self.var_enc,
+                     width=11).grid(row=2, column=3, sticky="w", **pad)
+        ttk.Label(vid, text="Sương mù").grid(row=3, column=0, sticky="w", **pad)
+        ttk.Combobox(vid, values=FOG_LABELS, textvariable=self.var_fog, width=20, state="readonly").grid(
+            row=3, column=1, sticky="w", **pad)
+        ttk.Checkbutton(vid, text="Viền trắng mờ quanh bản đồ", variable=self.var_outline).grid(
+            row=3, column=2, columnspan=2, sticky="w", **pad)
 
-        ctl = ttk.Frame(self.root)
-        ctl.pack(fill="x", padx=10, pady=4)
-        self.btn_start = ttk.Button(ctl, text="Bắt đầu ghi", command=self._start, width=16)
-        self.btn_start.pack(side="left", padx=4)
-        self.btn_stop = ttk.Button(ctl, text="Dừng", command=self._stop, width=10, state="disabled")
-        self.btn_stop.pack(side="left", padx=4)
-        ttk.Button(ctl, text="Mở thư mục video", command=self._open_dir).pack(side="left", padx=4)
-        ttk.Button(ctl, text="Dựng lại video...", command=self._rerender).pack(side="left", padx=4)
-        self.lbl_status = ttk.Label(ctl, text="Trạng thái: chưa chạy", foreground="#555")
-        self.lbl_status.pack(side="right", padx=6)
+        bot = ttk.Frame(tab)
+        bot.pack(fill="x", padx=8, pady=8)
+        ttk.Button(bot, text="Lưu cài đặt", command=self._save_settings).pack(side="left")
+        ttk.Label(bot, foreground="#666", text="Cài đặt có hiệu lực từ lần Bắt đầu ghi tiếp theo.").pack(side="left", padx=12)
 
-        note = ttk.Label(self.root, foreground="#666", wraplength=540, justify="left",
-                         text="Chế độ dữ liệu thô: trong trận chỉ đọc game (nhẹ nhất), hết trận tự dựng video ở độ rộng đã chọn; "
-                              "file .aoerec trong Video\\Raw dựng lại được bất cứ lúc nào. "
-                              "nhịp đọc = số lần đọc game và vẽ mỗi giây (nên bằng FPS để mượt; mỗi lần vẽ ~15 ms ở 1080p). "
-                              "Hết trận (rời ra menu, thoát game, hoặc đồng hồ game đứng 3 phút) tự chốt file mp4.")
-        note.pack(fill="x", padx=12, pady=2)
-
-        logf = ttk.LabelFrame(self.root, text="Nhật ký")
-        logf.pack(fill="both", expand=True, padx=10, pady=8)
-        self.txt = tk.Text(logf, height=14, wrap="word", state="disabled", font=("Consolas", 9))
-        sb = ttk.Scrollbar(logf, command=self.txt.yview)
+    def _build_log(self):
+        tab = ttk.Frame(self.nb)
+        self.nb.add(tab, text="  Nhật ký  ")
+        self.txt = tk.Text(tab, height=14, wrap="word", state="disabled", font=("Consolas", 9))
+        sb = ttk.Scrollbar(tab, command=self.txt.yview)
         self.txt.configure(yscrollcommand=sb.set)
-        self.txt.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
+        self.txt.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
+        sb.pack(side="right", fill="y", pady=8)
 
-    # ---- hành động ----------------------------------------------------------------
+    # ---- cài đặt -------------------------------------------------------------------
     def _collect(self):
         cfg = self.cfg
         try:
-            cfg.fps = float(self.var_fps.get())
             cfg.capture_fps = float(self.var_cap.get())
-            cfg.video_width = int(self.var_width.get())
+            cfg.render_width = int(self.var_rwidth.get())
+            cfg.fps = float(self.var_fps.get())
             cfg.speed = float(self.var_speed.get())
-            cfg.stills_interval = float(self.var_stills.get())
         except (tk.TclError, ValueError) as e:
             messagebox.showerror(APP_TITLE, f"Giá trị không hợp lệ: {e}")
             return None
-        cfg.record_video = bool(self.var_video.get())
-        cfg.record_mode = "raw" if self.var_mode.get().startswith("Ghi") else "live"
-        try:
-            cfg.render_width = int(self.var_rwidth.get())
-        except (tk.TclError, ValueError):
-            cfg.render_width = 1920
-        cfg.keep_raw = bool(self.var_keep_raw.get())
+        cfg.render_after = bool(self.var_render_after.get())
+        cfg.record_mode = "raw"
+        cfg.record_video = True
+        cfg.keep_raw = True
         cfg.map_outline = 0.35 if self.var_outline.get() else 0.0
-        cfg.fog_style = "dither" if self.var_fog.get().startswith("Lưới") else "dim"
+        cfg.fog_style = "dither" if self.var_fog.get() == FOG_LABELS[1] else "dim"
         cfg.encoder = self.var_enc.get() or "auto"
         out = self.var_out.get().strip()
         cfg.out_dir = "" if os.path.normcase(out) == os.path.normcase(Config().resolved_out_dir()) else out
+        cfg.fps = max(cfg.fps, cfg.capture_fps)      # nhịp đọc không vượt FPS (Config.clamp)
         cfg.clamp()
-        # phản ánh lại giá trị đã giới hạn
-        self.var_fps.set(int(cfg.fps)); self.var_cap.set(int(cfg.capture_fps))
+        self.var_cap.set(int(cfg.capture_fps))
         return cfg
 
+    def _sync_settings_from_cfg(self):
+        cfg = self.cfg
+        self.var_rwidth.set(int(cfg.render_width))
+        self.var_fps.set(int(cfg.fps))
+        self.var_speed.set(cfg.speed)
+        self.var_fog.set(FOG_LABELS[1] if cfg.fog_style == "dither" else FOG_LABELS[0])
+        self.var_outline.set(cfg.map_outline > 0)
+        self.var_enc.set(cfg.encoder)
+
+    def _save_cfg(self):
+        try:
+            save_config(self.cfg)
+        except Exception as e:  # noqa: BLE001
+            self._append(f"không lưu được cấu hình: {e}")
+
+    def _save_settings(self):
+        if self._collect() is None:
+            return
+        self._save_cfg()
+        new_raw = self.cfg.raw_dir()
+        if os.path.normcase(new_raw) != os.path.normcase(self.table.folder):
+            os.makedirs(new_raw, exist_ok=True)
+            self.table.set_folder(new_raw)
+        self._append("đã lưu cài đặt")
+
+    def _choose_dir(self):
+        d = filedialog.askdirectory(initialdir=self.var_out.get() or os.getcwd(), title="Chọn thư mục lưu dữ liệu")
+        if d:
+            self.var_out.set(os.path.normpath(d))
+
+    # ---- ghi trận ------------------------------------------------------------------
     def _start(self):
         cfg = self._collect()
         if cfg is None:
             return
-        try:
-            save_config(cfg)
-        except Exception as e:  # noqa: BLE001
-            self._append(f"không lưu được cấu hình: {e}")
+        self._save_cfg()
         self.stop_event = threading.Event()
         logger = Logger(cfg.log_path(), callback=self.q.put)
-        self.engine = Engine(cfg, logger, self.stop_event, status=lambda s: self.q.put(("__status__", s)))
+        self.engine = Engine(cfg, logger, self.stop_event, status=lambda s: self.q.put(("__status__", s)),
+                             progress=lambda label, text: self.q.put(("__progress__", label, text)))
         self.thread = threading.Thread(target=self._run_engine, daemon=True)
         self.thread.start()
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")
-        self._append(f"=== bắt đầu: FPS video {int(cfg.fps)}, nhịp đọc {int(cfg.capture_fps)}/s, rộng {cfg.video_width}px, "
-                     f"tua x{cfg.speed:g}, lưu tại {cfg.resolved_out_dir()}")
+        self._append(f"=== bắt đầu ghi: nhịp đọc {int(cfg.capture_fps)}/s, lưu tại {cfg.raw_dir()}"
+                     + ("; tự xuất video sau trận" if cfg.render_after else ""))
 
     def _run_engine(self):
         try:
@@ -179,29 +300,45 @@ class App:
     def _stop(self):
         if self.stop_event:
             self.stop_event.set()
-            self._append("đang dừng, chờ chốt video...")
+            self._append("=== yêu cầu dừng ghi: đang chốt dữ liệu trận (nếu có)...")
             self.btn_stop.configure(state="disabled")
 
-    def _choose_dir(self):
-        d = filedialog.askdirectory(initialdir=self.var_out.get() or os.getcwd(), title="Chọn thư mục lưu video")
-        if d:
-            self.var_out.set(os.path.normpath(d))
+    # ---- trận đã ghi -----------------------------------------------------------------
+    def _launch_replay(self, path):
+        args = ["--replay", os.path.abspath(path), f"--game-dir={self.cfg.game_dir}"]
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable] + args
+        else:
+            cmd = [sys.executable, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "run_app.py")] + args
+        try:
+            subprocess.Popen(cmd, close_fds=True)
+            self._append(f"=== mở replay {os.path.basename(path)}")
+        except OSError as e:
+            messagebox.showerror(APP_TITLE, f"Không mở được trình xem replay: {e}")
 
-    def _rerender(self):
-        """Chọn file .aoerec và dựng lại video với độ rộng/FPS/tốc độ hiện chọn trên giao diện."""
-        cfg = self._collect()
-        if cfg is None:
+    def _open_other(self):
+        p = filedialog.askopenfilename(initialdir=self.table.folder, title="Chọn dữ liệu trận",
+                                       filetypes=[("Dữ liệu thô AoE-MapCap", "*.aoerec"), ("Tất cả", "*.*")])
+        if p:
+            self._launch_replay(p)
+
+    def _export_selected(self):
+        p = self.table.selected_path()
+        if not p:
+            messagebox.showinfo(APP_TITLE, "Chọn một trận trong bảng trước.")
             return
-        raw_dir = cfg.raw_dir()
-        os.makedirs(raw_dir, exist_ok=True)
-        path = filedialog.askopenfilename(initialdir=raw_dir, title="Chọn dữ liệu thô của trận",
-                                          filetypes=[("Dữ liệu thô AoE-MapCap", "*.aoerec"), ("Tất cả", "*.*")])
-        if not path:
-            return
+        ExportDialog(self, p)
+
+    def export_video(self, path):
+        """Dựng video từ file .aoerec với cài đặt xuất video hiện tại (chạy nền, tiến độ ở thanh trạng thái)."""
+        cfg = self.cfg
         out = os.path.join(cfg.resolved_out_dir(),
                            f"{os.path.splitext(os.path.basename(path))[0]}_{cfg.render_width}px_{int(cfg.fps)}fps"
                            f"{'' if cfg.speed == 1 else f'_x{cfg.speed:g}'}.mp4")
-        self._append(f"=== dựng lại {os.path.basename(path)} -> {os.path.basename(out)}")
+        self._append(f"=== xuất video {os.path.basename(path)} -> {os.path.basename(out)}")
+        label = os.path.splitext(os.path.basename(path))[0]
+        self.renders[label] = "chuẩn bị..."
+        self._refresh_status()
 
         def job():
             from .offline import render_raw, cleanup_stale
@@ -209,14 +346,16 @@ class App:
                 cleanup_stale(cfg.resolved_out_dir(), log=self.q.put)
                 render_raw(path, out, width=cfg.render_width, fps=cfg.fps, speed=cfg.speed, fog_dim=cfg.fog_param(),
                            outline=cfg.map_outline, game_dir=cfg.game_dir, workers=cfg.render_workers or None,
-                           log=self.q.put, progress=lambda f: self.q.put(("__status__", f"đang dựng {int(f*100)}%")))
-                self.q.put(("__status__", "dựng xong"))
+                           log=self.q.put, progress=lambda f, s: self.q.put(("__progress__", label, s)))
+                self.q.put(f"xuất video xong: {out}")
             except Exception as e:  # noqa: BLE001
                 self.q.put(f"lỗi dựng lại: {e}")
+            finally:
+                self.q.put(("__progress__", label, None))
         threading.Thread(target=job, daemon=True).start()
 
     def _open_dir(self):
-        d = self.var_out.get() or Config().resolved_out_dir()
+        d = self.cfg.resolved_out_dir()
         os.makedirs(d, exist_ok=True)
         try:
             os.startfile(d)  # noqa: S606
@@ -238,22 +377,41 @@ class App:
             while True:
                 item = self.q.get_nowait()
                 if isinstance(item, tuple):
-                    kind, val = item
+                    kind = item[0]
                     if kind == "__status__":
-                        self.lbl_status.configure(text=f"Trạng thái: {val}")
+                        self.state_text = item[1]
+                        self._refresh_status()
+                    elif kind == "__progress__":      # (label, text); text None = lượt dựng đó kết thúc
+                        label, text = item[1], item[2]
+                        if text is None:
+                            self.renders.pop(label, None)
+                        else:
+                            self.renders[label] = text
+                        self._refresh_status()
                     elif kind == "__done__":
+                        self._append("=== đã dừng ghi")
                         self.btn_start.configure(state="normal")
                         self.btn_stop.configure(state="disabled")
-                        self.lbl_status.configure(text="Trạng thái: đã dừng")
+                        self.state_text = "đã dừng"
+                        self._refresh_status()
                         self.engine = None
+                        self.table.reload()
                 else:
                     self._append(item)
-                    if "lỗi dựng" in item:        # dựng video thất bại: báo rõ, không để người dùng chờ
-                        self.lbl_status.configure(text="Trạng thái: dựng video LỖI")
+                    if "đã chốt dữ liệu thô" in item or "ghi dữ liệu thô" in item:
+                        self.table.reload()            # trận mới bắt đầu / vừa chốt: cập nhật bảng
+                    if "lỗi dựng" in item:            # xuất video thất bại: báo rõ, không để người dùng chờ
+                        self.state_text = "xuất video LỖI"
+                        self._refresh_status()
                         messagebox.showerror(APP_TITLE, item)
         except queue.Empty:
             pass
         self.root.after(200, self._poll)
+
+    def _refresh_status(self):
+        """Nhãn trạng thái = trạng thái ghi + tiến độ từng lượt xuất video đang chạy."""
+        parts = [self.state_text] + [f"xuất video {k}: {v}" for k, v in self.renders.items()]
+        self.lbl_status.configure(text="Trạng thái: " + " | ".join(p for p in parts if p))
 
     def _on_close(self):
         from .offline import active_renders
@@ -261,11 +419,11 @@ class App:
         recording = running and getattr(self.engine, "state", "") == "đang ghi"
         rendering = active_renders() > 0
         if recording and rendering:
-            msg = "Đang ghi trận và đang dựng video. Thoát sẽ chốt dữ liệu thô nhưng video đang dựng sẽ dở dang. Thoát?"
+            msg = "Đang ghi trận và đang xuất video. Thoát sẽ chốt dữ liệu trận nhưng video đang xuất sẽ dở dang. Thoát?"
         elif recording:
             msg = "Đang ghi trận. Dừng, chốt dữ liệu rồi thoát?"
         elif rendering:
-            msg = "Đang dựng video. Thoát bây giờ sẽ mất video đang dựng (có thể dựng lại từ file thô). Thoát?"
+            msg = "Đang xuất video. Thoát bây giờ sẽ mất video đang xuất (xuất lại được từ trận đã ghi). Thoát?"
         else:
             msg = None
         if msg and not messagebox.askyesno(APP_TITLE, msg):

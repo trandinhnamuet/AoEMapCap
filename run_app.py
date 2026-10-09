@@ -2,6 +2,7 @@
 
     run_app.py            -> giao diện
     run_app.py --nogui    -> chạy dòng lệnh với cấu hình đã lưu (Video\\_settings.ini)
+    run_app.py --replay [file.aoerec] [--game-dir=...]  -> trình xem replay (gói replay/, cũng chạy riêng bằng run_replay.py)
 """
 import os
 import sys
@@ -24,6 +25,10 @@ def _log_child_error(kind, exc, out_path):
 def main():
     import multiprocessing
     multiprocessing.freeze_support()          # tiến trình ghi (recproc) khi đóng gói PyInstaller
+    if "--replay" in sys.argv:
+        i = sys.argv.index("--replay")
+        from replay.cli import main as replay_main
+        sys.exit(replay_main(sys.argv[i + 1:]))
     if "--render-chunk" in sys.argv:
         i = sys.argv.index("--render-chunk")
         a = sys.argv[i + 1:i + 14]

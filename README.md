@@ -1,20 +1,38 @@
 # AoE-MapCap
 
-Tài liệu kỹ thuật đầy đủ (kiến trúc, bộ nhớ game, đồ hoạ, vận hành, lịch sử) ở thư mục [docs/](docs/README.md);
-bối cảnh cho phiên làm việc mới ở [CLAUDE.md](CLAUDE.md).
+**[⬇ Tải bản Windows mới nhất (AoE-MapCap-win64.zip)](https://github.com/trandinhnamuet/AoEMapCap/releases/latest/download/AoE-MapCap-win64.zip)**
+· [Các phiên bản trước](https://github.com/trandinhnamuet/AoEMapCap/releases)
+· [Kiểm tra file tải về](#kiểm-tra-file-tải-về)
 
-Tự động lưu ảnh toàn bản đồ tại các mốc phút game 5, 10, 15, ... cho **AoE-HD**
-(Age of Empires: Rise of Rome 1.0), đúng góc nhìn của người chơi hiện tại.
+Ghi lại trận **AoE-HD** (Age of Empires: Rise of Rome 1.0) và **xem lại như replay Liên Minh Huyền Thoại**: tua tới/lui,
+đổi tầm nhìn từng đội (F1/F2/F3), bảng tỉ số, công nghệ, bấm vào unit xem máu/công/giáp, zoom nét tới từng pixel game,
+toàn màn hình, đưa chuột ra mép để cuộn. Video mp4 toàn bản đồ chỉ xuất khi bạn cần.
 
-Hai chế độ vẽ:
+Giải nén zip là chạy, không cần cài đặt:
 
-- `full` (mặc định): dựng lại bản đồ bằng sprite thật của game (địa hình, viền địa hình,
-  công trình, unit đúng hướng đứng, cây, mỏ...), ô 64x32 px, sương mù giống game.
-  Bản đồ 144x144 ra ảnh 9216x4978 px; mặc định thu 50% (`--scale 0.5`).
-- `mini`: kiểu minimap phóng to, nhẹ và nhanh.
+- `AoE-MapCap.exe`: bấm **● Bắt đầu ghi** rồi vào game; mỗi trận lưu vào `Video\Raw\*.aoerec`. Thẻ **Trận đã ghi**
+  liệt kê các trận (người chơi, quân, kết quả, 4v4/1v1, thể thức, bản đồ), bấm đúp để xem replay, **Xuất video...**
+  khi cần file mp4.
+- `AoE-Replay.exe`: chỉ xem replay (không cần quyền admin), mở bảng các trận trong `Video\Raw` cạnh exe.
 
-Tool chạy **song song, bên ngoài game**, chỉ **đọc** bộ nhớ tiến trình game
-(ReadProcessMemory). Không ghi bộ nhớ, không nạp DLL vào game.
+Tool chạy **song song, bên ngoài game**, chỉ **đọc** bộ nhớ tiến trình game (ReadProcessMemory). Không ghi bộ nhớ,
+không nạp DLL vào game. Cần thư mục game AoE-HD trên máy để lấy đồ hoạ.
+
+## Kiểm tra file tải về
+
+Bản Windows được build hoàn toàn trên GitHub Actions ([.github/workflows/release.yml](.github/workflows/release.yml))
+từ mã nguồn công khai của repo này bằng chính `build.py` / `build_replay.py`, không build trên máy cá nhân nào. Mỗi
+Release có chứng nhận nguồn gốc (build provenance) do GitHub ký:
+
+```
+gh attestation verify AoE-MapCap-win64.zip -R trandinhnamuet/AoEMapCap
+gh attestation verify AoE-MapCap.exe -R trandinhnamuet/AoEMapCap
+```
+
+Mã băm SHA-256 nằm trong `SHA256SUMS.txt` (trong zip) và `AoE-MapCap-win64.zip.sha256` (trên trang Release);
+`VERSION.txt` ghi commit nguồn. Exe chưa ký số nên Windows SmartScreen có thể cảnh báo lần đầu.
+
+Đăng phiên bản mới (người duy trì): `git tag v2 && git push origin v2`.
 
 ## Yêu cầu
 
@@ -34,23 +52,17 @@ Tool chạy **song song, bên ngoài game**, chỉ **đọc** bộ nhớ tiến 
 
 ## Cách dùng nhanh: AoE-MapCap.exe (một file, có giao diện)
 
-`dist\AoE-MapCap.exe` là bản đóng gói một file, đã gói sẵn ffmpeg, không cần cài gì thêm.
+`dist\AoE-MapCap.exe` là bản đóng gói một file, không cần cài gì thêm.
 
-- Mở exe (hộp UAC hiện một lần vì game chạy từ XArena có quyền Administrator).
-- Chọn tuỳ chọn trên giao diện rồi bấm **Bắt đầu ghi**. Tool chờ game, khi vào trận sẽ ghi video diễn biến
-  toàn bản đồ và chụp ảnh tĩnh chi tiết theo mốc phút. Hết trận (rời ra menu, thoát game, đồng hồ game đứng
-  3 phút) tự chốt file mp4. Bấm **Dừng** để dừng và chốt video ngay.
-- Video `.mp4` nằm trong thư mục **`Video\`** cạnh exe (đổi được trong giao diện), ảnh tĩnh trong `Video\Anh\`.
-  Cấu hình đã chọn lưu ở `Video\_settings.ini`, nhật ký ở `Video\_mapcap.log`.
-
-Hai chế độ ghi (chọn trên giao diện):
-
-- **Ghi dữ liệu thô, dựng video sau trận** (mặc định): trong trận chỉ đọc game 25 mẫu/giây và ghi
-  trạng thái vào `Video\Raw\*.aoerec` (vài KB mỗi mẫu, ~200-400 MB một trận 30 phút). Hết trận tự dựng
-  video ở độ rộng đã chọn bằng nhiều tiến trình song song (1080p trận 30 phút khoảng 3-5 phút). Nút
-  **Dựng lại video...** dựng lại bất kỳ file .aoerec nào với độ rộng (1920/2560/3840/9216 = kích cỡ gốc),
-  FPS và tốc độ phát đang chọn. Dòng lệnh: `AoE-MapCap.exe --render-raw file.aoerec [out.mp4] --width=3840 --fps=25`.
-- **Vẽ video ngay trong trận**: như bản cũ, xem được ngay khi hết trận nhưng tốn CPU hơn trong lúc chơi.
+- Mở exe (hộp UAC hiện một lần vì game chạy từ XArena có quyền Administrator), bấm **● Bắt đầu ghi**. Tool chờ
+  game; mỗi trận được ghi thành dữ liệu `Video\Raw\*.aoerec` (25 lần đọc/giây, ~100-400 MB một trận). Hết trận (rời
+  ra menu, thoát game, đồng hồ game đứng 3 phút) tự chốt file. **Không tự dựng video** (từ 09/10/2026).
+- Thẻ **Trận đã ghi** (mặc định) là bảng các trận: bấm đúp một trận hoặc **▶ Xem replay** để xem lại như replay LMHT
+  (mục bên dưới). **Xuất video...** dựng file mp4 cho trận đang chọn khi bạn cần chia sẻ (chọn độ rộng 1920/2560/3840/9216,
+  FPS, tua nhanh, sương mù...).
+- Thẻ **Cài đặt**: nhịp đọc game, thư mục lưu, ảnh tĩnh theo mốc phút (mặc định tắt), và tuỳ chọn "Tự xuất video sau
+  mỗi trận" (mặc định tắt). Thẻ **Nhật ký**: log. Cấu hình lưu ở `Video\_settings.ini`, nhật ký ở `Video\_mapcap.log`.
+- Dòng lệnh dựng video: `AoE-MapCap.exe --render-raw file.aoerec [out.mp4] --width=3840 --fps=25`.
 
 Tuỳ chọn trên giao diện:
 
@@ -65,9 +77,40 @@ Tuỳ chọn trên giao diện:
 | Viền trắng mờ | đường viền ranh giới bản đồ, nằm ngoài mép 2 px nên không đè lên địa hình |
 | Sương mù | Làm tối đều (mặc định) hoặc Lưới chấm như game (hợp khi dựng ở độ rộng gốc 9216) |
 
-Xem video có phóng to: VLC bấm `Z` để đổi tỉ lệ hoặc Tools > Effects and Filters > Video Effects > Geometry >
-Interactive Zoom; tiện hơn là PotPlayer (Ctrl + lăn chuột để phóng, kéo chuột để di chuyển) hoặc mpv
-(`Alt + +`/`Alt + -` phóng, `Alt + mũi tên` di chuyển). Muốn chi tiết hơn khi phóng, tăng độ rộng video lên 2560.
+Xem video có phóng to: dùng **[mpv-for-aoe](https://github.com/trandinhnamuet/mpv-for-aoe)**
+([tải bản Windows](https://github.com/trandinhnamuet/mpv-for-aoe/releases/latest/download/mpv-for-aoe-win64.zip)),
+bản mpv mã nguồn mở chỉnh sẵn cho video này: lăn chuột zoom quanh con trỏ, kéo chuột trái để di chuyển, bấm chuột
+giữa để về toàn bản đồ, zoom quá 1:1 vẫn giữ nét pixel; phát mượt cả video 9216 px. Trình phát khác: PotPlayer
+(Ctrl + lăn chuột), VLC (Tools > Effects and Filters > Video Effects > Geometry > Interactive Zoom). Muốn chi tiết
+hơn khi phóng, tăng độ rộng video lên 3840 hoặc 9216 (kích cỡ gốc).
+
+### Xem replay (như replay Liên Minh Huyền Thoại)
+
+Nút **Xem replay...** hiện bảng các trận đã ghi (ngày đánh, người chơi, quân, kết quả, 4v4/1v1, thể thức Random hoặc
+cùng quân, bản đồ, thời lượng); bấm đúp một trận để mở trong cửa sổ riêng, vẽ trực tiếp từ dữ liệu trận bằng OpenGL
+(không cần dựng video): tua tới/lui bất kì lúc nào, đổi tầm nhìn từng đội, bảng tỉ số, zoom nét tới từng pixel game.
+Từ 09/10/2026 file ghi thêm thiết lập ván (kiểu/cỡ bản đồ, đội, tài nguyên...) và kết quả thắng/thua; file cũ hiện
+kết quả "Không rõ".
+Chạy riêng được bằng `dist\AoE-Replay.exe [file.aoerec]` (không cần quyền admin) hoặc
+`AoE-MapCap.exe --replay file.aoerec`. Cần thư mục game AoE-HD trên máy để lấy đồ hoạ.
+
+| Phím | Việc |
+|---|---|
+| P | phát / tạm dừng |
+| `-` / `=` / `0` | chậm / nhanh (0,25x … 16x) / về 1x |
+| Backspace / J | lùi / tiến 15 giây |
+| F1 / F2 / F3 | tầm nhìn đội 1 / đội 2 / toàn bản đồ; V xoay vòng, F bật-tắt sương mù |
+| 1–5 / Q–T | chọn người chơi đội 1 / đội 2 (máy quay bay tới nhà chính); Space quay lại người đang chọn |
+| O / X | bảng tỉ số / đổi cột kinh tế ↔ quân sự |
+| C / U / H / M | bảng công nghệ / thanh thời gian / ẩn HUD / minimap |
+| Lăn chuột | zoom quanh con trỏ; Home hoặc chuột giữa: cả bản đồ |
+| Chuột ra mép, mũi tên, kéo chuột | di chuyển máy quay |
+| F11 hoặc Alt+Enter | bật/tắt toàn màn hình |
+| Esc hoặc ? | bảng phím tắt (hoặc bấm nút "Phím tắt (Esc)" trên thanh thời gian) |
+
+Replay mở theo góc nhìn đội của người ghi (F3 để xem toàn bản đồ). Bấm vào unit (cả cây, mỏ) để xem bảng thông tin
+như trong game: chân dung, tên, chủ, thanh máu còn/mất, công, giáp, giáp xuyên, tầm, tốc đánh, tốc chạy, tầm nhìn
+(dạng "3+2" = gốc + nâng cấp; công/giáp chỉ có ở trận ghi từ 09/10/2026). Bấm thanh thời gian hoặc minimap để nhảy tới. Chi tiết: `docs/10-trinh-xem-replay.md`.
 
 Dòng lệnh: `AoE-MapCap.exe --nogui [--fps=25 --capture=25 --width=1920]` chạy với cấu hình đã lưu.
 Mã nguồn quản lý bằng git ngay trong thư mục này (`git log`).
@@ -151,6 +194,7 @@ Chế độ mini:
 - `mapcap/video_render.py`: bộ vẽ tăng dần cho video; `mapcap/recorder.py`: ghi qua ffmpeg;
   `mapcap/engine.py`: vòng lặp ghi dùng chung; `mapcap/gui.py`: giao diện tkinter; `mapcap/app.py`: bản dòng lệnh cũ.
 - `mapcap/main.py`: vòng lặp theo mốc phút.
+- `replay/`: trình xem replay (pygame + moderngl), điểm vào riêng `run_replay.py`, build riêng `build_replay.py`.
 - `probe.py`: kiểm chứng offset khi đang trong game.
 - `re/`: script dịch ngược tĩnh đã dùng để tìm offset (capstone).
 

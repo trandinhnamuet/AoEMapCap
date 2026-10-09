@@ -21,6 +21,11 @@ _ACTIVE = 0
 _ACTIVE_LOCK = threading.Lock()
 _JOBS = []          # các lượt dựng đang chạy: {"procs": [...], "tmp_dir": ...}
 TMP_PREFIX = "aoerender_"
+_QUEUE = threading.Lock()       # các lượt dựng chạy tuần tự (hai lượt chồng nhau = 16 tiến trình con)
+_ABORT_GEN = 0                  # tăng mỗi lần abort_all: lượt đang xếp hàng thấy đổi thì huỷ
+_IN_GAME = False                # đang có trận: tiến trình dựng ghim vào E-core, nhường P-core cho game + bộ đọc
+RENDER_CPUS_IN_GAME = "auto"    # "auto" = CPU logic 8.. (sau 8 luồng P-core) khi máy >= 12 luồng; "8-15"; "" = không ghim
+PROGRESS_EXT = ".progress"
 OWNER_FILE = "owner.pid"
 CHILD_LOG = "_mapcap_child.log"
 
@@ -30,8 +35,66 @@ def active_renders():
     return _ACTIVE
 
 
+def set_in_game(flag):
+    """Engine báo đang có trận hay không; lượt dựng đang chạy đổi affinity ngay ở vòng lặp kế."""
+    global _IN_GAME
+    _IN_GAME = bool(flag)
+
+
+def configure_affinity(spec):
+    global RENDER_CPUS_IN_GAME
+    RENDER_CPUS_IN_GAME = spec if spec is not None else "auto"
+
+
+def _in_game_cpus():
+    """Danh sách CPU logic cho tiến trình dựng khi đang có trận; [] = không ghim."""
+    n = os.cpu_count() or 0
+    spec = (RENDER_CPUS_IN_GAME or "").strip().lower()
+    if spec == "auto":
+        return list(range(8, n)) if n >= 12 else []
+    cpus = set()
+    for part in spec.replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            if "-" in part:
+                a, b = part.split("-", 1)
+                cpus.update(range(int(a), int(b) + 1))
+            else:
+                cpus.add(int(part))
+        except ValueError:
+            pass
+    return sorted(c for c in cpus if 0 <= c < n)
+
+
+def _apply_affinity(job):
+    """Ghim tiến trình đoạn (và ffmpeg con) vào E-core khi đang có trận, trả lại mọi lõi khi không."""
+    want = tuple(_in_game_cpus()) if _IN_GAME else ()
+    if job.get("affinity") == want:
+        return
+    try:
+        import psutil
+    except ImportError:
+        return
+    cpus = list(want) or list(range(os.cpu_count() or 1))
+    for p in job["procs"]:
+        if p.poll() is not None:
+            continue
+        try:
+            pr = psutil.Process(p.pid)
+            for q in [pr] + pr.children(recursive=True):
+                q.cpu_affinity(cpus)
+        except Exception:  # noqa: BLE001
+            pass
+    job["affinity"] = want
+
+
 def abort_all(log=None):
-    """Tắt mọi tiến trình dựng đoạn đang chạy và xoá thư mục tạm của chúng (gọi khi thoát chương trình)."""
+    """Tắt mọi tiến trình dựng đoạn đang chạy và xoá thư mục tạm của chúng (gọi khi thoát chương trình).
+    Lượt đang xếp hàng chờ cũng bị huỷ."""
+    global _ABORT_GEN
+    _ABORT_GEN += 1
     with _ACTIVE_LOCK:
         jobs = list(_JOBS)
     for job in jobs:
@@ -127,6 +190,52 @@ def cleanup_stale(video_dir, log=None, max_age_hours=1.0):
     return n
 
 
+class _Progress:
+    """Gộp file tiến độ của các tiến trình đoạn -> (phần trăm, dòng chữ có ước lượng thời gian còn lại).
+    Tốc độ lấy theo cửa sổ 90 s gần nhất; khi các đoạn còn đang phát lại dữ liệu (chưa ghi khung) thì báo riêng."""
+
+    def __init__(self, n_out, n_parts, t_start):
+        self.n_out = max(1, n_out)
+        self.n_parts = max(1, n_parts)
+        self.t_start = t_start
+        self.hist = []          # (t, tổng khung đã ghi)
+
+    @staticmethod
+    def _fmt(sec):
+        sec = int(max(0, sec))
+        return f"{sec // 60} phút {sec % 60:02d} giây" if sec >= 60 else f"{sec} giây"
+
+    def update(self, prog_files):
+        written = 0
+        replay = 0.0
+        for pf in prog_files:
+            try:
+                a, b = open(pf, encoding="utf-8").read().split()
+                replay += float(a)
+                written += int(b)
+            except (OSError, ValueError):
+                pass
+        now = time.time()
+        self.hist.append((now, written))
+        self.hist = [h for h in self.hist if now - h[0] <= 90] or self.hist[-1:]
+        frac = min(1.0, written / self.n_out)
+        pct = f"{frac * 100:.0f}%"
+        elapsed = now - self.t_start
+        (t0, w0) = self.hist[0]
+        rate = (written - w0) / (now - t0) if now - t0 >= 5 and written > w0 else 0.0
+        if written == 0:
+            text = (f"đang dựng 0% - chuẩn bị dữ liệu {replay / self.n_parts * 100:.0f}% "
+                    f"({self._fmt(elapsed)} đã qua)")
+        elif rate > 0:
+            # các đoạn còn phát lại sẽ góp tốc độ sau; ước lượng này hơi bi quan lúc đầu và tự chỉnh dần
+            eta = (self.n_out - written) / rate
+            text = (f"đang dựng {pct} ({written}/{self.n_out} khung, {rate:.1f} khung/giây) - "
+                    f"còn khoảng {self._fmt(eta)}, đã qua {self._fmt(elapsed)}")
+        else:
+            text = f"đang dựng {pct} ({written}/{self.n_out} khung), đã qua {self._fmt(elapsed)}"
+        return frac, text
+
+
 def _child_error(tmp_dir):
     """Dòng lỗi cuối tiến trình con ghi vào _mapcap_child.log trong thư mục tạm (nếu có)."""
     p = os.path.join(tmp_dir, CHILD_LOG)
@@ -206,8 +315,24 @@ def render_chunk(rec_path, out_mp4, k0, k1, width, fps, speed, fog_dim, outline,
     k = k0
     frame_bytes = None
     rd = RawReader(rec_path)
+    prog_path = out_mp4 + PROGRESS_EXT
+    t_prog = 0.0
+
+    def report(replay_frac, force=False):
+        nonlocal t_prog
+        now = time.time()
+        if force or now - t_prog >= 1.0:
+            t_prog = now
+            try:
+                with open(prog_path, "w", encoding="utf-8") as f:
+                    f.write(f"{replay_frac:.4f} {written}")
+            except OSError:
+                pass
+
     for si, snap in enumerate(rd.frames()):
         if si < need_first:
+            if need_first and (si & 31) == 0:
+                report(si / need_first)
             continue
         if si > need_last:
             break
@@ -221,11 +346,13 @@ def render_chunk(rec_path, out_mp4, k0, k1, width, fps, speed, fog_dim, outline,
                 writer.write(frame_bytes)
                 written += 1
                 k += 1
+            report(1.0)
         elif k < k1 and idx_map[k] < si:
             # mẫu cần đã qua (không xảy ra vì idx tăng dần), bỏ qua an toàn
             k += 1
     if writer is not None:
         writer.close()
+    report(1.0, force=True)
     return written
 
 
@@ -237,7 +364,23 @@ def render_raw(rec_path, out_mp4, width=1920, fps=25.0, speed=1.0, fog_dim=0.43,
     with _ACTIVE_LOCK:
         _ACTIVE += 1
     try:
-        return _render_raw_impl(rec_path, out_mp4, width, fps, speed, fog_dim, outline, game_dir, workers, log, progress)
+        waited = False
+        gen0 = _ABORT_GEN
+        while not _QUEUE.acquire(timeout=1.0):
+            if _ABORT_GEN != gen0:
+                raise RuntimeError("lượt dựng bị huỷ (chương trình thoát)")
+            if not waited:
+                waited = True
+                (log or (lambda m: None))(f"chờ lượt dựng trước xong rồi mới dựng {os.path.basename(out_mp4)}")
+                if progress:
+                    progress(0.0, "chờ lượt dựng trước xong...")
+        if _ABORT_GEN != gen0:          # lượt trước bị huỷ và nhả khoá đúng lúc ta lấy được
+            _QUEUE.release()
+            raise RuntimeError("lượt dựng bị huỷ (chương trình thoát)")
+        try:
+            return _render_raw_impl(rec_path, out_mp4, width, fps, speed, fog_dim, outline, game_dir, workers, log, progress)
+        finally:
+            _QUEUE.release()
     finally:
         with _ACTIVE_LOCK:
             _ACTIVE -= 1
@@ -266,6 +409,8 @@ def _render_raw_impl(rec_path, out_mp4, width=1920, fps=25.0, speed=1.0, fog_dim
         raise RuntimeError("file thô không có mẫu nào")
     size = output_size(hdr, width)
     encoder = pick_encoder(ffmpeg, log=log, size=size)   # thử ở đúng kích thước: Quick Sync/NVENC từ chối > 4096 px
+    if encoder == "libx264" and size[0] > 4096:
+        encoder = "libx264_big"
     emulate = n_dop == 0
     log(f"bản ghi nhớ sương mù: {n_dop} doppelganger đọc từ game" if n_dop else
         "dữ liệu không có doppelganger của game: dùng mô phỏng công trình đã thấy")
@@ -273,8 +418,21 @@ def _render_raw_impl(rec_path, out_mp4, width=1920, fps=25.0, speed=1.0, fog_dim
     if workers is None:
         workers = max(1, min(8, (os.cpu_count() or 4) - 1))
     workers = max(1, min(workers, max(1, n_out // 200)))
+    # mỗi tiến trình đoạn giữ nhiều lớp ảnh cỡ khung + libx264; 8 tiến trình ở 9216 px trên máy 16 GB làm libx264
+    # không cấp phát được ("Could not open encoder") -> giới hạn số tiến trình theo RAM trống
+    try:
+        import psutil
+        per_worker = size[0] * size[1] * 3 * 27     # đo 9216x4690: vẽ ~2 GB + libx264_big ~1,3 GB = 3,3 GB ~ 26 lần khung RGB
+        fit = max(1, int(psutil.virtual_memory().available * 0.8 // per_worker))
+        if fit < workers:
+            log(f"RAM trống {psutil.virtual_memory().available / 2**30:.1f} GB chỉ đủ {fit} tiến trình ở {size[0]}x{size[1]} "
+                f"(~{per_worker / 2**30:.1f} GB mỗi tiến trình), giảm từ {workers}")
+            workers = fit
+    except ImportError:
+        pass
     chunk = math.ceil(n_out / workers)
-    log(f"dựng video: {n_out} khung {size[0]}x{size[1]} từ {len(times)} mẫu, {fps:g} fps, {workers} tiến trình, mã hoá {encoder}")
+    log(f"dựng video: {n_out} khung {size[0]}x{size[1]} từ {len(times)} mẫu, {fps:g} fps, {workers} tiến trình, mã hoá {encoder}"
+        + (f", ghim CPU {_in_game_cpus()} vì đang có trận" if _IN_GAME and _in_game_cpus() else ""))
     tmp_dir = tempfile.mkdtemp(prefix=TMP_PREFIX, dir=os.path.dirname(out_mp4) or None)
     with open(os.path.join(tmp_dir, OWNER_FILE), "w", encoding="utf-8") as f:
         f.write(str(os.getpid()))
@@ -315,7 +473,9 @@ def _run_chunks(job, rec_path, out_mp4, width, fps, speed, fog_dim, outline, gam
         cmd += ["--render-chunk", rec_path, part, str(k0), str(k1), str(width), str(fps), str(speed), str(fog_dim),
                 str(outline), game_dir or "", ffmpeg, encoder, "1" if emulate else "0"]
         procs.append(subprocess.Popen(cmd, creationflags=flags | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)))
-    done = 0
+    tracker = _Progress(n_out, len(parts), t_start)
+    t_ui = 0.0
+    t_log = time.time()
     while True:
         alive = [p for p in procs if p.poll() is None]
         failed = [p for p in procs if p.poll() not in (None, 0)]
@@ -333,14 +493,21 @@ def _run_chunks(job, rec_path, out_mp4, width, fps, speed, fog_dim, outline, gam
                 pass
             raise RuntimeError(f"tiến trình dựng đoạn lỗi (mã {failed[0].returncode})"
                                + (f": {detail}" if detail else "; xem _mapcap_child.log"))
-        d = len(procs) - len(alive)
-        if d != done:
-            done = d
+        now = time.time()
+        if now - t_ui >= 1.0:
+            t_ui = now
+            _apply_affinity(job)
+            frac, text = tracker.update([p + PROGRESS_EXT for p in parts])
             if progress:
-                progress(done / len(procs))
+                progress(frac, text)
+            if now - t_log >= 60:
+                t_log = now
+                log(text)
         if not alive:
             break
         time.sleep(0.5)
+    if progress:
+        progress(1.0, "đang nối các đoạn video...")
     parts = [p for p in parts if os.path.isfile(p) and os.path.getsize(p) > 0]
     if not parts:
         raise RuntimeError("không có đoạn video nào được tạo")

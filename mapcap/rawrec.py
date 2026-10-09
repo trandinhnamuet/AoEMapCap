@@ -5,7 +5,15 @@ File = chuỗi bản ghi [type u8][len u32][zlib(pickle(payload))]. Có thể đ
   'D' defs   : bảng định nghĩa unit mới xuất hiện (addr -> trường)
   'S' statics: danh sách vật thể tĩnh (thay thế toàn bộ) khi thay đổi
   'F' frame  : time_ms, taken_at, vis_raw (XOR với mẫu trước, nén), unit thay đổi/xoá
+             (từ 2026-10-09 thêm 'pstat' {index: (trạng thái thắng/thua, đã đầu hàng)} khi đổi, 'go' = cờ hết ván,
+              'prs' {index: {id công nghệ: giây đã nghiên cứu}} khi đổi; unit có thêm rtype/ramount)
+  'U' stats  : {index def: chỉ số} khi chỉ số đổi (công, giáp, tầm, tốc độ... đã nâng cấp), từ 2026-10-09
+  'E' end    : tổng kết khi đóng file (giờ cuối, số mẫu, trạng thái cuối từng người chơi, lý do dừng)
+Sau 'E' là đuôi 16 byte: END_MAGIC + offset u64 của bản ghi 'E' -> đọc tổng kết không phải quét cả file.
+Header từ 2026-10-09 có thêm 'match' (thiết lập ván), 'diplomacy' và 'resigned' theo người chơi.
+Bộ đọc cũ gặp đuôi coi như bản ghi cụt và dừng đúng chỗ; gặp 'E' thì bỏ qua (không phải 'F').
 """
+import os
 import pickle
 import struct
 import time
@@ -16,9 +24,12 @@ import numpy as np
 from .game import PlayerInfo, Snapshot, UnitDefInfo, UnitInfo
 
 MAGIC = b"AOEREC01"
+END_MAGIC = b"AOEEND01"
+FORMAT_VERSION = 2               # 1: bản đầu; 2: thêm match/pstat/E (2026-10-09)
 UNIT_DT = np.dtype([("uid", "<i4"), ("def", "<i4"), ("owner", "<i2"), ("angle", "u1"), ("status", "u1"),
                     ("flags", "u1"), ("kind", "u1"), ("x", "<f4"), ("y", "<f4"), ("z", "<f4"), ("hp", "<f4"),
-                    ("gid", "<i2"), ("frame", "<i2"), ("gid2", "<i2"), ("frame2", "<i2")])
+                    ("gid", "<i2"), ("frame", "<i2"), ("gid2", "<i2"), ("frame2", "<i2"),
+                    ("rtype", "<i2"), ("ramount", "<f4")])     # rtype/ramount từ 2026-10-09 (file cũ: -1 / 0)
 
 
 def _pack(tag, payload):
@@ -38,6 +49,13 @@ class RawWriter:
         self.frames = 0
         self.static_version = None
         self.bytes = len(MAGIC)
+        self.prev_pstat = {}         # index -> (trạng thái, đã đầu hàng)
+        self.prev_prs = {}           # index -> {id công nghệ đang nghiên cứu: giây}
+        self.prev_go = 0
+        self.def_stats = {}          # địa chỉ def -> chỉ số mới nhất đọc được
+        self.written_stats = {}      # index def -> chỉ số đã ghi
+        self.last_t = 0
+        self.last_at = 0.0
 
     def _def_id(self, d: UnitDefInfo, new_defs):
         i = self.def_index.get(d.addr)
@@ -74,6 +92,8 @@ class RawWriter:
         arr["frame"] = [u.frame for u in units]
         arr["gid2"] = [u.gid2 for u in units]
         arr["frame2"] = [u.frame2 for u in units]
+        arr["rtype"] = [getattr(u, "res_type", -1) for u in units]
+        arr["ramount"] = [round(float(getattr(u, "res_amount", 0.0) or 0.0), 1) for u in units]
         return arr
 
     def _write(self, tag, payload):
@@ -89,6 +109,9 @@ class RawWriter:
             "terrain": snap.terrain, "elevation": snap.elevation, "shape": snap.shape,
             "tile_dx": snap.tile_dx, "tile_dy": snap.tile_dy, "tile_border": snap.tile_border,
             "terrain_colors": snap.terrain_colors, "speed": snap.speed, "meta": meta or {}, "created": time.time(),
+            "format": FORMAT_VERSION, "match": getattr(snap, "match", None),
+            "diplomacy": [tuple(getattr(p, "diplomacy", ()) or ()) for p in snap.players],
+            "resigned": [int(getattr(p, "resigned", 0) or 0) for p in snap.players],
         }
         self._write(b"H", hdr)
         self.add_frame(snap)
@@ -111,6 +134,18 @@ class RawWriter:
         arr = self._units_array(snap.units, new_defs)
         if new_defs:
             self._write(b"D", new_defs)
+        ds = getattr(snap, "def_stats", None)
+        if ds:
+            self.def_stats.update(ds)
+        if ds or new_defs:
+            changed_stats = {}
+            for addr, idx in self.def_index.items():
+                st = self.def_stats.get(addr)
+                if st is not None and self.written_stats.get(idx) != st:
+                    changed_stats[idx] = st
+                    self.written_stats[idx] = st
+            if changed_stats:
+                self._write(b"U", changed_stats)
         vis = snap.vis_raw
         if self.prev_vis is None:
             vis_delta = zlib.compress(vis.tobytes(), 6)
@@ -155,15 +190,84 @@ class RawWriter:
                "full_units": full_units, "units": changed, "removed": removed}
         if pstate:
             rec["pstate"] = pstate
+        prs = {}
+        for p in snap.players:
+            cur = dict(getattr(p, "researching", None) or {})
+            if self.prev_prs.get(p.index, {}) != cur:
+                prs[p.index] = cur
+                self.prev_prs[p.index] = cur
+        if prs:
+            rec["prs"] = prs                           # công nghệ đang nghiên cứu -> giây đã chạy
+        pstat = {}
+        for p in snap.players:
+            cur = (int(p.ptype), int(getattr(p, "resigned", 0) or 0))
+            if self.prev_pstat.get(p.index, (0, 0)) != cur:
+                pstat[p.index] = cur
+                self.prev_pstat[p.index] = cur
+        if pstat:
+            rec["pstat"] = pstat
+        go = int(getattr(snap, "game_over", 0) or 0)
+        if go != self.prev_go:
+            rec["go"] = go
+            self.prev_go = go
+        self.last_t, self.last_at = snap.time_ms, snap.taken_at
         self._write(b"F", rec)
         self.frames += 1
 
-    def close(self):
+    def close(self, reason=None):
+        """Đóng file; ghi bản ghi tổng kết 'E' + đuôi để danh sách trận đọc nhanh."""
+        try:
+            if self.frames:
+                pos = self.bytes
+                self._write(b"E", {"t": self.last_t, "at": self.last_at, "frames": self.frames,
+                                   "status": dict(self.prev_pstat), "game_over": self.prev_go, "reason": reason,
+                                   "closed": time.time()})
+                self.f.write(END_MAGIC + struct.pack("<Q", pos))
+                self.bytes += 16
+        except Exception:  # noqa: BLE001
+            pass
         try:
             self.f.close()
         except Exception:  # noqa: BLE001
             pass
         return self.frames
+
+
+def read_header(path):
+    """Bản ghi 'H' đầu file (None nếu hỏng)."""
+    with open(path, "rb") as f:
+        if f.read(len(MAGIC)) != MAGIC:
+            return None
+        head = f.read(5)
+        if len(head) < 5 or head[:1] != b"H":
+            return None
+        n = struct.unpack("<I", head[1:])[0]
+        data = f.read(n)
+        if len(data) < n:
+            return None
+        return pickle.loads(zlib.decompress(data))
+
+
+def read_end(path):
+    """Bản ghi tổng kết 'E' qua đuôi file (None nếu file cũ / ghi dở)."""
+    try:
+        size = os.path.getsize(path)
+        if size < len(MAGIC) + 16:
+            return None
+        with open(path, "rb") as f:
+            f.seek(size - 16)
+            tail = f.read(16)
+            if tail[:8] != END_MAGIC:
+                return None
+            pos = struct.unpack("<Q", tail[8:])[0]
+            f.seek(pos)
+            head = f.read(5)
+            if head[:1] != b"E":
+                return None
+            n = struct.unpack("<I", head[1:])[0]
+            return pickle.loads(zlib.decompress(f.read(n)))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 class RawReader:
@@ -215,6 +319,8 @@ class RawReader:
                          hp=float(rec["hp"]), status=int(rec["status"]), kind=int(rec["kind"]) if has_kind else 0)
             if has_gfx:
                 u.gid, u.frame, u.gid2, u.frame2 = int(rec["gid"]), int(rec["frame"]), int(rec["gid2"]), int(rec["frame2"])
+            if "ramount" in names:
+                u.res_type, u.res_amount = int(rec["rtype"]), float(rec["ramount"])
             out.append(u)
         return out
 

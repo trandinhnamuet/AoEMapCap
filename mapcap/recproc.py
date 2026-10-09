@@ -80,6 +80,7 @@ def recorder_main(conn, pid, cfg_dict, raw_path, game_dir):
         n_since = 0
         errors = 0
         running = True
+        reason = "stop"
         while running:
             # lệnh từ cha
             while conn.poll():
@@ -114,6 +115,7 @@ def recorder_main(conn, pid, cfg_dict, raw_path, game_dir):
                     log(f"lỗi đọc bộ nhớ ({errors}): {e}")
                 if not mem.alive():
                     log("game đã thoát, dừng ghi")
+                    reason = "game_exit"
                     break
             now = time.time()
             if now - last_stat >= 1.0:
@@ -141,7 +143,7 @@ def recorder_main(conn, pid, cfg_dict, raw_path, game_dir):
                 nxt = time.time()
         wq.put(wstop)
         wthread.join(30)
-        n = writer.close()
+        n = writer.close(reason)
         conn.send(("done", n))
     except Exception as e:  # noqa: BLE001
         import traceback

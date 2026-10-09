@@ -109,6 +109,7 @@ class UnitDef:
     radius_y: float
     dead_unit_id: int
     icon_id: int
+    lang_name: int = -1      # id chuỗi tên trong language.dll
 
 
 @dataclass
@@ -294,7 +295,7 @@ def parse_units_by_scan(dat):
                             elif civ_idx < 0:
                                 civ_idx = 0
                             last_id = id1
-                            u = UnitDef(id1, typ, name[:-1].decode("latin1"), cls, standing, dying, rx, ry, dead_unit, icon)
+                            u = UnitDef(id1, typ, name[:-1].decode("latin1"), cls, standing, dying, rx, ry, dead_unit, icon, lang_name)
                             civ_units.setdefault(civ_idx, {})[id1] = u
                             units.setdefault(id1, u)
                             p = name_at + nlen + 2
