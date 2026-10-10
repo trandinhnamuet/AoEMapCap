@@ -102,7 +102,51 @@ def test_def_stats_parse():
     return st
 
 
-def make_recording(path):
+def test_read_production():
+    """GameReader.read_production: hàng đợi + hành động sinh unit đọc đúng từ bộ nhớ giả."""
+    from types import SimpleNamespace
+    bld, q, alist, node, act, ptab, pdef = 0x3000000, 0x3100000, 0x3200000, 0x3300000, 0x3400000, 0x3500000, 0x3600000
+    mem = {}
+    blk = bytearray(O.BLD_READ_SIZE)
+    struct.pack_into("<I", blk, O.BLD_QUEUE - O.BLD_READ_START, q)
+    struct.pack_into("<h", blk, O.BLD_QUEUE_COUNT - O.BLD_READ_START, 1)
+    struct.pack_into("<I", blk, O.BLD_ACTIONS - O.BLD_READ_START, alist)
+    mem[bld + O.BLD_READ_START] = bytes(blk)
+    mem[q] = struct.pack("<2h", 83, 4) + bytes(60)
+    mem[alist + O.ACTIONLIST_HEAD] = struct.pack("<I", node)
+    mem[node] = struct.pack("<II", act, 0)
+    a = bytearray(O.ACTION_READ_SIZE)
+    struct.pack_into("<h", a, O.ACTION_TYPE, O.ACTION_TYPE_MAKE)
+    struct.pack_into("<h", a, O.ACTION_MAKE_UNIT, 83)
+    struct.pack_into("<f", a, O.ACTION_MAKE_PROGRESS, 6.0)
+    mem[act] = bytes(a)
+
+    class Bulk:
+        def read_many(self, addrs, size):
+            return {x: mem[x][:size] for x in addrs if x in mem}
+
+    class Mem:
+        def u32(self, x):
+            return {ptab - 0 + 0: 0}.get(x, None) or (ptab if x == 0x7000000 + O.PLAYER_UNITDEFS else
+                                                     pdef if x == ptab + 4 * 83 else 0)
+
+        def i16(self, x):
+            return 20 if x == pdef + O.UNITDEF_TRAIN_TIME else 0
+
+    class Stub:
+        bulk = Bulk()
+        mem = Mem()
+        PROD_EVERY = 0.5
+        _train_time = GameReader._train_time
+    udef = SimpleNamespace(utype=80)
+    u = SimpleNamespace(uid=77, udef=udef, owner_index=1, kind=80, addr=bld)
+    players = [SimpleNamespace(addr=0), SimpleNamespace(addr=0x7000000)]
+    out = GameReader.read_production(Stub(), [u], players)
+    assert out == {77: (((83, 4),), 83, 6.0, 0.3)}, out
+    print("read_production: OK", out)
+
+
+def make_recording(path, win_at=200, resigned=1, two_teams=False):
     snap0 = pickle.load(open(SNAP, "rb"))
     rec_idx = snap0.cur_player_index
     real = [p.index for p in snap0.players if p.index != 0 and (p.addr or p.pid)]
@@ -113,13 +157,14 @@ def make_recording(path):
         s = pickle.loads(pickle.dumps(snap0))
         s.taken_at = t_wall + k / 25.0
         s.time_ms = snap0.time_ms + k * 40
-        s.match = {"map_type": 5, "map_size": 4, "teams": [0] * 8, "civs": [10] * 8, "raw": b"\0" * 8}
+        teams = [1 if i + 1 == rec_idx else 2 for i in range(8)] if two_teams else [0] * 8
+        s.match = {"map_type": 5, "map_size": 4, "teams": teams, "civs": [10] * 8, "raw": b"\0" * 8}
         for p in s.players:
             p.ptype, p.resigned = 0, 0
             p.civ = 10 if p.index else 0                 # snapshot thử nghiệm cũ chưa có civ
-        if k >= 120:                                   # đối thủ đầu hàng ở mẫu 120
-            s.players[enemy].ptype, s.players[enemy].resigned = 2, 1
-        if k >= 200:                                   # người ghi thắng, hết ván ở mẫu 200
+        if k >= 120:                                   # đối thủ đầu hàng (hoặc rớt mạng) ở mẫu 120
+            s.players[enemy].ptype, s.players[enemy].resigned = 2, resigned
+        if win_at is not None and k >= win_at:         # người ghi thắng, hết ván ở mẫu 200
             s.players[rec_idx].ptype = 1
             s.game_over = 1
         trees = [u for u in s.units if u.udef.utype == 90][:40]
@@ -143,6 +188,9 @@ def make_recording(path):
                                                 "range": 0.0, "min_range": 0.0, "reload": 1.5, "accuracy": 0,
                                                 "d_melee": 0, "d_attack": 3, "d_range": 0.0, "d_reload": 1.5,
                                                 "train": 20, "d_pierce": 0, "costs": [(0, 50)]}
+        tc = next((u for u in s.units if u.owner_index == rec_idx and u.udef.dat_id in (109, 71, 141, 142)), None)
+        if tc is not None and k % 5 == 0:              # hàng đợi sinh dân ở công trình đầu tiên của người ghi
+            s.production = {tc.uid: (((83, 3),), 83, round(k * 0.04, 1), round(min(1.0, k * 0.002), 3))}                 if k < 260 else {}
         if k == 0:
             wr.start(s)
         else:
@@ -192,6 +240,12 @@ def test_recording(tmp):
     _si, _v, S = c.statics()
     if len(S):
         assert set(np.round(S["ramount"]).tolist()) <= {40.0, 39.0, 38.0, 37.0, 36.0, 35.0, 34.0, 33.0, 32.0, 31.0}, S["ramount"][:5]
+    c.seek(102)
+    assert len(c.state.prod) == 1 and list(c.state.prod.values())[0][0] == ((83, 3),), c.state.prod
+    c.seek(280)
+    assert c.state.prod == {}, c.state.prod
+    c.seek(50)
+    assert list(c.state.prod.values())[0][3] == 0.1, c.state.prod
     assert d.stats, "không có bản ghi chỉ số 'U'"
     di = next(iter(d.stats))
     assert d.stats_at(di, 10)["attacks"] == [(4, 3)] and d.stats_at(di, 200)["attacks"] == [(4, 5)], d.stats[di]
@@ -209,6 +263,23 @@ def test_recording(tmp):
     assert info2["result"] == "Ghi dở" and info2["frames"] == 300, info2
     print("file ghi dở: OK", info2["result"], info2["frames"])
     return path
+
+
+def test_first_out(tmp):
+    """Luật 2026-10-10: đội có người đầu tiên đầu hàng / rớt mạng là đội thua, kể cả khi dừng ghi trước khi
+    game tự kết luận (không có trạng thái thắng ở cuối file)."""
+    for resigned, kind in ((1, "đầu hàng"), (0, "rớt mạng / bị loại")):
+        path = os.path.join(tmp, "2026-10-09_00001%d_tran1.aoerec" % resigned)
+        rec_idx, enemy = make_recording(path, win_at=None, resigned=resigned, two_teams=True)
+        assert read_end(path)["status"].get(rec_idx, (0, 0))[0] == 0      # game chưa xử thắng
+        info = match_info(path)
+        assert info["result"] == "Thắng", info["result"]
+        fo = info["first_out"]
+        assert fo["index"] == enemy and fo["kind"] == kind and fo["t_ms"] > 0, fo
+        st = {p["index"]: p["status"] for p in info["players"]}
+        assert st[enemy] == 2 and st[rec_idx] == 1, st
+        assert info["format"].count("v") == 1, info["format"]
+        print("người bỏ cuộc đầu tiên (%s): OK" % kind, info["result"], fo["name"])
 
 
 def test_library(tmp):
@@ -262,7 +333,9 @@ def main():
         os.remove(f)
     test_match_settings_parse()
     test_def_stats_parse()
+    test_read_production()
     test_recording(tmp)
+    test_first_out(tmp)
     # thêm một file cũ thật (nếu có) để thư viện trộn cả hai loại
     olds = sorted(glob.glob(os.path.join(ROOT, "dist", "Video", "Raw", "*.aoerec")), key=os.path.getsize)
     if olds:

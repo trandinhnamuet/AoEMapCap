@@ -12,7 +12,7 @@ import time
 from mapcap.rawrec import MAGIC, read_end, read_header
 
 CACHE_NAME = "_matches.json"
-CACHE_VERSION = 3                 # 3: tên quân tiếng Anh
+CACHE_VERSION = 4                 # 3: tên quân tiếng Anh; 4: đội có người bỏ cuộc đầu tiên là đội thua
 
 CIV_NAMES = {1: "Egyptian", 2: "Greek", 3: "Babylonian", 4: "Assyrian", 5: "Minoan", 6: "Hittite", 7: "Phoenician",
              8: "Sumerian", 9: "Persian", 10: "Shang", 11: "Yamato", 12: "Choson", 13: "Roman", 14: "Carthaginian",
@@ -119,6 +119,39 @@ def _scan_last_frame(path):
             return None, n_frames
 
 
+def first_out(path):
+    """Người đầu tiên bị game đánh dấu thua trong trận: (index, time_ms, đã đầu hàng) hoặc None.
+    Đầu hàng = trạng thái 2 kèm cờ đầu hàng; rớt mạng/bị loại = trạng thái 2 không có cờ. Đọc 'pstat' của các mẫu."""
+    import pickle
+    import zlib
+    with open(path, "rb", buffering=1 << 16) as f:
+        if f.read(len(MAGIC)) != MAGIC:
+            return None
+        while True:
+            head = f.read(5)
+            if len(head) < 5:
+                return None
+            n = struct.unpack("<I", head[1:])[0]
+            data = f.read(n)
+            if len(data) < n:
+                return None
+            if head[:1] != b"F":
+                continue
+            try:
+                pl = pickle.loads(zlib.decompress(data))
+            except Exception:  # noqa: BLE001
+                return None
+            ps = pl.get("pstat")
+            if not ps:
+                continue
+            outs = [(int(i), v) for i, v in ps.items() if v and v[0] == 2]
+            if outs:
+                # cùng một mẫu: ưu tiên người đầu hàng (người kia thường bị game xử thua theo)
+                outs.sort(key=lambda o: -int(o[1][1]))
+                i, v = outs[0]
+                return i, int(pl.get("t", 0)), bool(v[1])
+
+
 def match_info(path):
     """Thông tin tóm tắt (dict JSON được) của một file .aoerec."""
     hdr = read_header(path)
@@ -144,9 +177,21 @@ def match_info(path):
         last, n_frames = _scan_last_frame(path)
         t_end = last.get("t", 0) if last else 0
         game_over = None
+    out = None
     if "format" in hdr:
+        # luật (người dùng, 2026-10-10): đội có người đầu tiên đầu hàng / rớt mạng là đội thua, kể cả khi
+        # ván chưa kết thúc chính thức lúc dừng ghi
+        try:
+            out = first_out(path)
+        except OSError:
+            out = None
         st, res = status.get(rec, (0, 0))
-        if st == 1:
+        lose_team = team_of.get(out[0]) if out is not None else None
+        if lose_team is not None and team_of.get(rec) == lose_team:
+            result = "Đầu hàng" if (out[0] == rec and out[2]) or (st == 2 and res) else "Thua"
+        elif lose_team is not None and len(teams) == 2 and rec in team_of:
+            result = "Thắng"
+        elif st == 1:
             result = "Thắng"
         elif st == 2:
             result = "Đầu hàng" if res else "Thua"
@@ -164,9 +209,15 @@ def match_info(path):
     if not map_kind:
         map_kind = f"{hdr.get('map_w')}×{hdr.get('map_h')}"
     players = []
+    lose_team = team_of.get(out[0]) if out is not None else None
     for k, t in enumerate(teams):
         for i in t:
             st, res = status.get(i, (0, 0))
+            if lose_team is not None and st == 0:          # ván dừng trước khi game tự kết luận
+                if k == lose_team:
+                    st = 2
+                elif len(teams) == 2:
+                    st = 1
             players.append({"index": i, "name": names.get(i, "?"), "civ": civ_name(civs.get(i)), "team": k + 1,
                             "status": st, "resigned": res})
     return {
@@ -185,6 +236,8 @@ def match_info(path):
         "reason": reason,
         "game_over": game_over,
         "new_format": "format" in hdr,
+        "first_out": None if out is None else {"index": out[0], "name": names.get(out[0], "?"), "t_ms": out[1],
+                                                "kind": "đầu hàng" if out[2] else "rớt mạng / bị loại"},
     }
 
 

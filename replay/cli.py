@@ -30,5 +30,24 @@ def main(argv):
         path = pick_match(folder)
         if not path:
             return 0
-    from .viewer import main as viewer_main
+    from .viewer import main as viewer_main, find_game_dir, valid_game_dir
+    if not selftest:
+        try:
+            from mapcap.rawrec import read_header
+            hdr = read_header(path)
+        except Exception:  # noqa: BLE001
+            hdr = None
+        if find_game_dir(hdr, game_dir) is None:          # máy không có game ở chỗ quen thuộc: hỏi thư mục
+            import tkinter as tk
+            from tkinter import filedialog, messagebox
+            root = tk.Tk()
+            root.withdraw()
+            d = filedialog.askdirectory(title="Chọn thư mục game AoE-HD (để lấy hình ảnh, âm thanh của game)")
+            if not d or not valid_game_dir(d):
+                if d:
+                    messagebox.showerror("AoE-Replay", "Thư mục này không có data\empires.dat và data\graphic.drs của AoE-HD.")
+                root.destroy()
+                return 1
+            root.destroy()
+            game_dir = d
     return viewer_main(os.path.abspath(path), game_dir, selftest)

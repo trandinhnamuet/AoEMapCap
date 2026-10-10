@@ -90,7 +90,8 @@ Nút **Xem replay...** hiện bảng các trận đã ghi (ngày đánh, ngườ
 cùng quân, bản đồ, thời lượng); bấm đúp một trận để mở trong cửa sổ riêng, vẽ trực tiếp từ dữ liệu trận bằng OpenGL
 (không cần dựng video): tua tới/lui bất kì lúc nào, đổi tầm nhìn từng đội, bảng tỉ số, zoom nét tới từng pixel game.
 Từ 09/10/2026 file ghi thêm thiết lập ván (kiểu/cỡ bản đồ, đội, tài nguyên...) và kết quả thắng/thua; file cũ hiện
-kết quả "Không rõ".
+kết quả "Không rõ". Đội có người **đầu tiên** đầu hàng hoặc rớt mạng tính là đội thua (đội kia thắng, nếu trận có 2 đội),
+kể cả khi dừng ghi trước lúc game tự kết luận ván.
 Chạy riêng được bằng `dist\AoE-Replay.exe [file.aoerec]` (không cần quyền admin) hoặc
 `AoE-MapCap.exe --replay file.aoerec`. Cần thư mục game AoE-HD trên máy để lấy đồ hoạ.
 
@@ -105,6 +106,8 @@ Chạy riêng được bằng `dist\AoE-Replay.exe [file.aoerec]` (không cần 
 | C / U / H / M | bảng công nghệ / thanh thời gian / ẩn HUD / minimap |
 | Lăn chuột | zoom quanh con trỏ; Home hoặc chuột giữa: cả bản đồ |
 | Chuột ra mép, mũi tên, kéo chuột | di chuyển máy quay |
+| Bấm vào unit / L | xem thông tin và khoá máy quay theo unit / bật-tắt khoá |
+| S | bật/tắt âm thanh (tiếng của game theo những gì máy quay đang nhìn, tối đa x2) |
 | F11 hoặc Alt+Enter | bật/tắt toàn màn hình |
 | Esc hoặc ? | bảng phím tắt (hoặc bấm nút "Phím tắt (Esc)" trên thanh thời gian) |
 

@@ -172,6 +172,23 @@ def main():
     assert picked is not None, "không chọn được unit nào"
     info = v._unit_info()
     print("chọn unit:", info["name"], "-", info["owner"], info["lines"])
+    # khoá máy quay theo unit: bấm unit di động thì khoá; tua tới, máy quay bám theo; kéo thì bỏ khoá; L khoá lại
+    if picked[0] == "u":
+        assert v.follow, "bấm unit phải khoá máy quay"
+        v.playing = True
+        for _ in range(120):
+            v._tick(1 / 60, True)
+        v.playing = False
+        u = v._selected_row()
+        if u is not None:
+            ax, ay = v.world.anchors(np.array([u], dtype=u.dtype))
+            assert abs(v.cx - float(ax[0])) < 40 and abs(v.cy - (float(ay[0]) - 16)) < 40, (v.cx, v.cy, ax, ay)
+        click(v, (800, 400), move_to=(900, 420))
+        assert not v.follow, "kéo máy quay phải bỏ khoá"
+        key(v, pygame.K_l); assert v.follow
+        key(v, pygame.K_l); assert not v.follow
+        print("khoá máy quay theo unit: OK")
+    key(v, pygame.K_s)                                    # chế độ tự kiểm tra không có âm thanh: chỉ báo, không lỗi
     v.fit_view()                                          # bấm chỗ trống (ngoài bản đồ) -> đóng bảng unit
     for _ in range(60):
         v._tick(1 / 60, True)

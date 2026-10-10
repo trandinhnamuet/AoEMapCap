@@ -304,8 +304,32 @@ class App:
             self.btn_stop.configure(state="disabled")
 
     # ---- trận đã ghi -----------------------------------------------------------------
+    def _game_dir_for(self, path):
+        """Thư mục game để lấy đồ hoạ cho file ghi: cấu hình -> ghi trong file -> game đang chạy -> chỗ cài quen thuộc."""
+        from .engine import resolve_game_dir
+        meta_dir = None
+        try:
+            from .rawrec import read_header
+            meta_dir = ((read_header(path) or {}).get("meta") or {}).get("game_dir")
+        except Exception:  # noqa: BLE001
+            pass
+        d = resolve_game_dir(self.cfg.game_dir, meta_dir)
+        if d is None:
+            d = filedialog.askdirectory(title="Chọn thư mục game AoE-HD (có thư mục data bên trong)")
+            from .engine import valid_game_dir
+            if not d or not valid_game_dir(d):
+                if d:
+                    messagebox.showerror(APP_TITLE, "Thư mục này không có data\\empires.dat / graphic.drs của AoE-HD.")
+                return None
+            self.cfg.game_dir = os.path.normpath(d)
+            self._save_cfg()
+        return d
+
     def _launch_replay(self, path):
-        args = ["--replay", os.path.abspath(path), f"--game-dir={self.cfg.game_dir}"]
+        gd = self._game_dir_for(path)
+        if gd is None:
+            return
+        args = ["--replay", os.path.abspath(path), f"--game-dir={gd}"]
         if getattr(sys, "frozen", False):
             cmd = [sys.executable] + args
         else:
@@ -337,6 +361,9 @@ class App:
                            f"{'' if cfg.speed == 1 else f'_x{cfg.speed:g}'}.mp4")
         self._append(f"=== xuất video {os.path.basename(path)} -> {os.path.basename(out)}")
         label = os.path.splitext(os.path.basename(path))[0]
+        game_dir = self._game_dir_for(path)
+        if game_dir is None:
+            return
         self.renders[label] = "chuẩn bị..."
         self._refresh_status()
 
@@ -345,7 +372,7 @@ class App:
             try:
                 cleanup_stale(cfg.resolved_out_dir(), log=self.q.put)
                 render_raw(path, out, width=cfg.render_width, fps=cfg.fps, speed=cfg.speed, fog_dim=cfg.fog_param(),
-                           outline=cfg.map_outline, game_dir=cfg.game_dir, workers=cfg.render_workers or None,
+                           outline=cfg.map_outline, game_dir=game_dir, workers=cfg.render_workers or None,
                            log=self.q.put, progress=lambda f, s: self.q.put(("__progress__", label, s)))
                 self.q.put(f"xuất video xong: {out}")
             except Exception as e:  # noqa: BLE001

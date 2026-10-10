@@ -28,10 +28,12 @@ ZOOM_MAX = 4.0
 ZOOM_STEP = 1.25           # mỗi nấc lăn chuột
 ZOOM_TAU = 0.07            # hằng số thời gian của zoom mượt (s)
 FLY_TAU = 0.12
+FOLLOW_TAU = 0.06          # máy quay bám unit đang khoá (s)
 JUMP_MS = 15000            # Backspace / J: 15 giây giờ game
 HUD_PERIOD = 0.1           # làm mới HUD khi đang phát (s)
 DECODE_BUDGET = 0.008      # tối đa 8 ms giải mã sprite unit mới mỗi khung (phần còn lại để khung sau)
-GAME_DIR_CANDIDATES = (r"C:\Program Files\XArena\Game\AoE-HD", r"D:\Game\AoE-HD")
+GAME_DIR_CANDIDATES = (r"C:\Program Files\XArena\Game\AoE-HD", r"C:\Program Files (x86)\XArena\Game\AoE-HD",
+                       r"D:\Game\AoE-HD", r"C:\Game\AoE-HD", r"D:\XArena\Game\AoE-HD")
 SEL_KEYS_TEAM = ([pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5],
                  [pygame.K_q, pygame.K_w, pygame.K_e, pygame.K_r, pygame.K_t])
 SEL_LABEL_TEAM = (["1", "2", "3", "4", "5"], ["Q", "W", "E", "R", "T"])
@@ -113,6 +115,8 @@ class Viewer:
         self.zoom = self.zoom_target = 0.1
         self.zoom_anchor = None
         self.fly = None
+        self.follow = False          # khoá máy quay theo unit đang chọn
+        self.audio = None
         self.drag = None             # (kiểu, điểm bắt đầu, đã kéo?)
         self.fullscreen = False
         # trạng thái dựng lại
@@ -217,6 +221,10 @@ class Viewer:
         self.hud.slp_icon = slp_icon
         self.fit_view()
         self.zoom = self.zoom_target
+        if not self.selftest:
+            from .audio import Audio
+            self.audio = Audio(w.dat, self.game_dir, self.log)
+            self.audio.y0 = w.Y0
         self.set_toast("Nhấn Esc để xem phím tắt", 6.0)
 
     # ---- máy quay ----------------------------------------------------------------------
@@ -226,6 +234,7 @@ class Viewer:
         return min(W / w.full_w, H / w.full_h) * 0.98
 
     def fit_view(self):
+        self.unfollow(toast=False)
         w = self.world
         self.cx, self.cy = w.full_w / 2, w.full_h / 2
         self.zoom_target = self.fit_zoom()
@@ -244,6 +253,9 @@ class Viewer:
     def zoom_at(self, factor, sx, sy):
         zmin = self.fit_zoom() * 0.9
         self.zoom_target = max(zmin, min(ZOOM_MAX, self.zoom_target * factor))
+        if self.follow:                          # đang khoá theo unit: zoom quanh unit (tâm màn hình)
+            self.zoom_anchor = None
+            return
         self.zoom_anchor = (sx, sy) + self.screen_to_world(sx, sy)
 
     def _clamp_cam(self):
@@ -287,6 +299,7 @@ class Viewer:
             elif my >= H - 1 - EDGE_PX:
                 vy += 1
         if vx or vy:
+            self.unfollow()
             sp = PAN_SPEED * (2.0 if (pygame.key.get_mods() & pygame.KMOD_SHIFT) else 1.0)
             self.cx += max(-1, min(1, vx)) * sp * dt / self.zoom
             self.cy += max(-1, min(1, vy)) * sp * dt / self.zoom
@@ -299,7 +312,35 @@ class Viewer:
             self.cy += (fy - self.cy) * a
             if abs(fx - self.cx) < 1 and abs(fy - self.cy) < 1:
                 self.fly = None
+        if self.follow:
+            u = self._selected_row() if self.sel_unit is not None else None
+            if u is None:
+                self.follow = False
+                self.set_toast("Unit đã mất: bỏ khoá máy quay")
+            else:
+                ax, ay = self.world.anchors(np.array([u], dtype=u.dtype))
+                a = 1.0 - math.exp(-dt / FOLLOW_TAU)
+                self.cx += (float(ax[0]) - self.cx) * a
+                self.cy += (float(ay[0]) - 16.0 - self.cy) * a
+                self.zoom_anchor = None
         self._clamp_cam()
+
+    def lock_on_selected(self, toast=True):
+        """Khoá máy quay theo unit đang chọn (không áp dụng cho cây, mỏ: không di chuyển)."""
+        if self.sel_unit is None or self.sel_unit[0] != "u":
+            return False
+        self.follow = True
+        self.fly = None
+        if toast:
+            info = self._unit_info()
+            self.set_toast(f"Khoá máy quay theo {info['name'] if info else 'unit'}  (L: bật/tắt)")
+        return True
+
+    def unfollow(self, toast=True):
+        if self.follow:
+            self.follow = False
+            if toast:
+                self.set_toast("Bỏ khoá máy quay (L để khoá lại)")
 
     def fly_to(self, wx, wy, zoom=None):
         self.fly = (wx, wy)
@@ -326,6 +367,7 @@ class Viewer:
         return float(np.median(ax)), float(np.median(ay))
 
     def select_player(self, idx, jump=True):
+        self.unfollow(toast=False)
         self.selected = idx
         self._hud_dirty = True
         p = self.data.players[idx]
@@ -474,6 +516,7 @@ class Viewer:
         self.gpu.set_units(slot, x0, y0, br)
         self._deferred = w.deferred
         self.unit_rows = U
+        self.unit_bright = bright
         self.inst = (slot, x0, y0, ui)
         # minimap: chấm màu người chơi
         own = (U["owner"] > 0) if len(U) else np.zeros(0, bool)
@@ -613,6 +656,17 @@ class Viewer:
                     r = research[tid]
                     progress.append((f"Nghiên cứu: {self.world.resolver._tech_label(r)}",
                                      max(0.0, min(1.0, sec / r.time)), r.icon))
+        queue = None
+        if utype == 80 and int(u["kind"]) != 25:
+            pv = self.cursor.state.prod.get(int(u["uid"]))
+            if pv:
+                q, making, _sec, frac = pv
+                total = sum(c for _t, c in q)
+                cur = making if making >= 0 else (q[0][0] if q else -1)
+                du2 = w.dat.units.get(cur) if cur >= 0 else None
+                nm = self._unit_name(SimpleNamespace(dat_id=cur, name=du2.name if du2 else "?"), None) if cur >= 0 else "?"
+                queue = {"name": nm, "count": total, "frac": frac if making >= 0 else 0.0,
+                         "icon": self._dat_icon(cur, owner)}
         if int(u["kind"]) == 25:
             lines.append("Hình ghi nhớ trong sương mù")
         elif int(u["status"]) >= 3 or hp <= 0:
@@ -623,9 +677,16 @@ class Viewer:
         owner_txt = (p.name if p and owner > 0 else "Gaia") + (f"  ·  {civ}" if civ and owner > 0 else "")
         return {"name": self._unit_name(dfi, stats), "owner": owner_txt,
                 "rgb": w.player_rgb(owner) if owner > 0 else (200, 200, 200), "stats": rows, "lines": lines,
-                "res": res, "progress": progress,
+                "res": res, "progress": progress, "queue": queue,
                 "hp": (max(hp, 0.0), hp_max) if hp_max > 0 else None,
                 "icon": self._unit_icon(dfi, owner)}
+
+    def _dat_icon(self, dat_id, owner):
+        """Chân dung theo DAT id (unit đang sinh trong hàng đợi)."""
+        du = self.world.dat.units.get(dat_id) if dat_id is not None and dat_id >= 0 else None
+        if du is None:
+            return None
+        return self._unit_icon(SimpleNamespace(dat_id=dat_id, utype=du.type), owner)
 
     def _unit_icon(self, dfi, owner):
         """Icon chân dung của unit/công trình (interfac.drs: 50730 unit, 50704..50707 công trình theo đời)."""
@@ -912,6 +973,16 @@ class Viewer:
             hud.show_help = not hud.show_help
         elif k == pygame.K_HOME:
             self.fit_view()
+        elif k == pygame.K_l:
+            if self.follow:
+                self.unfollow()
+            elif not self.lock_on_selected():
+                self.set_toast("Bấm chọn một unit trước để khoá máy quay")
+        elif k == pygame.K_s:
+            if self.audio is None or not self.audio.ok:
+                self.set_toast("Không có âm thanh (máy không có thiết bị âm thanh hoặc thiếu data\\sound.drs)")
+            else:
+                self.set_toast("Âm thanh: " + ("bật" if self.audio.toggle() else "tắt"))
         self._hud_dirty = True
 
     def _mouse_down(self, ev):
@@ -941,6 +1012,7 @@ class Viewer:
         mm = hud.minimap_rect()
         if mm is not None and mm.collidepoint(pos) and ev.button in (1, 3):
             self.drag = ("minimap", pos, True)
+            self.unfollow()
             self.cx, self.cy = self._minimap_to_world(pos)
             self.fly = None
             self.zoom_anchor = None
@@ -956,6 +1028,10 @@ class Viewer:
         if d[0] == "world" and not d[2]:
             if d[3] == 1:
                 self.sel_unit = self.pick_unit(*ev.pos)
+                if self.sel_unit is not None and self.sel_unit[0] == "u":
+                    self.lock_on_selected()
+                else:
+                    self.unfollow(toast=False)
                 self._hud_dirty = True
             elif d[3] == 2:
                 self.fit_view()
@@ -982,6 +1058,7 @@ class Viewer:
                 if abs(ev.pos[0] - d[1][0]) + abs(ev.pos[1] - d[1][1]) < 5:
                     return
                 self.drag = ("world", d[1], True, d[3])
+                self.unfollow()
             self.cx -= ev.rel[0] / self.zoom
             self.cy -= ev.rel[1] / self.zoom
             self.fly = None
@@ -1036,7 +1113,18 @@ class Viewer:
             self._advance(dt)
             self._update_camera(dt)
             if self.cursor.version != self._built_version or self.persp != self._built_persp or self._deferred:
+                frame_changed = self.cursor.version != self._built_version
                 self._rebuild()
+                if frame_changed and self.audio is not None:
+                    try:
+                        W, H = self.size
+                        tx, ty = self.cam_tl()
+                        self.audio.update(self.cursor.frame, self.unit_rows, self.unit_bright,
+                                          (tx, ty, tx + W / self.zoom, ty + H / self.zoom),
+                                          self.playing and self.speed() <= 2.0)
+                    except Exception as e:  # noqa: BLE001
+                        self.log(f"lỗi âm thanh: {e}")
+                        self.audio = None
                 self._built_version = self.cursor.version
                 self._built_persp = self.persp
                 if not self.playing:

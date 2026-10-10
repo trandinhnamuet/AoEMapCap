@@ -141,6 +141,22 @@ UNIT_RES_AMOUNT = 0x44           # float lượng tài nguyên đang chứa: g�
                                  # def+0x88[k] == 0, loại ở def+0x6A[k])
 UNIT_RES_TYPE = 0x4C             # int16 loại tài nguyên đang chứa (0 thực, 1 gỗ, 2 đá, 3 vàng; -1 không có)
 UNIT_READ_SIZE = 0x60
+# Hàng đợi sinh unit của công trình (RE 2026-10-10: lệnh 0x77 "xếp hàng" 0x4EB6F0 -> thêm 0x4AF3E0 / bớt 0x4AF680;
+# bộ chia lệnh 0x4EA700). AoE1 chỉ xếp một loại unit mỗi lúc: chọn loại khác thì huỷ hàng cũ.
+BLD_QUEUE = 0x1C0                # -> mảng {int16 DAT id unit, int16 số lượng}
+BLD_QUEUE_CAP = 0x1C4            # int16 sức chứa mảng
+BLD_QUEUE_COUNT = 0x1C6          # int16 số mục
+BLD_ACTIONS = 0x1CC              # -> danh sách hành động (công trình tạo ở ctor 0x4AE239: vtable+0x218)
+BLD_BUILD_PROGRESS = 0x1D4       # float giây đã xây (so với def+0x15A, cập nhật 0x4AF0E0)
+BLD_READ_START = 0x1C0
+BLD_READ_SIZE = 0x18
+ACTIONLIST_HEAD = 0x08           # danh sách hành động: +8 -> node {+0 hành động, +4 node kế} (0x403E10)
+ACTION_TYPE = 0x04               # int16 loại hành động
+ACTION_STATE = 0x0C              # byte trạng thái
+ACTION_TYPE_MAKE = 0x66          # hành động sinh unit (ctor 0x4B6784)
+ACTION_MAKE_UNIT = 0x40          # int16 DAT id unit đang sinh
+ACTION_MAKE_PROGRESS = 0x44      # float giây đã sinh; xong khi >= def+0x15A của unit đó (0x4B6A02); % ở 0x4B6E00
+ACTION_READ_SIZE = 0x48
 UNIT_SPRITE_LIST = 0x18          # -> danh sách sprite (RE: RGE_Object init 0x4A8200, vẽ 0x4A8A60 gọi [list]->vtable+0xC)
 
 # ---- danh sách sprite: list {vtable, +4 node đầu}; node 12 byte {+0 sprite node, +4 thứ tự (byte), +8 node kế}

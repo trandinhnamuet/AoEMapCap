@@ -59,6 +59,8 @@ class Graphic:
     mirroring_mode: int
     sequence_type: int
     deltas: list = field(default_factory=list)
+    sound_id: int = -1                 # âm thanh phát mỗi vòng hoạt ảnh (chặt cây, chết, ...)
+    angle_sounds: list = field(default_factory=list)   # theo hướng: [(khung, id âm thanh), ...] (đòn đánh)
 
 
 @dataclass
@@ -168,14 +170,18 @@ def parse(d):
         typ = r.u8()
         colours.append(PlayerColour(cid, name, mm, typ))
 
-    # ---- âm thanh (bỏ nội dung)
+    # ---- âm thanh: id -> [(tên file, id tài nguyên trong sound.drs, xác suất %)]
     n = r.i16()
+    sounds = {}
     for _ in range(n):
-        r.i32()                             # id
+        sid = r.i32()                       # id
         items = r.i16()
         r.i32()                             # cache time
+        lst = []
         for _ in range(items):
-            r.chars(13); r.i32(); r.i16()   # filename, resource id, probability
+            fn = r.chars(13); res = r.i32(); prob = r.i16()
+            lst.append((fn, res, prob))
+        sounds[sid] = lst
 
     # ---- đồ hoạ
     n = r.i16()
@@ -210,8 +216,11 @@ def parse(d):
             dg = r.i16(); r.i16(); r.i32()
             ox = r.i16(); oy = r.i16(); da = r.i16(); r.i16()
             g.deltas.append(GraphicDelta(dg, ox, oy, da))
+        g.sound_id = sound_id
         if attack_sound_used:
-            r.skip(angle_count * 12)
+            for _a in range(angle_count):
+                vals = r.arr("h", 6)        # 3 x (khung, id âm thanh)
+                g.angle_sounds.append([(vals[2 * k], vals[2 * k + 1]) for k in range(3) if vals[2 * k + 1] >= 0])
         graphics[gid] = g
 
     # ---- khối địa hình
@@ -254,6 +263,7 @@ def parse(d):
     r.skip(4 * 2)                           # map min/max x/y
     r.skip(4 * 4 + 2 * 3)                   # unknowns (đủ dùng; unit đọc bằng resync dưới)
     dat = DatFile(version, colours, graphics, terrains, borders_, tile_sizes, {}, {})
+    dat.sounds = sounds
     dat._reader_pos = r.p
     dat._data = d
     return dat

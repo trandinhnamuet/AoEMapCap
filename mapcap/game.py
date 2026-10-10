@@ -108,6 +108,7 @@ class Snapshot:
     game_over: int = 0             # GLOBAL+0x1D: 1 khi ván đã kết thúc
     match: dict = None             # thiết lập ván (GameReader.match_settings), đọc một lần mỗi trận
     def_stats: dict = None         # địa chỉ def -> chỉ số (công, giáp, tầm...); chỉ có ở mẫu vừa đọc lại (3 s/lần)
+    production: dict = None        # uid công trình -> (hàng đợi, đang sinh, giây, tỉ lệ); chỉ có ở mẫu vừa đọc (0,5 s/lần)
 
     @property
     def cur_player(self):
@@ -344,6 +345,90 @@ class GameReader:
                     vals = struct.unpack_from(f"<{2 * n}h", b)
                     out[a][key] = [(vals[2 * k], vals[2 * k + 1]) for k in range(n)]
         return out
+
+    PROD_EVERY = 0.5           # giây: đọc lại hàng đợi sinh unit của các công trình
+
+    def read_production(self, units, players):
+        """Hàng đợi sinh unit của công trình: dict uid -> ((dat_id, số lượng), ...), dat id đang sinh, giây đã sinh,
+        tỉ lệ 0..1). Chỉ công trình có hàng đợi hoặc đang sinh."""
+        bl = [u for u in units if u.udef.utype == 80 and u.owner_index > 0 and u.kind != O.UNIT_KIND_DOPPEL and u.addr]
+        if not bl:
+            return {}
+        raws = self.bulk.read_many([u.addr + O.BLD_READ_START for u in bl], O.BLD_READ_SIZE)
+        rel = lambda off: off - O.BLD_READ_START  # noqa: E731
+        info = []
+        for u in bl:
+            b = raws.get(u.addr + O.BLD_READ_START)
+            if not b:
+                continue
+            qptr = struct.unpack_from("<I", b, rel(O.BLD_QUEUE))[0]
+            qn = struct.unpack_from("<h", b, rel(O.BLD_QUEUE_COUNT))[0]
+            alist = struct.unpack_from("<I", b, rel(O.BLD_ACTIONS))[0]
+            if qn > 0 and qptr:
+                info.append((u, qptr, min(qn, 16), alist))
+        if not info:
+            return {}
+        qraws = self.bulk.read_many([q for _u, q, _n, _a in info], 4 * 16)
+        heads = self.bulk.read_many([a + O.ACTIONLIST_HEAD for _u, _q, _n, a in info if a], 4)
+        node_of = {}
+        for _u, _q, _n, a in info:
+            hb = heads.get(a + O.ACTIONLIST_HEAD) if a else None
+            if hb:
+                node_of[a] = struct.unpack_from("<I", hb)[0]
+        nodes = self.bulk.read_many([n for n in node_of.values() if n], 8)
+        act_of = {}
+        for a, n in node_of.items():
+            nb = nodes.get(n) if n else None
+            if nb:
+                act_of[a] = struct.unpack_from("<I", nb)[0]
+        acts = self.bulk.read_many([x for x in act_of.values() if x], O.ACTION_READ_SIZE)
+        out = {}
+        for u, qptr, qn, alist in info:
+            qb = qraws.get(qptr)
+            if not qb:
+                continue
+            vals = struct.unpack_from(f"<{2 * qn}h", qb)
+            queue = tuple((vals[2 * k], vals[2 * k + 1]) for k in range(qn) if vals[2 * k + 1] > 0)
+            making, prog, frac = -1, 0.0, 0.0
+            ab = acts.get(act_of.get(alist, 0) or 0)
+            if ab and struct.unpack_from("<h", ab, O.ACTION_TYPE)[0] == O.ACTION_TYPE_MAKE:
+                making = struct.unpack_from("<h", ab, O.ACTION_MAKE_UNIT)[0]
+                prog = struct.unpack_from("<f", ab, O.ACTION_MAKE_PROGRESS)[0]
+                t = self._train_time(players, u.owner_index, making)
+                frac = max(0.0, min(1.0, prog / t)) if t else 0.0
+            if queue or making >= 0:
+                out[u.uid] = (queue, making, round(prog, 1), round(frac, 3))
+        return out
+
+    def _train_time(self, players, owner, dat_id):
+        """Thời gian huấn luyện (giây) của unit dat_id theo bản sao def của người chơi (đã tính công nghệ)."""
+        cache = self.__dict__.setdefault("_train_cache", {})
+        key = (owner, dat_id)
+        t = cache.get(key)
+        if t is not None and time.time() - t[1] < 10:
+            return t[0]
+        val = 0
+        try:
+            p = players[owner]
+            tab = self.mem.u32(p.addr + O.PLAYER_UNITDEFS)
+            if tab and 0 <= dat_id < 2000:
+                d = self.mem.u32(tab + 4 * dat_id)
+                if d:
+                    val = self.mem.i16(d + O.UNITDEF_TRAIN_TIME)
+        except Exception:  # noqa: BLE001
+            val = 0
+        cache[key] = (val, time.time())
+        return val
+
+    def maybe_production(self, units, players):
+        now = time.time()
+        if now - getattr(self, "_prod_t", 0.0) < self.PROD_EVERY:
+            return None
+        self._prod_t = now
+        try:
+            return self.read_production(units, players)
+        except Exception:  # noqa: BLE001
+            return None
 
     def maybe_def_stats(self):
         """Mỗi STATS_EVERY giây (hoặc khi có def mới): chỉ số mọi def đã gặp; ngược lại None."""
@@ -764,6 +849,7 @@ class GameReader:
                 players[u.owner_index].unit_count += 1
             snap.units.extend(self.doppels.update(snap))
             snap.def_stats = self.maybe_def_stats()
+            snap.production = self.maybe_production(snap.units, players)
         return snap
 
     UNIT_RAW_DT = np.dtype({

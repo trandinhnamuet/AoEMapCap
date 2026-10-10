@@ -6,7 +6,8 @@ File = chuỗi bản ghi [type u8][len u32][zlib(pickle(payload))]. Có thể đ
   'S' statics: danh sách vật thể tĩnh (thay thế toàn bộ) khi thay đổi
   'F' frame  : time_ms, taken_at, vis_raw (XOR với mẫu trước, nén), unit thay đổi/xoá
              (từ 2026-10-09 thêm 'pstat' {index: (trạng thái thắng/thua, đã đầu hàng)} khi đổi, 'go' = cờ hết ván,
-              'prs' {index: {id công nghệ: giây đã nghiên cứu}} khi đổi; unit có thêm rtype/ramount)
+              'prs' {index: {id công nghệ: giây đã nghiên cứu}} khi đổi; unit có thêm rtype/ramount;
+              từ 2026-10-10 'prod' {uid công trình: ((dat id, số lượng)...), dat id đang sinh, giây, tỉ lệ) | None})
   'U' stats  : {index def: chỉ số} khi chỉ số đổi (công, giáp, tầm, tốc độ... đã nâng cấp), từ 2026-10-09
   'E' end    : tổng kết khi đóng file (giờ cuối, số mẫu, trạng thái cuối từng người chơi, lý do dừng)
 Sau 'E' là đuôi 16 byte: END_MAGIC + offset u64 của bản ghi 'E' -> đọc tổng kết không phải quét cả file.
@@ -51,6 +52,7 @@ class RawWriter:
         self.bytes = len(MAGIC)
         self.prev_pstat = {}         # index -> (trạng thái, đã đầu hàng)
         self.prev_prs = {}           # index -> {id công nghệ đang nghiên cứu: giây}
+        self.prev_prod = {}          # uid công trình -> (hàng đợi, đang sinh, giây, tỉ lệ)
         self.prev_go = 0
         self.def_stats = {}          # địa chỉ def -> chỉ số mới nhất đọc được
         self.written_stats = {}      # index def -> chỉ số đã ghi
@@ -198,6 +200,13 @@ class RawWriter:
                 self.prev_prs[p.index] = cur
         if prs:
             rec["prs"] = prs                           # công nghệ đang nghiên cứu -> giây đã chạy
+        prod = getattr(snap, "production", None)
+        if prod is not None:                           # hàng đợi sinh unit: chỉ ghi công trình đổi (None = hết hàng)
+            ch = {uid: v for uid, v in prod.items() if self.prev_prod.get(uid) != v}
+            ch.update({uid: None for uid in self.prev_prod if uid not in prod})
+            if ch:
+                rec["prod"] = ch
+            self.prev_prod = dict(prod)
         pstat = {}
         for p in snap.players:
             cur = (int(p.ptype), int(getattr(p, "resigned", 0) or 0))

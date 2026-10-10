@@ -39,10 +39,11 @@ def normalize_units(arr):
 
 
 class KeyState:
-    __slots__ = ("frame", "t", "at", "units", "vis", "pstate", "tech_times", "pstat", "go", "prs")
+    __slots__ = ("frame", "t", "at", "units", "vis", "pstate", "tech_times", "pstat", "go", "prs", "prod")
 
-    def __init__(self, frame, t, at, units, vis, pstate, tech_times, pstat, go, prs=None):
+    def __init__(self, frame, t, at, units, vis, pstate, tech_times, pstat, go, prs=None, prod=None):
         self.prs = prs or {}
+        self.prod = prod or {}
         self.frame, self.t, self.at = frame, t, at
         self.units, self.vis, self.pstate, self.tech_times = units, vis, pstate, tech_times
         self.pstat, self.go = pstat, go
@@ -58,6 +59,7 @@ class FrameState:
         self.pstate = {}             # index người chơi -> (attrs, techs)
         self.tech_times = {}         # index -> {id công nghệ: giờ game lần đầu thấy xong}
         self.pstat = {}              # index -> (0 đang chơi / 1 thắng / 2 thua, đã đầu hàng) — file từ 2026-10-09
+        self.prod = {}               # uid công trình -> (hàng đợi, dat id đang sinh, giây, tỉ lệ) — file từ 2026-10-10
         self.go = 0                  # 1 = ván đã kết thúc
         self.prs = {}                # index -> {id công nghệ đang nghiên cứu: giây đã chạy}
         self.frame = -1
@@ -126,6 +128,11 @@ class FrameState:
             self.go = p["go"]
         if "prs" in p:
             self.prs.update(p["prs"])
+        for uid, v in p.get("prod", {}).items():
+            if v is None:
+                self.prod.pop(uid, None)
+            else:
+                self.prod[uid] = v
         self.frame = frame
         self.t = p["t"]
         self.at = p["at"]
@@ -137,7 +144,7 @@ class FrameState:
     def snapshot(self):
         return KeyState(self.frame, self.t, self.at, self.units(), self.vis.copy(), dict(self.pstate),
                         {k: dict(v) for k, v in self.tech_times.items()}, dict(self.pstat), self.go,
-                        {k: dict(v) for k, v in self.prs.items()})
+                        {k: dict(v) for k, v in self.prs.items()}, dict(self.prod))
 
     def restore(self, k: KeyState):
         self._reset_units(k.units)
@@ -146,6 +153,7 @@ class FrameState:
         self.tech_times = {i: dict(v) for i, v in k.tech_times.items()}
         self.pstat, self.go = dict(k.pstat), k.go
         self.prs = {i: dict(v) for i, v in k.prs.items()}
+        self.prod = dict(getattr(k, "prod", {}) or {})
         self.frame, self.t, self.at = k.frame, k.t, k.at
 
 

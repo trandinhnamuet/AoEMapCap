@@ -51,7 +51,9 @@ class Hud:
         ("U  /  H  /  M", "thanh thời gian  /  ẩn toàn bộ HUD  /  minimap"),
         ("Lăn chuột", "zoom quanh con trỏ;  Home / bấm chuột giữa: xem cả bản đồ"),
         ("Chuột ra mép, mũi tên, kéo chuột", "di chuyển máy quay"),
-        ("Bấm vào unit", "xem thông tin unit;  bấm chỗ trống để đóng"),
+        ("Bấm vào unit", "xem thông tin + khoá máy quay theo unit;  bấm chỗ trống để đóng"),
+        ("L", "bật / tắt khoá máy quay theo unit đang chọn (tự di chuyển máy quay cũng bỏ khoá)"),
+        ("S", "bật / tắt âm thanh (nghe theo những gì máy quay đang nhìn, tốc độ tối đa x2)"),
         ("F11  /  Alt+Enter", "bật / tắt toàn màn hình"),
         ("Esc  /  ?", "bật / tắt bảng này (bấm chuột bất kì đâu cũng đóng)"),
     ]
@@ -443,6 +445,9 @@ class Hud:
         progress = info.get("progress") or []
         res_h = row_h if res else 0
         prog_h = len(progress) * int(36 * u)
+        queue = info.get("queue")
+        if queue:
+            prog_h += int(52 * u)
         w = max([int(12 * u) + port + int(12 * u) + max(s.get_width() for s in head) + int(16 * u),
                  cols * cell_w + int(24 * u), int(360 * u)] + [e.get_width() + int(24 * u) for e in extra])
         top_h = max(port, sum(s.get_height() for s in head) + (int(30 * u) if hp else 0)) + int(16 * u)
@@ -509,6 +514,27 @@ class Hud:
             b2 = bar.copy(); b2.width = int(bar.width * frac)
             pygame.draw.rect(surf, GOLD, b2)
             y += int(36 * u)
+        if queue:                                         # đang sinh: icon unit + số trong hàng + thanh tiến độ
+            qi = int(44 * u)
+            cx = r.x + int(12 * u)
+            box = pygame.Rect(cx, y + int(2 * u), qi, qi)
+            pygame.draw.rect(surf, (30, 30, 30), box)
+            if queue.get("icon") is not None:
+                surf.blit(pygame.transform.smoothscale(queue["icon"], (qi, qi)), box)
+            pygame.draw.rect(surf, (150, 135, 90), box, 1)
+            if queue["count"] > 1:                         # số trên góc icon như nút trong game
+                ct = self.text(str(queue["count"]), int(16 * u), WHITE, True)
+                surf.blit(ct, ct.get_rect(bottomright=(box.right - int(2 * u), box.bottom)))
+            tx = box.right + int(10 * u)
+            t = self.text(f"Đang sinh: {queue['name']}  {int(queue['frac'] * 100)}%", int(15 * u), WHITE, True)
+            surf.blit(t, (tx, y + int(2 * u)))
+            bar = pygame.Rect(tx, y + int(4 * u) + t.get_height(), r.right - tx - int(12 * u), int(7 * u))
+            t2 = self.text(f"Hàng đợi: {queue['count']}", int(13 * u), GREY)
+            surf.blit(t2, (tx, bar.bottom + int(2 * u)))
+            pygame.draw.rect(surf, (50, 50, 50), bar)
+            b2 = bar.copy(); b2.width = int(bar.width * queue["frac"])
+            pygame.draw.rect(surf, (90, 200, 90), b2)
+            y += int(52 * u)
         for e in extra:
             surf.blit(e, (r.x + int(12 * u), y))
             y += e.get_height()

@@ -19,6 +19,35 @@ from .render_full import FullRenderer, SpriteStore
 from .video_render import VideoRenderer
 
 
+GAME_DIR_CANDIDATES = (r"C:\Program Files\XArena\Game\AoE-HD", r"C:\Program Files (x86)\XArena\Game\AoE-HD",
+                       r"D:\Game\AoE-HD", r"C:\Game\AoE-HD", r"D:\XArena\Game\AoE-HD")
+
+
+def valid_game_dir(d):
+    """Thư mục game AoE-HD dùng được để lấy đồ hoạ (có data\\empires.dat, graphic.drs, interfac.drs)."""
+    return bool(d) and all(os.path.isfile(os.path.join(d, "data", f))
+                           for f in ("empires.dat", "graphic.drs", "interfac.drs"))
+
+
+def resolve_game_dir(*hints):
+    """Thư mục game: các gợi ý (cấu hình, header file ghi) -> game đang chạy -> các chỗ cài quen thuộc; None nếu không có."""
+    for d in hints:
+        if valid_game_dir(d):
+            return d
+    try:
+        p = find_game_process()
+        if p is not None:
+            d = os.path.dirname(p.exe())
+            if valid_game_dir(d):
+                return d
+    except Exception:  # noqa: BLE001
+        pass
+    for d in GAME_DIR_CANDIDATES:
+        if valid_game_dir(d):
+            return d
+    return None
+
+
 def base_dir():
     """Thư mục chứa exe (khi đóng gói) hoặc thư mục dự án."""
     if getattr(sys, "frozen", False):
@@ -28,7 +57,7 @@ def base_dir():
 
 @dataclass
 class Config:
-    game_dir: str = r"D:\Game\AoE-HD"        # dùng khi không nhận được thư mục game đang chạy
+    game_dir: str = ""                       # thư mục game; tự nhận từ game đang chạy rồi lưu lại (rỗng = chưa biết)
     out_dir: str = ""                        # rỗng = <thư mục exe>\Video
     video_width: int = 1920
     fps: float = 25.0                        # khung/giây của file video
@@ -560,7 +589,7 @@ class Engine:
         except Exception:  # noqa: BLE001
             pass
 
-        ffmpeg = find_ffmpeg([cfg.game_dir])
+        ffmpeg = find_ffmpeg([cfg.game_dir] if cfg.game_dir else [])
         encoder = None
         record_video = cfg.record_video
         # chế độ dữ liệu thô chỉ cần ffmpeg khi tự xuất video sau trận
@@ -585,7 +614,8 @@ class Engine:
         configure_affinity(cfg.render_cpus_in_game)
         log(f"dữ liệu lưu tại: {out_dir}")
 
-        gfx = self._load_graphics(cfg.game_dir)
+        # Ghi dữ liệu trận không cần đồ hoạ; chỉ chế độ vẽ video ngay trong trận / ảnh tĩnh mới nạp (khi đã thấy game).
+        gfx = {"dir": cfg.game_dir if valid_game_dir(cfg.game_dir) else None, "video": None}
         interval_ms = int(cfg.stills_interval * 60_000)
         frame_dt = 1.0 / cfg.capture_fps
         test_seconds = float(os.environ.get("MAPCAP_TEST_SECONDS", "0") or 0)
@@ -610,11 +640,28 @@ class Engine:
             log(f"thấy game: {proc.info['name']} (pid {proc.pid})")
             try:
                 gdir = os.path.dirname(proc.exe())
-                if os.path.isfile(os.path.join(gdir, "data", "empires.dat")) and os.path.normcase(gdir) != os.path.normcase(gfx["dir"]):
-                    log(f"game chạy từ {gdir}, nạp dữ liệu đồ hoạ từ đó")
-                    gfx = self._load_graphics(gdir)
+                if valid_game_dir(gdir):
+                    if os.path.normcase(gdir) != os.path.normcase(gfx["dir"] or ""):
+                        log(f"game chạy từ {gdir}")
+                        gfx = {"dir": gdir, "video": None}
+                    if os.path.normcase(cfg.game_dir or "") != os.path.normcase(gdir):
+                        cfg.game_dir = gdir              # nhớ lại cho Xem replay / Xuất video
+                        try:
+                            save_config(cfg)
+                        except Exception:  # noqa: BLE001
+                            pass
             except Exception as e:  # noqa: BLE001
-                log(f"không đọc được thư mục game đang chạy ({e}), dùng dữ liệu cấu hình")
+                log(f"không đọc được thư mục game đang chạy ({e})")
+            if gfx["dir"] is None:
+                gfx["dir"] = resolve_game_dir()
+                if gfx["dir"] is None:
+                    log("không xác định được thư mục game (vẫn ghi được; khi xem replay sẽ cần chỉ thư mục game)")
+            if gfx["video"] is None and gfx["dir"] and (cfg.record_mode == "live" or cfg.stills_interval > 0):
+                try:
+                    gfx = self._load_graphics(gfx["dir"])
+                except Exception as e:  # noqa: BLE001
+                    log(f"không nạp được đồ hoạ từ {gfx['dir']} ({e}): chuyển sang chỉ ghi dữ liệu")
+                    cfg.record_mode = "raw"
             try:
                 mem = ProcessMemory(proc.pid)
             except MemoryError_ as e:
