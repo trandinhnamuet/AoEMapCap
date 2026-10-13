@@ -19,12 +19,11 @@ COLUMNS = (
     ("name", "Người chơi", 150, "w"),
     ("civ", "Quân", 100, "w"),
     ("result", "Kết quả", 120, "w"),
-    ("format", "Map", 70, "center"),
-    ("mode", "Thể thức", 95, "w"),
-    ("kind", "Bản đồ", 150, "w"),
+    ("mode", "Thể thức", 110, "w"),          # "2v1 Random", "4v4 Shang"
+    ("kind", "Map", 170, "w"),               # "Hill Country - Large"
     ("dur", "Thời lượng", 80, "e"),
 )
-RESULT_TAG = {"Thắng": "win", "Thua": "lose", "Đầu hàng": "lose"}
+RESULT_TAG = {"Thắng": "win", "Thua": "lose", "Đầu hàng": "lose", "Cần bản mới": "muted"}
 
 
 class MatchTable(ttk.Frame):
@@ -33,6 +32,7 @@ class MatchTable(ttk.Frame):
     def __init__(self, parent, folder, on_open=None, show_dir_button=True):
         super().__init__(parent)
         self.on_open = on_open
+        self.is_busy = None          # hàm(path) -> True nếu trận đang được ghi (không cho xoá)
         self.q = queue.Queue()
         self.infos = {}
         self.sort_key = ("date", True)
@@ -72,6 +72,7 @@ class MatchTable(ttk.Frame):
         self.tree.bind("<Double-1>", lambda e: self.open_selected())
         self.tree.bind("<Return>", lambda e: self.open_selected())
         self.tree.bind("<<TreeviewSelect>>", lambda e: self._show_detail())
+        self.tree.bind("<Delete>", lambda e: self.delete_selected())
         self.var_detail = tk.StringVar(value="")
         ttk.Label(self, textvariable=self.var_detail, foreground="#333", justify="left", wraplength=900).pack(
             fill="x", pady=(6, 0))
@@ -142,9 +143,9 @@ class MatchTable(ttk.Frame):
     def _row(info):
         if "error" in info:
             return (time.strftime("%d/%m/%Y %H:%M", time.localtime(info.get("created", 0))), info["file"], "",
-                    "lỗi đọc file", "", "", info["error"][:40], ""), "muted"
+                    "lỗi đọc file", "", info["error"][:40], ""), "muted"
         vals = (time.strftime("%d/%m/%Y %H:%M", time.localtime(info["created"])), info["recorder"],
-                info["recorder_civ"], info["result"], info["format"], info["civ_mode"], info["map"],
+                info["recorder_civ"], info["result"], f"{info['format']} {info['civ_mode']}", info["map"],
                 fmt_duration(info["duration_ms"]))
         return vals, RESULT_TAG.get(info["result"], "")
 
@@ -211,8 +212,51 @@ class MatchTable(ttk.Frame):
         if d:
             self.set_folder(os.path.normpath(d))
 
+    def delete_selected(self):
+        """Xoá trận đang chọn (đưa file vào Thùng rác, hỏi lại trước). Không xoá trận đang ghi."""
+        from tkinter import messagebox
+        p = self.selected_path()
+        if not p:
+            return False
+        info = self.infos.get(p, {})
+        busy = self.is_busy(p) if self.is_busy else False
+        try:
+            busy = busy or (time.time() - os.path.getmtime(p) < 15)
+        except OSError:
+            pass
+        if busy:
+            messagebox.showinfo("Xoá trận", "Trận này đang được ghi, chưa xoá được.", parent=self)
+            return False
+        desc = f"{time.strftime('%d/%m/%Y %H:%M', time.localtime(info.get('created', 0)))} · {info.get('recorder', '')} · " \
+               f"{info.get('format', '')} {info.get('civ_mode', '')} · {info.get('result', '')}"
+        if not messagebox.askyesno("Xoá trận", f"Xoá trận này?\n\n{desc}\n{os.path.basename(p)}\n\n"
+                                   "File được đưa vào Thùng rác (khôi phục được).", parent=self, icon="warning"):
+            return False
+        ok, err = send_to_recycle_bin(p)
+        if not ok:
+            messagebox.showerror("Xoá trận", f"Không xoá được: {err}", parent=self)
+            return False
+        nxt = self.tree.next(p) or self.tree.prev(p)
+        self.infos.pop(p, None)
+        self._refill()
+        if nxt and self.tree.exists(nxt):
+            self.tree.selection_set(nxt)
+            self.tree.focus(nxt)
+        self.var_status.set(f"Đã xoá {os.path.basename(p)} (trong Thùng rác).")
+        return True
+
     def stop(self):
         self._gen += 1
+
+
+def _log_update(msg):
+    """Nhật ký cập nhật của AoE-Replay: Video\\Raw\\_replay.log cạnh exe (cùng chỗ log của trình xem)."""
+    try:
+        import datetime
+        with open(os.path.join(default_folder(), "_replay.log"), "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] cập nhật: {msg}\n")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 class PickerWindow:
@@ -234,6 +278,7 @@ class PickerWindow:
         ttk.Button(bot, text="Đóng", command=self._close).pack(side="right", padx=4)
         ttk.Button(bot, text="Mở file khác...", command=self._open_other).pack(side="right", padx=4)
         ttk.Button(bot, text="Xem replay", command=self.table.open_selected).pack(side="right", padx=4)
+        ttk.Button(bot, text="Xoá trận", command=self.table.delete_selected).pack(side="right", padx=4)
         self.top.protocol("WM_DELETE_WINDOW", self._close)
 
     # tương thích với mã/test cũ
@@ -283,6 +328,30 @@ class PickerWindow:
         self.top.destroy()
 
 
+def send_to_recycle_bin(path):
+    """Đưa file vào Thùng rác của Windows (SHFileOperationW + FOF_ALLOWUNDO). Trả về (ok, lỗi)."""
+    if os.name != "nt":
+        try:
+            os.remove(path)
+            return True, ""
+        except OSError as e:
+            return False, str(e)
+    import ctypes
+    from ctypes import wintypes
+
+    class SHFILEOPSTRUCTW(ctypes.Structure):
+        _fields_ = [("hwnd", wintypes.HWND), ("wFunc", ctypes.c_uint), ("pFrom", ctypes.c_wchar_p),
+                    ("pTo", ctypes.c_wchar_p), ("fFlags", ctypes.c_ushort), ("fAnyOperationsAborted", wintypes.BOOL),
+                    ("hNameMappings", ctypes.c_void_p), ("lpszProgressTitle", ctypes.c_wchar_p)]
+    FO_DELETE, FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO, FOF_NOERRORUI = 3, 0x4, 0x10, 0x40, 0x400
+    op = SHFILEOPSTRUCTW(None, FO_DELETE, os.path.abspath(path) + "\0", None,
+                         FOF_SILENT | FOF_NOCONFIRMATION | FOF_ALLOWUNDO | FOF_NOERRORUI, False, None, None)
+    rc = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+    if rc != 0 or op.fAnyOperationsAborted or os.path.exists(path):
+        return False, f"mã lỗi {rc}"
+    return True, ""
+
+
 def app_icon():
     base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     p = os.path.join(base, "assets", "app.ico")
@@ -299,13 +368,21 @@ def default_folder():
     return base
 
 
-def pick_match(folder=None):
+def pick_match(folder=None, check_update=False):
+    """check_update: AoE-Replay.exe chạy riêng thì bảng chọn trận kiểm tra / tự cập nhật (AoE-MapCap tự lo phần mình)."""
     root = tk.Tk()
     try:
         if app_icon():
             root.iconbitmap(default=app_icon())
     except Exception:  # noqa: BLE001
         pass
-    w = PickerWindow(root, folder or default_folder(), None, title="AoE-Replay — chọn trận", standalone=True)
+    from mapcap.version import APP_VERSION
+    w = PickerWindow(root, folder or default_folder(), None, title=f"AoE-Replay v{APP_VERSION} — chọn trận",
+                     standalone=True)
+    if check_update:
+        from mapcap.update_ui import UpdateController
+        UpdateController(root, root, "replay", "AoE-Replay", log=_log_update,
+                         restart_args=lambda: [f"--folder={folder}"] if folder else [],
+                         bar_before=w.table).start()
     root.mainloop()
     return w.result

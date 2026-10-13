@@ -2,13 +2,14 @@
 
     <file.aoerec>            mở file (không có thì hiện bảng các trận đã ghi để chọn)
     --folder=<thư mục>       thư mục chứa .aoerec cho bảng chọn trận (mặc định Video\Raw cạnh exe)
-    --game-dir=<thư mục>     thư mục game AoE-HD để lấy đồ hoạ (mặc định: ghi trong file, rồi các chỗ quen thuộc)
+    --game-dir=<thư mục>     thư mục game AoE-HD / AOE1R để lấy đồ hoạ (mặc định: ghi trong file, rồi các chỗ quen thuộc)
     --selftest=<thư mục>     chạy kịch bản tự kiểm tra trên cửa sổ ẩn, lưu ảnh vào thư mục
 """
 import os
 
 
-def main(argv):
+def main(argv, standalone=False):
+    """standalone: chạy bằng AoE-Replay.exe (không qua AoE-MapCap) -> bảng chọn trận tự kiểm tra bản mới."""
     import sys
     for st in (sys.stdout, sys.stderr):          # exe --windowed: console cp1252 không in được tiếng Việt
         try:
@@ -27,7 +28,7 @@ def main(argv):
             path = a
     if path is None:
         from .picker import pick_match
-        path = pick_match(folder)
+        path = pick_match(folder, check_update=standalone)
         if not path:
             return 0
     from .viewer import main as viewer_main, find_game_dir, valid_game_dir
@@ -42,10 +43,11 @@ def main(argv):
             from tkinter import filedialog, messagebox
             root = tk.Tk()
             root.withdraw()
-            d = filedialog.askdirectory(title="Chọn thư mục game AoE-HD (để lấy hình ảnh, âm thanh của game)")
+            d = filedialog.askdirectory(title="Chọn thư mục game AoE-HD / AOE1R (để lấy hình ảnh, âm thanh của game)")
             if not d or not valid_game_dir(d):
                 if d:
-                    messagebox.showerror("AoE-Replay", "Thư mục này không có data\empires.dat và data\graphic.drs của AoE-HD.")
+                    messagebox.showerror("AoE-Replay", "Thư mục này không có dữ liệu game AoE-HD / AOE1R "
+                                         "(empires.dat, graphic.drs hoặc graphics.drs trong data / data2).")
                 root.destroy()
                 return 1
             root.destroy()

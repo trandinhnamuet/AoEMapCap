@@ -112,6 +112,11 @@ class UnitDef:
     dead_unit_id: int
     icon_id: int
     lang_name: int = -1      # id chuỗi tên trong language.dll
+    train_sound: int = -1    # âm thanh khi được sinh ra (game chỉ phát cho unit của người đang chơi)
+    select_sound: int = -1   # giọng khi được chọn (giao diện, không phát khi xem replay)
+    dying_sound: int = -1    # âm thanh khi chết
+    attack_graphic: int = -1  # đồ hoạ tấn công (loại >= 50)
+    tasks: list = field(default_factory=list)   # [(loại hành động, đồ hoạ làm việc, đồ hoạ mang, tiếng làm, tiếng trả)]
 
 
 @dataclass
@@ -219,8 +224,13 @@ def parse(d):
         g.sound_id = sound_id
         if attack_sound_used:
             for _a in range(angle_count):
-                vals = r.arr("h", 6)        # 3 x (khung, id âm thanh)
-                g.angle_sounds.append([(vals[2 * k], vals[2 * k + 1]) for k in range(3) if vals[2 * k + 1] >= 0])
+                vals = r.arr("h", 6)        # 3 x (khung, id âm thanh); game dừng ở mục có khung = -1 (0x4A6C88)
+                lst = []
+                for k in range(3):
+                    if vals[2 * k] == -1:
+                        break
+                    lst.append((vals[2 * k], vals[2 * k + 1]))
+                g.angle_sounds.append(lst)
         graphics[gid] = g
 
     # ---- khối địa hình
@@ -306,6 +316,7 @@ def parse_units_by_scan(dat):
                                 civ_idx = 0
                             last_id = id1
                             u = UnitDef(id1, typ, name[:-1].decode("latin1"), cls, standing, dying, rx, ry, dead_unit, icon, lang_name)
+                            _parse_unit_extra(d, u, p, ndmg, name_at + nlen + 2)
                             civ_units.setdefault(civ_idx, {})[id1] = u
                             units.setdefault(id1, u)
                             p = name_at + nlen + 2
@@ -316,6 +327,38 @@ def parse_units_by_scan(dat):
     parse_research(dat)
     parse_civ_names(dat)
     return units
+
+
+def _parse_unit_extra(d, u, p, ndmg, q):
+    """Các trường âm thanh / nhiệm vụ / đồ hoạ tấn công theo bố cục các hàm nạp DAT của game (RE 2026-10-12):
+    loại 10: tiếng sinh p+37, tiếng chọn và tiếng chết sau đồ hoạ hư hại; loại 20: tốc độ (4); loại 30: 17 byte;
+    loại 40 (0x43ED70): 20 byte (giọng tấn công/di chuyển ở +15/+17) rồi danh sách nhiệm vụ (0x4E9E80, mỗi nhiệm vụ
+    59 byte: 0x4E9780, 6 số cuối = đồ hoạ đi/tiến/làm việc/mang, tiếng làm việc, tiếng trả tài nguyên);
+    loại 50 (0x43FC30): giáp, công, ..., đồ hoạ tấn công."""
+    try:
+        u.train_sound = struct.unpack_from("<h", d, p + 37)[0]
+        u.select_sound, u.dying_sound = struct.unpack_from("<hh", d, p + 138 + 5 * ndmg)
+        if u.type < 40:
+            return
+        q40 = q + 4 + 17
+        nt = struct.unpack_from("<h", d, q40 + 20)[0]
+        if not (0 <= nt <= 64):
+            return
+        t = q40 + 22
+        for _ in range(nt):
+            act = struct.unpack_from("<h", d, t + 5)[0]
+            mov, proc, work, carry, gsnd, dsnd = struct.unpack_from("<6h", d, t + 47)
+            u.tasks.append((act, work, carry, gsnd, dsnd))
+            t += 59
+        if u.type < 50:
+            return
+        z = t + 1
+        na = struct.unpack_from("<h", d, z)[0]; z += 2 + 4 * na
+        nr = struct.unpack_from("<h", d, z)[0]; z += 2 + 4 * nr
+        z += 2 + 4 + 4 + 4 + 2 + 2 + 1 + 2 + 12 + 1 + 4
+        u.attack_graphic = struct.unpack_from("<h", d, z)[0]
+    except struct.error:
+        pass
 
 
 RESEARCH_FIXED = 52     # required[4] i16, 3 x (type i16, amount i16, flag u8), reqn i16, location i16, lang name/desc u16,

@@ -1,0 +1,4 @@
+{
+  "min_version": "1",
+  "_ghi_chu": "min_version: bản thấp nhất còn được dùng. Bản thấp hơn sẽ bị chặn (chỉ còn Cập nhật / Thoát) khi có mạng. Chỉ nâng khi thật cần (đổi định dạng file, lỗi ghi nghiêm trọng). Muốn mọi bản cũ phải cập nhật thì đặt bằng số của bản sắp phát hành."
+}

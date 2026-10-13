@@ -13,7 +13,17 @@ File = chuỗi bản ghi [type u8][len u32][zlib(pickle(payload))]. Có thể đ
 Sau 'E' là đuôi 16 byte: END_MAGIC + offset u64 của bản ghi 'E' -> đọc tổng kết không phải quét cả file.
 Header từ 2026-10-09 có thêm 'match' (thiết lập ván), 'diplomacy' và 'resigned' theo người chơi.
 Bộ đọc cũ gặp đuôi coi như bản ghi cụt và dừng đúng chỗ; gặp 'E' thì bỏ qua (không phải 'F').
+
+Định dạng 3 (2026-10-12, file nhỏ hơn ~5 lần, không bỏ dữ liệu nào):
+  'B' block  : lzma(preset 1, pickle([(tag, payload), ...])) gom ~50 mẫu (2 s) cùng các bản ghi D/S/Q/U xen giữa,
+               nén chung nên tận dụng việc các mẫu liền nhau gần giống nhau (nhỏ hơn ~3,9 lần, nén nhanh hơn zlib từng
+               mẫu). Chỉ 'H' và 'E' còn là bản ghi zlib riêng ở ngoài.
+  'Q' statics delta: {"version", "units": vật thể tĩnh mới/đổi, "removed": uid đã mất}; 'S' toàn bộ chỉ ghi lần đầu và
+               mỗi 60 s (điểm bắt đầu khi tua). Trước đây mỗi lần một cây bớt gỗ là ghi lại cả ~4 400 vật thể.
+  'E' thêm "pstat_log" [(t, index, trạng thái, đầu hàng)] để danh sách trận không phải đọc cả file.
+Dùng iter_records() để đọc tuần tự (tự mở khối 'B'); file định dạng 1-2 vẫn đọc bình thường.
 """
+import lzma
 import os
 import pickle
 import struct
@@ -26,7 +36,50 @@ from .game import PlayerInfo, Snapshot, UnitDefInfo, UnitInfo
 
 MAGIC = b"AOEREC01"
 END_MAGIC = b"AOEEND01"
-FORMAT_VERSION = 2               # 1: bản đầu; 2: thêm match/pstat/E (2026-10-09)
+FORMAT_VERSION = 3               # 1: bản đầu; 2: thêm match/pstat/E (2026-10-09); 3: khối 'B' + 'Q' (2026-10-12)
+BLOCK_FRAMES = 50                # số mẫu mỗi khối nén chung (~2 s ở 25 mẫu/giây; tắt đột ngột mất tối đa chừng này)
+LZMA_PRESET = 1                  # đo trên trận thật: preset 1 nhỏ ~ preset 6 (3,9x so với 4,1x) mà nhanh hơn 13 lần
+STATIC_FULL_EVERY = 60.0         # giây: ghi lại toàn bộ vật thể tĩnh (điểm tựa khi tua), giữa chừng chỉ ghi phần đổi
+
+
+def file_version(hdr):
+    """Định dạng của file theo header (lấy số lớn hơn giữa "format" và "container"; file rất cũ = 1)."""
+    hdr = hdr or {}
+    return int(max(hdr.get("container") or 0, hdr.get("format") or 1))
+
+
+NEWER_FORMAT_MSG = ("File này được ghi bằng bản AoE-MapCap mới hơn (định dạng {v}), bản đang dùng chỉ đọc được tới "
+                    "định dạng {mine}. Hãy cập nhật AoE-MapCap / AoE-Replay: "
+                    "https://github.com/trandinhnamuet/AoEMapCap/releases")
+
+
+def decode_block(data):
+    """Danh sách (tag, payload) bên trong một khối 'B'."""
+    return pickle.loads(lzma.decompress(data))
+
+
+def iter_records(path):
+    """Đọc tuần tự mọi bản ghi (tag, payload) của file; khối 'B' được mở ra theo đúng thứ tự. Dừng êm ở bản ghi cụt."""
+    with open(path, "rb", buffering=1 << 16) as f:
+        if f.read(len(MAGIC)) != MAGIC:
+            raise ValueError("không phải file .aoerec")
+        while True:
+            head = f.read(5)
+            if len(head) < 5:
+                return
+            tag = head[:1]
+            n = struct.unpack("<I", head[1:])[0]
+            data = f.read(n)
+            if len(data) < n:
+                return                          # file bị cắt (tắt đột ngột): dừng ở bản ghi cuối còn nguyên
+            try:
+                if tag == b"B":
+                    for t, p in decode_block(data):
+                        yield t, p
+                else:
+                    yield tag, pickle.loads(zlib.decompress(data))
+            except Exception:  # noqa: BLE001
+                return
 UNIT_DT = np.dtype([("uid", "<i4"), ("def", "<i4"), ("owner", "<i2"), ("angle", "u1"), ("status", "u1"),
                     ("flags", "u1"), ("kind", "u1"), ("x", "<f4"), ("y", "<f4"), ("z", "<f4"), ("hp", "<f4"),
                     ("gid", "<i2"), ("frame", "<i2"), ("gid2", "<i2"), ("frame2", "<i2"),
@@ -58,6 +111,12 @@ class RawWriter:
         self.written_stats = {}      # index def -> chỉ số đã ghi
         self.last_t = 0
         self.last_at = 0.0
+        self.block = []              # bản ghi chờ nén chung thành khối 'B'
+        self.block_frames = 0
+        self.prev_statics = None     # mảng vật thể tĩnh đã ghi (để chỉ ghi phần đổi)
+        self.static_full_at = 0.0
+        self.pstat_log = []          # [(t, index, trạng thái, đầu hàng)] — ghi vào 'E'
+        self.raw_bytes = 0           # cỡ pickle trước khi nén (thống kê)
 
     def _def_id(self, d: UnitDefInfo, new_defs):
         i = self.def_index.get(d.addr)
@@ -99,9 +158,29 @@ class RawWriter:
         return arr
 
     def _write(self, tag, payload):
-        b = _pack(tag, payload)
+        if tag in (b"H", b"E"):                       # header / tổng kết: bản ghi zlib riêng ở ngoài khối
+            self._flush_block()
+            b = _pack(tag, payload)
+            self.f.write(b)
+            self.bytes += len(b)
+            return
+        self.block.append((tag, payload))
+        if tag == b"F":
+            self.block_frames += 1
+            if self.block_frames >= BLOCK_FRAMES:
+                self._flush_block()
+
+    def _flush_block(self):
+        if not self.block:
+            return
+        raw = pickle.dumps(self.block, protocol=4)
+        data = lzma.compress(raw, preset=LZMA_PRESET)
+        b = b"B" + struct.pack("<I", len(data)) + data
         self.f.write(b)
         self.bytes += len(b)
+        self.raw_bytes += len(raw)
+        self.block = []
+        self.block_frames = 0
 
     def start(self, snap: Snapshot, meta=None):
         hdr = {
@@ -111,7 +190,7 @@ class RawWriter:
             "terrain": snap.terrain, "elevation": snap.elevation, "shape": snap.shape,
             "tile_dx": snap.tile_dx, "tile_dy": snap.tile_dy, "tile_border": snap.tile_border,
             "terrain_colors": snap.terrain_colors, "speed": snap.speed, "meta": meta or {}, "created": time.time(),
-            "format": FORMAT_VERSION, "match": getattr(snap, "match", None),
+            "format": FORMAT_VERSION, "container": FORMAT_VERSION, "match": getattr(snap, "match", None),
             "diplomacy": [tuple(getattr(p, "diplomacy", ()) or ()) for p in snap.players],
             "resigned": [int(getattr(p, "resigned", 0) or 0) for p in snap.players],
         }
@@ -127,7 +206,15 @@ class RawWriter:
         arr = self._units_array(units, new_defs)
         if new_defs:
             self._write(b"D", new_defs)
-        self._write(b"S", {"version": ver, "units": arr})
+        now = getattr(snap, "taken_at", time.time())
+        prev = self.prev_statics
+        if prev is None or now - self.static_full_at >= STATIC_FULL_EVERY:
+            self._write(b"S", {"version": ver, "units": arr})
+            self.static_full_at = now
+        else:
+            changed, removed = _diff_units(prev, arr)
+            self._write(b"Q", {"version": ver, "units": changed, "removed": removed})
+        self.prev_statics = arr
         self.static_version = ver
 
     def add_frame(self, snap: Snapshot):
@@ -213,6 +300,7 @@ class RawWriter:
             if self.prev_pstat.get(p.index, (0, 0)) != cur:
                 pstat[p.index] = cur
                 self.prev_pstat[p.index] = cur
+                self.pstat_log.append((snap.time_ms, p.index) + cur)
         if pstat:
             rec["pstat"] = pstat
         go = int(getattr(snap, "game_over", 0) or 0)
@@ -228,9 +316,11 @@ class RawWriter:
         try:
             if self.frames:
                 pos = self.bytes
+                self._flush_block()
+                pos = self.bytes
                 self._write(b"E", {"t": self.last_t, "at": self.last_at, "frames": self.frames,
                                    "status": dict(self.prev_pstat), "game_over": self.prev_go, "reason": reason,
-                                   "closed": time.time()})
+                                   "closed": time.time(), "pstat_log": list(self.pstat_log)})
                 self.f.write(END_MAGIC + struct.pack("<Q", pos))
                 self.bytes += 16
         except Exception:  # noqa: BLE001
@@ -240,6 +330,26 @@ class RawWriter:
         except Exception:  # noqa: BLE001
             pass
         return self.frames
+
+
+def _diff_units(prev, arr):
+    """(hàng mới/đổi của arr so với prev theo uid, uid có trong prev mà không còn trong arr)."""
+    if prev is None or len(prev) == 0:
+        return arr, np.zeros(0, "<i4")
+    order = np.argsort(prev["uid"], kind="stable")
+    puid = prev["uid"][order]
+    pos = np.clip(np.searchsorted(puid, arr["uid"]), 0, len(puid) - 1)
+    found = puid[pos] == arr["uid"]
+    same = np.zeros(len(arr), bool)
+    if found.any():
+        prow = prev[order[pos[found]]]
+        crow = arr[found]
+        eq = np.ones(found.sum(), bool)
+        for name in arr.dtype.names:
+            eq &= prow[name] == crow[name]
+        same[np.nonzero(found)[0]] = eq
+    removed = np.setdiff1d(prev["uid"], arr["uid"]).astype("<i4")
+    return arr[~same], removed
 
 
 def read_header(path):
@@ -290,22 +400,7 @@ class RawReader:
         self.static_version = 0
 
     def records(self):
-        with open(self.path, "rb") as f:
-            if f.read(len(MAGIC)) != MAGIC:
-                raise ValueError("không phải file .aoerec")
-            while True:
-                head = f.read(5)
-                if len(head) < 5:
-                    return
-                tag = head[:1]
-                n = struct.unpack("<I", head[1:])[0]
-                data = f.read(n)
-                if len(data) < n:
-                    return                      # file bị cắt (tắt đột ngột): dừng ở bản ghi cuối còn nguyên
-                try:
-                    yield tag, pickle.loads(zlib.decompress(data))
-                except Exception:  # noqa: BLE001
-                    return
+        return iter_records(self.path)
 
     def _apply_defs(self, lst):
         for rec in lst:
@@ -358,6 +453,14 @@ class RawReader:
             elif tag == b"S":
                 self.static_version = payload["version"]
                 self.statics = self._units_from_array(payload["units"])
+            elif tag == b"Q":                            # vật thể tĩnh: chỉ phần đổi so với bản trước
+                self.static_version = payload["version"]
+                cur = {u.uid: u for u in self.statics}
+                for uid in payload["removed"].tolist():
+                    cur.pop(int(uid), None)
+                for u in self._units_from_array(payload["units"]):
+                    cur[u.uid] = u
+                self.statics = list(cur.values())
             elif tag == b"F" and hdr is not None:
                 w, h = hdr["map_w"], hdr["map_h"]
                 raw = np.frombuffer(zlib.decompress(payload["vis"]), np.uint32).reshape(h, w)
@@ -394,3 +497,85 @@ class RawReader:
                     if 0 <= u.owner_index < len(players):
                         players[u.owner_index].unit_count += 1
                 yield snap
+
+
+def compact_file(path, progress=None):
+    """Nén lại một file cũ tại chỗ (định dạng < 3): ghi bản mới ra file tạm, kiểm tra đủ số mẫu và tổng kết rồi mới
+    thay file gốc. Trả về (cỡ cũ, cỡ mới) hoặc None nếu đã là định dạng mới / không chắc an toàn."""
+    hdr = read_header(path)
+    if hdr is None or int(hdr.get("container", 0) or 0) >= FORMAT_VERSION:
+        return None
+    tmp = path + ".nen.tmp"
+    try:
+        old, new = recompress(path, tmp, progress)
+        n_old = sum(1 for t, _ in iter_records(path) if t == b"F")
+        n_new = sum(1 for t, _ in iter_records(tmp) if t == b"F")
+        if n_old != n_new or (read_end(path) is not None) != (read_end(tmp) is not None) or new >= old:
+            os.remove(tmp)
+            return None
+        st = os.stat(path)
+        os.replace(tmp, path)
+        os.utime(path, (st.st_atime, st.st_mtime))      # giữ giờ sửa (bảng trận sắp theo ngày)
+        return old, new
+    except Exception:  # noqa: BLE001
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def recompress(src, dst, progress=None):
+    """Chuyển file .aoerec bất kỳ sang định dạng 3 (khối 'B' + 'Q'), không bỏ dữ liệu nào.
+    Trả về (cỡ cũ, cỡ mới). File ghi dở (không có 'E') giữ nguyên là ghi dở."""
+    size = os.path.getsize(src)
+    w = RawWriter(dst)
+    end = None
+    last_at = 0.0
+    prev_ps = {}
+    n = 0
+    try:
+        for tag, p in iter_records(src):
+            if tag == b"H":
+                p = dict(p)
+                p["format"] = max(int(p.get("format", 1)), FORMAT_VERSION) if "format" in p else p.get("format")
+                if p["format"] is None:
+                    del p["format"]                  # file rất cũ: không có thông tin thắng/thua, giữ nguyên ý nghĩa
+                p["container"] = FORMAT_VERSION      # đã ở dạng khối nén (kể cả file rất cũ không có "format")
+                w._write(b"H", p)
+            elif tag == b"S":
+                arr = p["units"]
+                if w.prev_statics is None or last_at - w.static_full_at >= STATIC_FULL_EVERY:
+                    w._write(b"S", p)
+                    w.static_full_at = last_at
+                else:
+                    changed, removed = _diff_units(w.prev_statics, arr)
+                    w._write(b"Q", {"version": p.get("version"), "units": changed, "removed": removed})
+                w.prev_statics = arr
+            elif tag == b"Q":
+                w._write(b"Q", p)
+            elif tag == b"F":
+                last_at = p.get("at", last_at)
+                for idx, v in (p.get("pstat") or {}).items():
+                    if prev_ps.get(idx) != tuple(v):
+                        prev_ps[idx] = tuple(v)
+                        w.pstat_log.append((p.get("t", 0), idx) + tuple(v))
+                w._write(b"F", p)
+                w.frames += 1
+                n += 1
+                if progress and (n & 255) == 0:
+                    progress(n)
+            elif tag == b"E":
+                end = dict(p)
+            elif tag in (b"D", b"U"):
+                w._write(tag, p)
+        w._flush_block()
+        if end is not None:
+            end.setdefault("pstat_log", list(w.pstat_log))
+            pos = w.bytes
+            w._write(b"E", end)
+            w.f.write(END_MAGIC + struct.pack("<Q", pos))
+            w.bytes += 16
+    finally:
+        w.f.close()
+    return size, os.path.getsize(dst)

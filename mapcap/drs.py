@@ -34,6 +34,8 @@ def parse_jasc_pal(data):
 
 
 def load_palette(game_dir=DEFAULT_GAME_DIR, pal_id=MAIN_PALETTE_ID):
-    path = os.path.join(game_dir, "data", "interfac.drs")
-    files = read_drs(path)
+    from .gamefiles import read_group                 # interfac.drs: data2\ rồi data\ (AoE-HD hoặc AOE1R)
+    files = read_group(game_dir, "interface")
+    if ("bin", pal_id) not in files:
+        raise FileNotFoundError(f"không thấy bảng màu {pal_id} trong interfac.drs của {game_dir}")
     return parse_jasc_pal(files[("bin", pal_id)])

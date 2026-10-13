@@ -16,6 +16,7 @@ from .rawrec import RawReader
 from .recorder import ENCODER_ARGS, VideoWriter, find_ffmpeg, pick_encoder
 from .render_full import SpriteStore
 from .video_render import VideoRenderer
+from . import gamefiles
 
 _ACTIVE = 0
 _ACTIVE_LOCK = threading.Lock()
@@ -305,7 +306,7 @@ def render_chunk(rec_path, out_mp4, k0, k1, width, fps, speed, fog_dim, outline,
     need_first = idx_map[k0]
     need_last = idx_map[k1 - 1]
     palette = drs.load_palette(game_dir)
-    dat = D.load(os.path.join(game_dir, "data", "empires.dat"))
+    dat = D.load(gamefiles.dat_path(game_dir))
     D.parse_units_by_scan(dat)
     store = SpriteStore(game_dir, palette)
     vr = VideoRenderer(dat, store, palette, width=width, fog_dim=fog_dim, log=lambda m: None, outline_alpha=outline)

@@ -9,17 +9,20 @@ import os
 import struct
 import time
 
-from mapcap.rawrec import MAGIC, read_end, read_header
+from mapcap.rawrec import FORMAT_VERSION, MAGIC, file_version, read_end, read_header
 
 CACHE_NAME = "_matches.json"
-CACHE_VERSION = 4                 # 3: tên quân tiếng Anh; 4: đội có người bỏ cuộc đầu tiên là đội thua
+CACHE_VERSION = 5                 # 3: tên quân tiếng Anh; 4: đội có người bỏ cuộc đầu tiên là đội thua
 
 CIV_NAMES = {1: "Egyptian", 2: "Greek", 3: "Babylonian", 4: "Assyrian", 5: "Minoan", 6: "Hittite", 7: "Phoenician",
              8: "Sumerian", 9: "Persian", 10: "Shang", 11: "Yamato", 12: "Choson", 13: "Roman", 14: "Carthaginian",
              15: "Palmyran", 16: "Macedonian"}          # tên tiếng Anh như cộng đồng vẫn gọi (theo yêu cầu 2026-10-09)
-MAP_TYPES = ["Quần đảo nhỏ", "Quần đảo lớn", "Bờ biển", "Nội địa", "Đất cao", "Lục địa", "Địa Trung Hải",
+# tên tiếng Anh đúng như language.dll của game (chuỗi 10602..10610, 10611..10616)
+MAP_TYPES = ["Small Islands", "Large Islands", "Coastal", "Inland", "Highland", "Continental", "Mediterranean",
+             "Hill Country", "Narrows"]
+_MAP_TYPES_VI = ["Quần đảo nhỏ", "Quần đảo lớn", "Bờ biển", "Nội địa", "Đất cao", "Lục địa", "Địa Trung Hải",
              "Đồi cao", "Cửa biển hẹp"]
-MAP_SIZES = ["Rất nhỏ", "Nhỏ", "Vừa", "Lớn", "Rất lớn", "Siêu lớn"]
+MAP_SIZES = ["Tiny", "Small", "Medium", "Large", "Huge", "Gigantic"]
 RESULT_TEXT = {1: "Thắng", 2: "Thua"}
 
 
@@ -105,42 +108,52 @@ def _scan_last_frame(path):
             n = struct.unpack("<I", head[1:])[0]
             if pos + 5 + n > size:
                 break
-            if head[:1] == b"F":
-                last = (pos + 5, n)
-                n_frames += 1
+            if head[:1] in (b"F", b"B"):
+                last = (head[:1], pos + 5, n)
+                if head[:1] == b"F":
+                    n_frames += 1
             pos += 5 + n
             f.seek(pos)
         if last is None:
             return None, 0
-        f.seek(last[0])
+        f.seek(last[1])
         try:
-            return pickle.loads(zlib.decompress(f.read(last[1]))), n_frames
+            raw = f.read(last[2])
+            if last[0] == b"B":                     # định dạng 3: mẫu cuối nằm trong khối cuối
+                from mapcap.rawrec import decode_block, iter_records
+                lastf = [p for t, p in decode_block(raw) if t == b"F"]
+                n_frames = sum(1 for t, _p in iter_records(path) if t == b"F")
+                return (lastf[-1] if lastf else None), n_frames
+            return pickle.loads(zlib.decompress(raw)), n_frames
         except Exception:  # noqa: BLE001
             return None, n_frames
 
 
 def first_out(path):
     """Người đầu tiên bị game đánh dấu thua trong trận: (index, time_ms, đã đầu hàng) hoặc None.
-    Đầu hàng = trạng thái 2 kèm cờ đầu hàng; rớt mạng/bị loại = trạng thái 2 không có cờ. Đọc 'pstat' của các mẫu."""
-    import pickle
-    import zlib
-    with open(path, "rb", buffering=1 << 16) as f:
-        if f.read(len(MAGIC)) != MAGIC:
-            return None
-        while True:
-            head = f.read(5)
-            if len(head) < 5:
-                return None
-            n = struct.unpack("<I", head[1:])[0]
-            data = f.read(n)
-            if len(data) < n:
-                return None
-            if head[:1] != b"F":
+    Đầu hàng = trạng thái 2 kèm cờ đầu hàng; rớt mạng/bị loại = trạng thái 2 không có cờ.
+    Định dạng 3: lấy ngay từ 'E'.pstat_log; file cũ / ghi dở: đọc 'pstat' của các mẫu."""
+    end = read_end(path)
+    if end is not None and "pstat_log" in end:
+        events = [(int(t), int(i), (int(s), int(r))) for t, i, s, r in end["pstat_log"]]
+    else:
+        events = None
+    if events is not None:
+        by_t = {}
+        for t, i, v in events:
+            by_t.setdefault(t, []).append((i, v))
+        for t in sorted(by_t):
+            outs = [(i, v) for i, v in by_t[t] if v[0] == 2]
+            if outs:
+                outs.sort(key=lambda o: -int(o[1][1]))
+                i, v = outs[0]
+                return i, t, bool(v[1])
+        return None
+    from mapcap.rawrec import iter_records
+    try:
+        for tag, pl in iter_records(path):
+            if tag != b"F":
                 continue
-            try:
-                pl = pickle.loads(zlib.decompress(data))
-            except Exception:  # noqa: BLE001
-                return None
             ps = pl.get("pstat")
             if not ps:
                 continue
@@ -150,6 +163,9 @@ def first_out(path):
                 outs.sort(key=lambda o: -int(o[1][1]))
                 i, v = outs[0]
                 return i, int(pl.get("t", 0)), bool(v[1])
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
 
 def match_info(path):
@@ -173,12 +189,16 @@ def match_info(path):
         status = {int(k): tuple(v) for k, v in (end.get("status") or {}).items()}
         reason = end.get("reason")
         game_over = end.get("game_over", 0)
+    elif file_version(hdr) > FORMAT_VERSION:
+        n_frames, t_end, game_over = 0, 0, None
     else:
         last, n_frames = _scan_last_frame(path)
         t_end = last.get("t", 0) if last else 0
         game_over = None
     out = None
-    if "format" in hdr:
+    if file_version(hdr) > FORMAT_VERSION:
+        result = "Cần bản mới"                    # file của bản mới hơn: không đoán nội dung, chỉ báo cập nhật
+    elif "format" in hdr:
         # luật (người dùng, 2026-10-10): đội có người đầu tiên đầu hàng / rớt mạng là đội thua, kể cả khi
         # ván chưa kết thúc chính thức lúc dừng ghi
         try:
@@ -205,9 +225,9 @@ def match_info(path):
     ms = match.get("map_size")
     map_kind = MAP_TYPES[mt] if isinstance(mt, int) and 0 <= mt < len(MAP_TYPES) else ""
     if isinstance(ms, int) and 0 <= ms < len(MAP_SIZES):
-        map_kind = (map_kind + " · " if map_kind else "") + MAP_SIZES[ms]
+        map_kind = (map_kind + " - " if map_kind else "") + MAP_SIZES[ms]
     if not map_kind:
-        map_kind = f"{hdr.get('map_w')}×{hdr.get('map_h')}"
+        map_kind = f"{hdr.get('map_w')}x{hdr.get('map_h')}"
     players = []
     lose_team = team_of.get(out[0]) if out is not None else None
     for k, t in enumerate(teams):

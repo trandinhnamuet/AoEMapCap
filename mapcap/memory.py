@@ -22,14 +22,32 @@ class MemoryError_(Exception):
     pass
 
 
-def find_game_process():
-    """Trả về psutil.Process của game đang chạy, hoặc None."""
+def find_game_process(exclude=()):
+    """Trả về psutil.Process của game đang chạy, hoặc None. exclude: pid bỏ qua (exe không hỗ trợ)."""
     for p in psutil.process_iter(["name", "exe"]):
         name = (p.info["name"] or "").lower()
         if name.endswith(".exe") and name[:-4].startswith(GAME_EXE_PREFIXES):
-            if name.startswith("empires") and "setup" not in name:
+            if name.startswith("empires") and "setup" not in name and p.pid not in exclude:
                 return p
     return None
+
+
+# Dấu nhận dạng bản exe tool đọc được (Rise of Rome 1.0, image base cố định): các lệnh trong mã game trỏ tới đúng 2
+# biến tool dùng (SETTINGS_PTR 0x585E88, VISIBILITY_ROWS 0x7D70C8). Kiểm 2026-10-13: khớp đủ 6/6 ở 15 bản
+# (AoE-HD EMPIRESX / _HD / _HDR / empires.exe / patch EMPIRESX1..4; AOE1R Empiresx / _n / _r), 0/6 ở Empires.exe của
+# AOE1R (Age of Empires gốc, không có Rise of Rome).
+BUILD_SIGNATURE = ((0x4037AA, 0x585E88), (0x481323, 0x585E88), (0x48CCCE, 0x585E88), (0x4B05E8, 0x585E88),
+                   (0x41356A, 0x7D70C8), (0x427369, 0x7D70C8))
+
+
+def check_build(pm):
+    """(số chỗ khớp, tổng số) của dấu nhận dạng trong bộ nhớ game. 0 = chương trình khác hẳn, không đọc được."""
+    hit = 0
+    for va, val in BUILD_SIGNATURE:
+        b = pm.try_read(va, 4)
+        if b is not None and len(b) == 4 and struct.unpack("<I", b)[0] == val:
+            hit += 1
+    return hit, len(BUILD_SIGNATURE)
 
 
 class ProcessMemory:

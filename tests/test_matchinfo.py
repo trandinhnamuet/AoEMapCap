@@ -203,7 +203,7 @@ def test_recording(tmp):
     path = os.path.join(tmp, "2026-10-09_000000_tran1.aoerec")
     rec_idx, enemy = make_recording(path)
     hdr = read_header(path)
-    assert hdr["format"] == 2 and hdr["match"]["map_type"] == 5, hdr.get("match")
+    assert hdr["format"] == 3 and hdr["match"]["map_type"] == 5, hdr.get("match")
     with open(path, "rb") as f:
         f.seek(-16, 2)
         assert f.read(8) == END_MAGIC
@@ -251,7 +251,7 @@ def test_recording(tmp):
     assert d.stats_at(di, 10)["attacks"] == [(4, 3)] and d.stats_at(di, 200)["attacks"] == [(4, 5)], d.stats[di]
     d.close()
     info = match_info(path)
-    assert info["result"] == "Thắng" and info["civ_mode"] == "Shang" and info["map"] == "Lục địa · Rất lớn", info
+    assert info["result"] == "Thắng" and info["civ_mode"] == "Shang" and info["map"] == "Continental - Huge", info
     assert info["duration_ms"] == 299 * 40 + pickle.load(open(SNAP, "rb")).time_ms, info["duration_ms"]
     print("bản ghi mới: OK", {k: info[k] for k in ("recorder", "recorder_civ", "result", "format", "civ_mode", "map")})
     # ghi dở (không có 'E'): cắt bỏ đuôi
@@ -322,6 +322,30 @@ def test_picker(tmp):
     assert "Đội" in w.var_detail.get(), w.var_detail.get()
     w._open()
     assert opened and opened[0].endswith(".aoerec")
+    # xoá trận: hỏi lại -> đồng ý -> file vào Thùng rác, dòng biến mất; trận "đang ghi" thì không xoá
+    import shutil
+    from tkinter import messagebox
+    victim = os.path.join(tmp, "2026-10-09_999999_tran1.aoerec")
+    shutil.copy(opened[0], victim)
+    old = time.time() - 3600
+    os.utime(victim, (old, old))
+    w.table.reload()
+    t_end = time.time() + 20
+    while time.time() < t_end and not w.tree.exists(os.path.normpath(victim)):
+        root.update(); time.sleep(0.05)
+    real_ask, real_info = messagebox.askyesno, messagebox.showinfo
+    messagebox.askyesno = lambda *a, **k: True
+    messagebox.showinfo = lambda *a, **k: None
+    try:
+        w.table.is_busy = lambda p: True
+        w.tree.selection_set(os.path.normpath(victim))
+        assert not w.table.delete_selected() and os.path.exists(victim), "không được xoá trận đang ghi"
+        w.table.is_busy = None
+        assert w.table.delete_selected() and not os.path.exists(victim), "xoá trận thất bại"
+        assert not w.tree.exists(os.path.normpath(victim))
+    finally:
+        messagebox.askyesno, messagebox.showinfo = real_ask, real_info
+    print("xoá trận: OK")
     print("cửa sổ chọn trận: OK", len(rows), "dòng; chi tiết:", w.var_detail.get()[:90])
     root.destroy()
 
@@ -337,7 +361,9 @@ def main():
     test_recording(tmp)
     test_first_out(tmp)
     # thêm một file cũ thật (nếu có) để thư viện trộn cả hai loại
-    olds = sorted(glob.glob(os.path.join(ROOT, "dist", "Video", "Raw", "*.aoerec")), key=os.path.getsize)
+    from mapcap.rawrec import read_header
+    olds = sorted((p for p in glob.glob(os.path.join(ROOT, "dist", "Video", "Raw", "*.aoerec"))
+                   if "format" not in (read_header(p) or {"format": 0})), key=os.path.getsize)   # file trước 09/10
     if olds:
         info = match_info(olds[0])
         assert info["result"] == "Không rõ" and not info["new_format"], info

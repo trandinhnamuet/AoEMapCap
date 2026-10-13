@@ -14,6 +14,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .engine import Config, Engine, Logger, load_config, save_config
+from .version import APP_VERSION
 
 APP_TITLE = "AoE-MapCap"
 
@@ -96,7 +97,7 @@ class ExportDialog:
 class App:
     def __init__(self, root):
         self.root = root
-        root.title(APP_TITLE + " — ghi trận và xem replay")
+        root.title(f"{APP_TITLE} v{APP_VERSION} — ghi trận và xem replay")
         root.minsize(900, 560)
         root.geometry("1080x640")
         try:
@@ -113,6 +114,13 @@ class App:
         self._build()
         self.root.after(200, self._poll)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        from .update_ui import UpdateController
+        self._restart_recording = False
+        self.updater = UpdateController(root, root, "mapcap", APP_TITLE, log=lambda m: self.q.put("cập nhật: " + m),
+                                        is_busy=self._busy_reason, before_restart=self._before_update_restart,
+                                        restart_args=lambda: ["--autostart"] if self._restart_recording else [],
+                                        bar_before=self.nb, on_block=self._on_update_block)
+        self.updater.start()
 
     # ---- giao diện ---------------------------------------------------------------
     def _build(self):
@@ -124,7 +132,7 @@ class App:
             pass
         head = ttk.Frame(self.root)
         head.pack(fill="x", padx=12, pady=(10, 4))
-        ttk.Label(head, text="AoE-MapCap", style="Title.TLabel").pack(side="left")
+        ttk.Label(head, text=f"AoE-MapCap v{APP_VERSION}", style="Title.TLabel").pack(side="left")
         self.btn_stop = ttk.Button(head, text="■ Dừng ghi", command=self._stop, state="disabled")
         self.btn_stop.pack(side="right", padx=4)
         self.btn_start = ttk.Button(head, text="● Bắt đầu ghi", style="Big.TButton", command=self._start)
@@ -152,6 +160,9 @@ class App:
         ttk.Button(bot, text="Xuất video...", command=self._export_selected).pack(side="left", padx=8)
         ttk.Button(bot, text="Mở file khác...", command=self._open_other).pack(side="left")
         ttk.Button(bot, text="Mở thư mục", command=self._open_dir).pack(side="left", padx=8)
+        ttk.Button(bot, text="Xoá trận", command=self.table.delete_selected).pack(side="left")
+        ttk.Button(bot, text="Nén trận cũ", command=self._compact_old).pack(side="left", padx=8)
+        self.table.is_busy = self._is_recording_path
         ttk.Label(bot, textvariable=self.table.var_status, foreground="#666").pack(side="right")
 
     def _build_settings(self):
@@ -178,6 +189,9 @@ class App:
         ttk.Label(rec, text="Thư mục lưu").grid(row=1, column=0, sticky="w", **pad)
         ttk.Entry(rec, textvariable=self.var_out, width=60).grid(row=1, column=1, columnspan=2, sticky="we", **pad)
         ttk.Button(rec, text="Chọn...", command=self._choose_dir, width=8).grid(row=1, column=3, sticky="w", **pad)
+        self.var_auto = tk.BooleanVar(value=cfg.auto_start)
+        ttk.Checkbutton(rec, text="Tự bắt đầu ghi khi mở AoE-MapCap (không cần bấm ● Bắt đầu ghi)",
+                        variable=self.var_auto).grid(row=2, column=0, columnspan=4, sticky="w", **pad)
         rec.columnconfigure(2, weight=1)
 
         vid = ttk.LabelFrame(tab, text="Xuất video (tuỳ chọn)")
@@ -227,6 +241,7 @@ class App:
             messagebox.showerror(APP_TITLE, f"Giá trị không hợp lệ: {e}")
             return None
         cfg.render_after = bool(self.var_render_after.get())
+        cfg.auto_start = bool(self.var_auto.get())
         cfg.record_mode = "raw"
         cfg.record_video = True
         cfg.keep_raw = True
@@ -297,6 +312,18 @@ class App:
         finally:
             self.q.put(("__done__", None))
 
+    def _auto_start(self):
+        """Tự bắt đầu ghi lúc mở app (trừ khi đã đang ghi, hoặc bản này đã bị chặn vì quá cũ)."""
+        if self.engine is not None or getattr(self.updater, "block_win", None) is not None:
+            return
+        self._append("=== tự bắt đầu ghi khi mở app (tắt trong thẻ Cài đặt)")
+        self._start()
+
+    def _on_update_block(self):
+        """Bản này đã ngừng hỗ trợ: dừng bộ ghi đang chờ game (cửa sổ chặn chỉ còn Cập nhật / Thoát)."""
+        if self.engine is not None and self.stop_event and not self._busy_reason():
+            self._stop()
+
     def _stop(self):
         if self.stop_event:
             self.stop_event.set()
@@ -315,11 +342,12 @@ class App:
             pass
         d = resolve_game_dir(self.cfg.game_dir, meta_dir)
         if d is None:
-            d = filedialog.askdirectory(title="Chọn thư mục game AoE-HD (có thư mục data bên trong)")
+            d = filedialog.askdirectory(title="Chọn thư mục game AoE-HD / AOE1R (có thư mục data bên trong)")
             from .engine import valid_game_dir
             if not d or not valid_game_dir(d):
                 if d:
-                    messagebox.showerror(APP_TITLE, "Thư mục này không có data\\empires.dat / graphic.drs của AoE-HD.")
+                    messagebox.showerror(APP_TITLE, "Thư mục này không có dữ liệu game AoE-HD / AOE1R "
+                                         "(empires.dat, graphic.drs hoặc graphics.drs trong data / data2).")
                 return None
             self.cfg.game_dir = os.path.normpath(d)
             self._save_cfg()
@@ -339,6 +367,54 @@ class App:
             self._append(f"=== mở replay {os.path.basename(path)}")
         except OSError as e:
             messagebox.showerror(APP_TITLE, f"Không mở được trình xem replay: {e}")
+
+    def _compact_old(self):
+        """Nén các trận ghi bằng bản cũ sang định dạng mới (nhỏ hơn ~5 lần, không mất dữ liệu), chạy nền."""
+        from .rawrec import read_header, FORMAT_VERSION
+        folder = self.table.folder
+        files = []
+        for n in sorted(os.listdir(folder)):
+            p = os.path.join(folder, n)
+            if n.lower().endswith(".aoerec") and not self._is_recording_path(p):
+                try:
+                    h = read_header(p)
+                except Exception:  # noqa: BLE001
+                    h = None
+                if h is not None and int(h.get("container", 0) or 0) < FORMAT_VERSION:
+                    files.append(p)
+        if not files:
+            messagebox.showinfo(APP_TITLE, "Không có trận nào cần nén (mọi trận đã ở định dạng mới).")
+            return
+        total = sum(os.path.getsize(p) for p in files)
+        if not messagebox.askyesno(APP_TITLE, f"Nén {len(files)} trận cũ ({total / 1e6:.0f} MB)?\n\n"
+                                   "Dữ liệu giữ nguyên, file nhỏ đi khoảng 5 lần. Mỗi trận mất vài giây đến nửa phút; "
+                                   "file chỉ được thay sau khi kiểm tra đủ dữ liệu."):
+            return
+
+        def job():
+            from .rawrec import compact_file
+            saved = 0
+            for k, p in enumerate(files):
+                self.q.put(("__progress__", "nén trận cũ", f"{k + 1}/{len(files)} {os.path.basename(p)}"))
+                try:
+                    r = compact_file(p)
+                    if r:
+                        saved += r[0] - r[1]
+                        self.q.put(f"đã nén {os.path.basename(p)}: {r[0] / 1e6:.0f} MB -> {r[1] / 1e6:.0f} MB")
+                    else:
+                        self.q.put(f"bỏ qua {os.path.basename(p)} (không cần / không chắc an toàn)")
+                except Exception as e:  # noqa: BLE001
+                    self.q.put(f"không nén được {os.path.basename(p)}: {e}")
+            self.q.put(f"=== nén xong {len(files)} trận, tiết kiệm {saved / 1e6:.0f} MB")
+            self.q.put(("__progress__", "nén trận cũ", None))
+            self.q.put("__reload_table__")
+        threading.Thread(target=job, daemon=True).start()
+
+    def _is_recording_path(self, path):
+        """File đang được bộ ghi viết (không cho xoá)."""
+        eng = self.engine
+        rec = getattr(eng, "current_rec_path", None) if eng is not None else None
+        return bool(rec) and os.path.normcase(os.path.abspath(rec)) == os.path.normcase(os.path.abspath(path))
 
     def _open_other(self):
         p = filedialog.askopenfilename(initialdir=self.table.folder, title="Chọn dữ liệu trận",
@@ -423,6 +499,8 @@ class App:
                         self._refresh_status()
                         self.engine = None
                         self.table.reload()
+                elif item == "__reload_table__":
+                    self.table.reload()
                 else:
                     self._append(item)
                     if "đã chốt dữ liệu thô" in item or "ghi dữ liệu thô" in item:
@@ -439,6 +517,26 @@ class App:
         """Nhãn trạng thái = trạng thái ghi + tiến độ từng lượt xuất video đang chạy."""
         parts = [self.state_text] + [f"xuất video {k}: {v}" for k, v in self.renders.items()]
         self.lbl_status.configure(text="Trạng thái: " + " | ".join(p for p in parts if p))
+
+    # ---- tự cập nhật ------------------------------------------------------------------
+    def _busy_reason(self):
+        """Lý do chưa được cập nhật / khởi động lại ("" = rảnh)."""
+        from .offline import active_renders
+        running = self.engine is not None and self.thread is not None and self.thread.is_alive()
+        if running and (getattr(self.engine, "state", "") == "đang ghi" or self.engine.current_rec_path):
+            return "Đang ghi trận"
+        if active_renders() > 0:
+            return "Đang xuất video"
+        return ""
+
+    def _before_update_restart(self):
+        """Trước khi chạy bản mới: dừng bộ ghi đang chờ game (bản mới tự bật lại bằng --autostart)."""
+        running = self.engine is not None and self.thread is not None and self.thread.is_alive()
+        self._restart_recording = running
+        if running:
+            self.stop_event.set()
+            self.thread.join(timeout=30)
+        return True
 
     def _on_close(self):
         from .offline import active_renders
@@ -470,8 +568,17 @@ def main():
         root.tk.call("tk", "scaling", 1.25)
     except Exception:  # noqa: BLE001
         pass
-    App(root)
+    app = App(root)
+    schedule_autostart(app, sys.argv)
     root.mainloop()
+
+
+def schedule_autostart(app, argv, delay_ms=800):
+    """Mở app là tự bắt đầu ghi (Cài đặt: "Tự bắt đầu ghi..."); --autostart: khởi động lại sau khi cập nhật."""
+    if app.cfg.auto_start or "--autostart" in argv:
+        app.root.after(delay_ms, app._auto_start)
+        return True
+    return False
 
 
 if __name__ == "__main__":

@@ -32,8 +32,7 @@ FOLLOW_TAU = 0.06          # máy quay bám unit đang khoá (s)
 JUMP_MS = 15000            # Backspace / J: 15 giây giờ game
 HUD_PERIOD = 0.1           # làm mới HUD khi đang phát (s)
 DECODE_BUDGET = 0.008      # tối đa 8 ms giải mã sprite unit mới mỗi khung (phần còn lại để khung sau)
-GAME_DIR_CANDIDATES = (r"C:\Program Files\XArena\Game\AoE-HD", r"C:\Program Files (x86)\XArena\Game\AoE-HD",
-                       r"D:\Game\AoE-HD", r"C:\Game\AoE-HD", r"D:\XArena\Game\AoE-HD")
+from mapcap.gamefiles import GAME_DIR_CANDIDATES  # noqa: E402  - AoE-HD và AOE1R (XArena cài cạnh nhau)
 SEL_KEYS_TEAM = ([pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5],
                  [pygame.K_q, pygame.K_w, pygame.K_e, pygame.K_r, pygame.K_t])
 SEL_LABEL_TEAM = (["1", "2", "3", "4", "5"], ["Q", "W", "E", "R", "T"])
@@ -42,8 +41,8 @@ PERSP_KEYS = {pygame.K_F1: 0, pygame.K_F2: 1, pygame.K_F4: 2, pygame.K_F5: 3, py
 
 
 def valid_game_dir(d):
-    return bool(d) and os.path.exists(os.path.join(d, "data", "graphic.drs")) and \
-        os.path.exists(os.path.join(d, "data", "empires.dat"))
+    from mapcap.gamefiles import valid_game_dir as _valid     # AoE-HD hoặc AOE1R (data + data2)
+    return _valid(d)
 
 
 def find_game_dir(hdr, explicit=None):
@@ -831,7 +830,7 @@ class Viewer:
             self.gpu.draw_world(self.cam_tl(), self.zoom, (W, H))
             self._draw_selection()
         self._draw_hud()
-        mm = self.hud.minimap_rect() if self.world is not None else None
+        mm = self.hud.minimap_rect() if self.world is not None and self.gpu.terrain_vao is not None else None
         if mm is not None:
             w = self.world
             mz = min(mm.w / w.full_w, mm.h / w.full_h)
@@ -869,6 +868,8 @@ class Viewer:
     def _minimap_to_world(self, pos):
         mm = self.hud.minimap_rect()
         w = self.world
+        if w is None or mm is None:                # bản đồ chưa tải xong: giữ nguyên máy quay
+            return self.cx, self.cy
         mz = min(mm.w / w.full_w, mm.h / w.full_h)
         tlx = w.full_w / 2 - mm.w / 2 / mz
         tly = w.full_h / 2 - mm.h / 2 / mz
@@ -1119,9 +1120,13 @@ class Viewer:
                     try:
                         W, H = self.size
                         tx, ty = self.cam_tl()
+                        team = self.persp if self.persp is not None else self.rec_team
+                        owners = self.data.teams[team] if team is not None and 0 <= team < len(self.data.teams) else ()
                         self.audio.update(self.cursor.frame, self.unit_rows, self.unit_bright,
                                           (tx, ty, tx + W / self.zoom, ty + H / self.zoom),
-                                          self.playing and self.speed() <= 2.0)
+                                          self.playing and self.speed() <= 2.0, team_owners=owners,
+                                          dat_units=self.world.dat.units, defs=self.data.def_arrays()[1],
+                                          all_units=self.cursor.state.units())
                     except Exception as e:  # noqa: BLE001
                         self.log(f"lỗi âm thanh: {e}")
                         self.audio = None

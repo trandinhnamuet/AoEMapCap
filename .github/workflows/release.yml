@@ -3,6 +3,9 @@
 # - mỗi lần đẩy lên main: build AoE-MapCap-win64.zip (AoE-MapCap.exe + AoE-Replay.exe), lưu ở Actions > artifact;
 # - tag v* (vd v1): đăng thêm GitHub Release kèm chứng nhận nguồn gốc (build provenance) để ai cũng kiểm được exe
 #   được build từ commit nào:  gh attestation verify AoE-MapCap.exe -R trandinhnamuet/AoEMapCap
+#   Số phiên bản trong app = số của tag (release/make_release.py set-version). Release đính kèm zip, hai exe và
+#   version.json (bộ tự cập nhật trong app đọc releases/latest/download/version.json). Mô tả từng bản lấy từ
+#   release/notes/v<N>.md; mỗi lần đăng bản mới thì mô tả các bản cũ cũng được viết lại cho đồng bộ.
 #
 # Build hoàn toàn trên máy windows-latest của GitHub bằng đúng script build.py / build_replay.py của repo.
 # ffmpeg (chỉ dùng khi xuất video) lấy từ gói imageio-ffmpeg 0.6.0 (bản 7.1 essentials), như bản build tay.
@@ -30,10 +33,18 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0              # cần các tag cũ để ghi commit vào mô tả bản cũ
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+
+      - name: Gắn số phiên bản theo tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python release/make_release.py set-version "${{ github.ref_name }}"
 
       - name: Cài gói
         run: |
@@ -49,7 +60,7 @@ jobs:
           shutil.copy(imageio_ffmpeg.get_ffmpeg_exe(), os.path.join("vendor", "ffmpeg.exe"))
 
       - name: Kiểm tra import
-        run: python -c "import mapcap.gui, mapcap.engine, replay.viewer, replay.picker; print('ok')"
+        run: python -c "import mapcap.gui, mapcap.engine, mapcap.updater, mapcap.update_ui, replay.viewer, replay.picker; print('ok')"
 
       - name: Build
         env:
@@ -67,19 +78,21 @@ jobs:
           cp -p dist/AoE-MapCap.exe dist/AoE-Replay.exe README.md "$NAME/"
           echo "source: ${{ github.server_url }}/${{ github.repository }}/tree/${{ github.sha }}" > "$NAME/VERSION.txt"
           echo "ref: ${{ github.ref_name }}" >> "$NAME/VERSION.txt"
+          python -c "from mapcap.version import APP_VERSION as v; print('version: ' + v)" >> "$NAME/VERSION.txt"
           (cd "$NAME" && sha256sum AoE-MapCap.exe AoE-Replay.exe > SHA256SUMS.txt)
           7z a -tzip "$NAME.zip" "$NAME" > /dev/null
           sha256sum "$NAME.zip" | tee "$NAME.zip.sha256"
-          {
-            echo "AoE-MapCap ${{ github.ref_name }}: ghi trận AoE-HD và xem lại như replay Liên Minh Huyền Thoại."
-            echo "Build trên GitHub Actions từ commit ${{ github.sha }}."
-            echo
-            echo "Tải **$NAME.zip**, giải nén, mở \`AoE-MapCap.exe\` (ghi trận + bảng trận đã ghi) hoặc \`AoE-Replay.exe\` (chỉ xem replay)."
-            echo "Hướng dẫn: ${{ github.server_url }}/${{ github.repository }}#readme"
-            echo
-            echo "SHA-256 của zip: \`$(cut -d' ' -f1 "$NAME.zip.sha256")\`"
-          } > release-notes.md
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Mô tả các bản + version.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          NAME=${{ steps.pkg.outputs.name }}
+          python release/make_release.py manifest "${{ github.ref_name }}" "$NAME" version.json
+          python release/make_release.py bodies "${{ github.ref_name }}" release-bodies --zip-sha="$(cut -d' ' -f1 "$NAME.zip.sha256")" --commit=${{ github.sha }}
 
       - uses: actions/upload-artifact@v7
         with:
@@ -100,7 +113,26 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           name: AoE-MapCap ${{ github.ref_name }}
-          body_path: release-notes.md
+          body_path: release-bodies/${{ github.ref_name }}.md
+          make_latest: true
           files: |
             ${{ steps.pkg.outputs.name }}.zip
             ${{ steps.pkg.outputs.name }}.zip.sha256
+            ${{ steps.pkg.outputs.name }}/AoE-MapCap.exe
+            ${{ steps.pkg.outputs.name }}/AoE-Replay.exe
+            version.json
+
+      - name: Viết lại mô tả các bản cũ
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          for f in release-bodies/v*.md; do
+            t=$(basename "$f" .md)
+            [ "$t" = "${{ github.ref_name }}" ] && continue
+            if gh release view "$t" > /dev/null 2>&1; then
+              gh release edit "$t" --notes-file "$f" && echo "đã viết lại mô tả $t"
+            fi
+          done

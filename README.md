@@ -1,22 +1,31 @@
 # AoE-MapCap
 
 **[⬇ Tải bản Windows mới nhất (AoE-MapCap-win64.zip)](https://github.com/trandinhnamuet/AoEMapCap/releases/latest/download/AoE-MapCap-win64.zip)**
-· [Các phiên bản trước](https://github.com/trandinhnamuet/AoEMapCap/releases)
+· [Các phiên bản và có gì mới](https://github.com/trandinhnamuet/AoEMapCap/releases)
 · [Kiểm tra file tải về](#kiểm-tra-file-tải-về)
 
-Ghi lại trận **AoE-HD** (Age of Empires: Rise of Rome 1.0) và **xem lại như replay Liên Minh Huyền Thoại**: tua tới/lui,
+Ghi lại trận **AoE-HD** và **AOE1R** (Age of Empires: Rise of Rome 1.0, cả bản 1024×768) và **xem lại như replay Liên Minh Huyền Thoại**: tua tới/lui,
 đổi tầm nhìn từng đội (F1/F2/F3), bảng tỉ số, công nghệ, bấm vào unit xem máu/công/giáp, zoom nét tới từng pixel game,
 toàn màn hình, đưa chuột ra mép để cuộn. Video mp4 toàn bản đồ chỉ xuất khi bạn cần.
 
 Giải nén zip là chạy, không cần cài đặt:
 
-- `AoE-MapCap.exe`: bấm **● Bắt đầu ghi** rồi vào game; mỗi trận lưu vào `Video\Raw\*.aoerec`. Thẻ **Trận đã ghi**
+- `AoE-MapCap.exe`: mở lên là tự bắt đầu ghi (chờ game), cứ thế vào game; mỗi trận lưu vào `Video\Raw\*.aoerec`. Thẻ **Trận đã ghi**
   liệt kê các trận (người chơi, quân, kết quả, 4v4/1v1, thể thức, bản đồ), bấm đúp để xem replay, **Xuất video...**
   khi cần file mp4.
 - `AoE-Replay.exe`: chỉ xem replay (không cần quyền admin), mở bảng các trận trong `Video\Raw` cạnh exe.
 
 Tool chạy **song song, bên ngoài game**, chỉ **đọc** bộ nhớ tiến trình game (ReadProcessMemory). Không ghi bộ nhớ,
-không nạp DLL vào game. Cần thư mục game AoE-HD trên máy để lấy đồ hoạ.
+không nạp DLL vào game. Cần thư mục game AoE-HD hoặc AOE1R trên máy để lấy đồ hoạ.
+
+## Cập nhật
+
+Từ v3, mỗi khi mở (và 6 giờ một lần) app tự xem có bản mới chưa. Có bản mới thì hiện thanh **Có bản mới vN**:
+**Có gì mới** xem thay đổi, **Cập nhật** để app tự tải bản mới (cả `AoE-MapCap.exe` và `AoE-Replay.exe` cùng thư
+mục), kiểm mã SHA-256, thay file rồi tự mở lại; **Để sau** thì dùng tiếp bản đang có. Đang ghi trận hoặc đang xuất
+video thì app chờ xong việc mới cập nhật. Không có mạng vẫn dùng bình thường. Bản quá cũ (đã ngừng hỗ trợ) chỉ còn
+nút Cập nhật / Thoát. Bản v1, v2 chưa có tính năng này: tải v3 bằng tay một lần. Mỗi bản có gì mới:
+[trang Releases](https://github.com/trandinhnamuet/AoEMapCap/releases).
 
 ## Kiểm tra file tải về
 
@@ -54,8 +63,8 @@ Mã băm SHA-256 nằm trong `SHA256SUMS.txt` (trong zip) và `AoE-MapCap-win64.
 
 `dist\AoE-MapCap.exe` là bản đóng gói một file, không cần cài gì thêm.
 
-- Mở exe (hộp UAC hiện một lần vì game chạy từ XArena có quyền Administrator), bấm **● Bắt đầu ghi**. Tool chờ
-  game; mỗi trận được ghi thành dữ liệu `Video\Raw\*.aoerec` (25 lần đọc/giây, ~100-400 MB một trận). Hết trận (rời
+- Mở exe (hộp UAC hiện một lần vì game chạy từ XArena có quyền Administrator): tool tự bắt đầu ghi, không cần bấm **● Bắt đầu ghi** (tắt được trong thẻ Cài đặt). Tool chờ
+  game; mỗi trận được ghi thành dữ liệu `Video\Raw\*.aoerec` (25 lần đọc/giây, ~10-40 MB một trận từ 12/10/2026). Hết trận (rời
   ra menu, thoát game, đồng hồ game đứng 3 phút) tự chốt file. **Không tự dựng video** (từ 09/10/2026).
 - Thẻ **Trận đã ghi** (mặc định) là bảng các trận: bấm đúp một trận hoặc **▶ Xem replay** để xem lại như replay LMHT
   (mục bên dưới). **Xuất video...** dựng file mp4 cho trận đang chọn khi bạn cần chia sẻ (chọn độ rộng 1920/2560/3840/9216,
@@ -86,14 +95,16 @@ hơn khi phóng, tăng độ rộng video lên 3840 hoặc 9216 (kích cỡ gố
 
 ### Xem replay (như replay Liên Minh Huyền Thoại)
 
-Nút **Xem replay...** hiện bảng các trận đã ghi (ngày đánh, người chơi, quân, kết quả, 4v4/1v1, thể thức Random hoặc
-cùng quân, bản đồ, thời lượng); bấm đúp một trận để mở trong cửa sổ riêng, vẽ trực tiếp từ dữ liệu trận bằng OpenGL
+Nút **Xem replay...** hiện bảng các trận đã ghi (ngày đánh, người chơi, quân, kết quả, thể thức "2v1 Random" /
+"4v4 Shang", map "Hill Country - Large", thời lượng); chọn trận rồi bấm Delete để xoá (vào Thùng rác), nút "Nén trận
+cũ" thu nhỏ file ghi bằng bản cũ 5-10 lần mà không mất dữ liệu; bấm đúp một trận để mở trong cửa sổ riêng, vẽ trực tiếp từ dữ liệu trận bằng OpenGL
 (không cần dựng video): tua tới/lui bất kì lúc nào, đổi tầm nhìn từng đội, bảng tỉ số, zoom nét tới từng pixel game.
 Từ 09/10/2026 file ghi thêm thiết lập ván (kiểu/cỡ bản đồ, đội, tài nguyên...) và kết quả thắng/thua; file cũ hiện
 kết quả "Không rõ". Đội có người **đầu tiên** đầu hàng hoặc rớt mạng tính là đội thua (đội kia thắng, nếu trận có 2 đội),
 kể cả khi dừng ghi trước lúc game tự kết luận ván.
 Chạy riêng được bằng `dist\AoE-Replay.exe [file.aoerec]` (không cần quyền admin) hoặc
-`AoE-MapCap.exe --replay file.aoerec`. Cần thư mục game AoE-HD trên máy để lấy đồ hoạ.
+`AoE-MapCap.exe --replay file.aoerec`. Cần thư mục game AoE-HD hoặc AOE1R trên máy để lấy đồ hoạ (trận của bản
+này xem được bằng dữ liệu của bản kia: hình giống hệt).
 
 | Phím | Việc |
 |---|---|
@@ -203,7 +214,9 @@ Chế độ mini:
 
 ## Lưu ý
 
-- meme.dll của AoE-HD là anti-hack. Tool chỉ mở handle đọc, không sửa gì, nhưng
+- meme.dll của AoE-HD / AOE1R là anti-hack. Tool chỉ mở handle đọc, không sửa gì, nhưng
   không thể bảo đảm tuyệt đối anti-hack không phản ứng. Nên thử ở ván chơi đơn trước.
 - Offset áp dụng cho EMPIRESX.EXE, EMPIRESX_HD.EXE, EMPIRESX_HDR.EXE, empires.exe
-  và 4 file patch\EMPIRESX1..4.EXE của bản AoE-HD 0.5. Bản khác cần kiểm lại.
+  và 4 file patch\EMPIRESX1..4.EXE của bản AoE-HD 0.5, Empiresx.exe / Empiresx_n.exe / Empiresx_r.exe của AOE1R
+  (XArena). AOE1R chính là cùng chương trình, chỉ khác độ phân giải. Exe khác hẳn (vd Empires.exe = AoE gốc không
+  có Rise of Rome) thì tool báo trong nhật ký và không ghi.

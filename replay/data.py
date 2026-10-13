@@ -15,7 +15,7 @@ import zlib
 import numpy as np
 
 from mapcap.game import PlayerInfo, UnitDefInfo
-from mapcap.rawrec import MAGIC, UNIT_DT
+from mapcap.rawrec import FORMAT_VERSION, MAGIC, NEWER_FORMAT_MSG, UNIT_DT, decode_block, file_version
 
 KEY_EVERY = 125          # điểm mốc mỗi 125 mẫu (~5 s ở 25 mẫu/giây): tua tới bất kì đâu áp tối đa 124 mẫu
 PAUSE_GAP = 1.0          # đồng hồ game đứng yên quá 1 s (game tạm dừng) thì không tính vào thời gian phát
@@ -36,6 +36,15 @@ def normalize_units(arr):
         elif n in ("gid", "frame", "gid2", "frame2", "rtype"):
             out[n] = -1
     return out
+
+
+def _apply_static_delta(arr, changed, removed):
+    """Áp bản ghi 'Q': bỏ uid đã mất và bản cũ của uid đổi, thêm bản mới."""
+    drop = changed["uid"]
+    if removed is not None and len(removed):
+        drop = np.concatenate([drop, np.asarray(removed, drop.dtype)])
+    keep = ~np.isin(arr["uid"], drop) if len(drop) else np.ones(len(arr), bool)
+    return np.concatenate([arr[keep], changed]) if len(changed) else arr[keep]
 
 
 class KeyState:
@@ -177,7 +186,12 @@ class ReplayData:
         self.f_at = []               # giờ thật lúc đọc mẫu (s)
         self.f_r = []                # thời gian phát (s): giờ thật, bỏ các đoạn game tạm dừng
         self.s_first = []            # bản ghi vật thể tĩnh: áp dụng từ mẫu thứ ...
-        self.s_rec = []              # (offset, độ dài)
+        self.s_rec = []              # vị trí bản ghi: (offset, độ dài) hoặc ('B', khối, thứ tự)
+        self.s_kind = []             # b"S" toàn bộ / b"Q" chỉ phần đổi (định dạng 3)
+        self.blocks = []             # (offset, độ dài) các khối 'B'
+        self._block_cache = {}
+        self._st_cache = None        # (chỉ số bản ghi tĩnh, phiên bản, mảng) dựng gần nhất
+        self._idx_pos = 0
         self.keys = {}               # chỉ số mẫu -> KeyState
         self.stats = {}              # index def -> ([mẫu bắt đầu có hiệu lực], [chỉ số]) (file từ 2026-10-09)
         self.done = False
@@ -208,6 +222,9 @@ class ReplayData:
         if r is None or r[0] != b"H":
             raise ValueError("file thiếu header")
         self.header = self._load(r[1], r[2])
+        v = file_version(self.header)
+        if v > FORMAT_VERSION:                  # file của bản mới hơn: báo cập nhật thay vì mở ra trống
+            raise ValueError(NEWER_FORMAT_MSG.format(v=v, mine=FORMAT_VERSION))
         self._pos = r[1] + r[2]
         self.map_w, self.map_h = int(self.header["map_w"]), int(self.header["map_h"])
 
@@ -232,32 +249,28 @@ class ReplayData:
             self.done = True
 
     def _index(self):
+        """Đọc tuần tự cả file: vị trí từng mẫu (bản ghi ngoài (off, n) hoặc trong khối ('B', khối, thứ tự)),
+        điểm mốc, bản ghi vật thể tĩnh ('S' toàn bộ / 'Q' phần đổi), chỉ số def."""
         t0 = time.time()
         st = FrameState(self.map_w, self.map_h)
         pos = self._pos
-        r_acc, frozen = 0.0, 0.0
-        while True:
-            rec = self._record_at(pos)
-            if rec is None:
-                break
-            tag, off, n = rec
-            pos = off + n
+        acc = {"r": 0.0, "frozen": 0.0}
+
+        def one(tag, get, loc):
             if tag == b"D":
-                self._apply_defs(self._load(off, n))
-            elif tag == b"S":
+                self._apply_defs(get())
+            elif tag in (b"S", b"Q"):
                 self.s_first.append(len(self.f_off))
-                self.s_rec.append((off, n))
+                self.s_rec.append(loc)
+                self.s_kind.append(tag)
             elif tag == b"U":
                 fi_next = len(self.f_off)
-                for idx, stv in self._load(off, n).items():
+                for idx, stv in get().items():
                     self.stats.setdefault(int(idx), ([], []))
                     self.stats[int(idx)][0].append(fi_next)
                     self.stats[int(idx)][1].append(stv)
             elif tag == b"F":
-                try:
-                    p = self._load(off, n)
-                except Exception:  # noqa: BLE001
-                    break
+                p = get()
                 fi = len(self.f_off)
                 st.apply(p, fi)
                 if fi % KEY_EVERY == 0:
@@ -265,20 +278,56 @@ class ReplayData:
                 if fi:
                     dr = min(max(p["at"] - self.f_at[-1], 0.0), MAX_STEP)
                     if p["t"] == self.f_t[-1]:
-                        frozen += dr
-                        if frozen > PAUSE_GAP:
+                        acc["frozen"] += dr
+                        if acc["frozen"] > PAUSE_GAP:
                             dr = 0.0
                     else:
-                        frozen = 0.0
-                    r_acc += dr
+                        acc["frozen"] = 0.0
+                    acc["r"] += dr
                 self.f_t.append(int(p["t"]))
                 self.f_at.append(float(p["at"]))
-                self.f_r.append(r_acc)
-                self.f_off.append((off, n))          # thêm cuối cùng: luồng chính thấy mẫu thì mọi thứ đã sẵn
+                self.f_r.append(acc["r"])
+                self.f_off.append(loc)               # thêm cuối cùng: luồng chính thấy mẫu thì mọi thứ đã sẵn
+
+        while True:
+            rec = self._record_at(pos)
+            if rec is None:
+                break
+            tag, off, n = rec
+            pos = off + n
+            try:
+                if tag == b"B":
+                    inner = decode_block(self.mm[off:off + n])
+                    bi = len(self.blocks)
+                    self.blocks.append((off, n))
+                    for k, (t, p) in enumerate(inner):
+                        one(t, (lambda p=p: p), ("B", bi, k))
+                elif tag in (b"D", b"S", b"Q", b"U", b"F"):
+                    one(tag, (lambda off=off, n=n: self._load(off, n)), (off, n))
+            except Exception:  # noqa: BLE001
+                break
+            self._idx_pos = pos
             if (len(self.f_off) & 63) == 0:
                 time.sleep(0)                        # nhường GIL cho luồng vẽ
         self.final_tech_times = {k: dict(v) for k, v in st.tech_times.items()}
         self.index_seconds = time.time() - t0
+
+    def _block(self, bi):
+        """Nội dung khối 'B' thứ bi (giữ 6 khối gần nhất đã giải nén)."""
+        c = self._block_cache
+        v = c.get(bi)
+        if v is None:
+            off, n = self.blocks[bi]
+            v = decode_block(self.mm[off:off + n])
+            if len(c) >= 6:
+                c.pop(next(iter(c)))
+            c[bi] = v
+        return v
+
+    def _get(self, loc):
+        if loc[0] == "B":
+            return self._block(loc[1])[loc[2]][1]
+        return self._load(*loc)
 
     # ---- truy vấn -----------------------------------------------------------------------
     @property
@@ -291,12 +340,10 @@ class ReplayData:
             return 1.0
         if not self.f_off:
             return 0.0
-        off, n = self.f_off[-1]
-        return min(1.0, (off + n) / self.size)
+        return min(1.0, self._idx_pos / self.size)
 
     def read_frame(self, fi):
-        off, n = self.f_off[fi]
-        return self._load(off, n)
+        return self._get(self.f_off[fi])
 
     def duration(self):
         return self.f_r[-1] if self.f_r else 0.0
@@ -326,9 +373,25 @@ class ReplayData:
         return ent[1][max(k, 0)]
 
     def load_statics(self, si):
-        off, n = self.s_rec[si]
-        p = self._load(off, n)
-        return p.get("version", si), normalize_units(p.get("units"))
+        """(phiên bản, mảng) vật thể tĩnh sau bản ghi tĩnh thứ si: bản 'S' toàn bộ gần nhất <= si rồi áp các 'Q'."""
+        c = self._st_cache
+        if c is not None and c[0] == si:
+            return c[1], c[2]
+        kinds = self.s_kind
+        if c is not None and c[0] < si and all(kinds[k] == b"Q" for k in range(c[0] + 1, si + 1)):
+            j, ver, arr = c
+        else:
+            j = si
+            while j > 0 and kinds[j] != b"S":
+                j -= 1
+            p = self._get(self.s_rec[j])
+            ver, arr = p.get("version", j), normalize_units(p.get("units"))
+        for k in range(j + 1, si + 1):
+            p = self._get(self.s_rec[k])
+            ver = p.get("version", k)
+            arr = _apply_static_delta(arr, normalize_units(p.get("units")), p.get("removed"))
+        self._st_cache = (si, ver, arr)
+        return ver, arr
 
     def def_arrays(self):
         """Bảng tra theo index def (cho xử lý unit bằng numpy). Trả về (phiên bản, dict mảng)."""

@@ -9,4 +9,4 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 if __name__ == "__main__":
     from replay.cli import main
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(main(sys.argv[1:], standalone=True))

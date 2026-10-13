@@ -12,21 +12,21 @@ import psutil
 from . import dat as D
 from . import drs
 from .game import GameReader
-from .memory import ProcessMemory, MemoryError_, find_game_process
+from .memory import ProcessMemory, MemoryError_, check_build, find_game_process
 from .recorder import MatchRecorder, find_ffmpeg, pick_encoder, recover_partials
 from .rawrec import RawWriter
 from .render_full import FullRenderer, SpriteStore
 from .video_render import VideoRenderer
+from . import gamefiles
 
 
-GAME_DIR_CANDIDATES = (r"C:\Program Files\XArena\Game\AoE-HD", r"C:\Program Files (x86)\XArena\Game\AoE-HD",
-                       r"D:\Game\AoE-HD", r"C:\Game\AoE-HD", r"D:\XArena\Game\AoE-HD")
+from .gamefiles import GAME_DIR_CANDIDATES  # noqa: E402,F401  - AoE-HD và AOE1R (XArena cài cạnh nhau)
 
 
 def valid_game_dir(d):
-    """Thư mục game AoE-HD dùng được để lấy đồ hoạ (có data\\empires.dat, graphic.drs, interfac.drs)."""
-    return bool(d) and all(os.path.isfile(os.path.join(d, "data", f))
-                           for f in ("empires.dat", "graphic.drs", "interfac.drs"))
+    """Thư mục game dùng được để lấy đồ hoạ: kiểu AoE-HD (data\\graphic.drs...) hoặc AOE1R (data + data2)."""
+    from .gamefiles import valid_game_dir as _valid
+    return _valid(d)
 
 
 def resolve_game_dir(*hints):
@@ -80,6 +80,7 @@ class Config:
     keep_raw: bool = True                    # raw: giữ file .aoerec sau khi dựng
     reader_process: bool = True              # raw: đọc + ghi trong tiến trình riêng (GIL riêng, nhịp đều hơn)
     render_cpus_in_game: str = "auto"        # CPU cho tiến trình dựng khi đang có trận: auto = E-core (8..), "8-15", "" = không ghim
+    auto_start: bool = True                  # mở AoE-MapCap là tự bắt đầu ghi (chờ game), không cần bấm (2026-10-13)
     config_version: int = 3                  # tăng khi đổi mặc định quan trọng (v2: nhịp đọc = FPS;
                                              # v3: chỉ ghi dữ liệu trận, không tự dựng video / ảnh tĩnh)
 
@@ -333,7 +334,7 @@ def render_still_cli(pkl, out_png, game_dir, scale, fog_dim):
     import pickle
     snap = pickle.load(open(pkl, "rb"))
     palette = drs.load_palette(game_dir)
-    dat = D.load(os.path.join(game_dir, "data", "empires.dat"))
+    dat = D.load(gamefiles.dat_path(game_dir))
     D.parse_units_by_scan(dat)
     store = SpriteStore(game_dir, palette)
     # Dùng chung bộ vẽ video (doppelganger, sprite/khung game, giai đoạn xây, sương mù lưới chấm, HUD) để ảnh tĩnh
@@ -553,8 +554,16 @@ class Engine:
         from .offline import set_in_game
         set_in_game(s == "đang ghi")
 
+    @property
+    def current_rec_path(self):
+        """File .aoerec đang ghi (None nếu không có trận đang ghi) — giao diện không cho xoá file này."""
+        rec = getattr(self, "_rec", None)
+        return getattr(rec, "path", None) if rec is not None else None
+
     def _stop_rec(self, rec):
         """Chốt trận đang ghi và nhớ lại file của phiên (để tóm tắt khi dừng)."""
+        if getattr(self, "_rec", None) is rec:
+            self._rec = None
         path = rec.stop()
         if path:
             self.session_files.append(path)
@@ -620,13 +629,14 @@ class Engine:
         frame_dt = 1.0 / cfg.capture_fps
         test_seconds = float(os.environ.get("MAPCAP_TEST_SECONDS", "0") or 0)
         t_start = time.time()
+        unsupported = set()            # pid game có exe không đọc được: không ghi, chờ game khác
 
         while not self.stop_event.is_set():
             self._set("chờ game")
             proc = None
             shown = False
             while proc is None and not self.stop_event.is_set():
-                proc = find_game_process()
+                proc = find_game_process(exclude=unsupported)
                 if proc is None:
                     if not shown:
                         log("chờ game (EMPIRESX*.EXE / empires.exe)...")
@@ -638,11 +648,24 @@ class Engine:
                 log("nhận lệnh dừng khi đang chờ game")
                 return
             log(f"thấy game: {proc.info['name']} (pid {proc.pid})")
+            hit = None
+            try:
+                with ProcessMemory(proc.pid) as pm:
+                    hit, total = check_build(pm)
+            except Exception:  # noqa: BLE001  - chưa mở được (quyền admin...): để bước ghi báo lỗi như cũ
+                pass
+            if hit == 0:                       # chương trình khác hẳn (vd Empires.exe = AoE gốc không có Rise of Rome)
+                log(f"{proc.info['name']} không phải bản Age of Empires: Rise of Rome 1.0 mà tool đọc được "
+                    "(AoE-HD, AOE1R Empiresx.exe): không ghi trận này. Hãy chạy game bằng EMPIRESX.EXE / Empiresx.exe.")
+                unsupported.add(proc.pid)
+                continue
+            if hit is not None and hit < total:
+                log(f"cảnh báo: exe chỉ khớp {hit}/{total} dấu nhận dạng của bản đã kiểm; vẫn thử ghi")
             try:
                 gdir = os.path.dirname(proc.exe())
                 if valid_game_dir(gdir):
                     if os.path.normcase(gdir) != os.path.normcase(gfx["dir"] or ""):
-                        log(f"game chạy từ {gdir}")
+                        log(f"game chạy từ {gdir} ({gamefiles.layout_name(gdir)})")
                         gfx = {"dir": gdir, "video": None}
                     if os.path.normcase(cfg.game_dir or "") != os.path.normcase(gdir):
                         cfg.game_dir = gdir              # nhớ lại cho Xem replay / Xuất video
@@ -745,6 +768,7 @@ class Engine:
                                         rec = MatchRecorder(vrender, ffmpeg, encoder, out_dir, fps=cfg.fps,
                                                             speed=cfg.speed, label=f"tran{game_no}", log=log)
                                     rec.start(snap)
+                                    self._rec = rec
                                     if isinstance(rec, ProcRecorder):
                                         sreader = None
                                     else:
@@ -835,7 +859,7 @@ class Engine:
         cfg = self.cfg
         t0 = time.time()
         palette = drs.load_palette(gdir)
-        dat = D.load(os.path.join(gdir, "data", "empires.dat"))
+        dat = D.load(gamefiles.dat_path(gdir))
         D.parse_units_by_scan(dat)
         store = SpriteStore(gdir, palette)
         video = VideoRenderer(dat, store, palette, width=cfg.video_width, fog_dim=cfg.fog_param(), log=self.log,

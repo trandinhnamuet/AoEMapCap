@@ -24,6 +24,7 @@ from .game import GameReader
 from .memory import ProcessMemory, MemoryError_, find_game_process
 from .render import Renderer
 from .render_full import FullRenderer, SpriteStore
+from . import gamefiles
 
 DEFAULT_OUT = r"D:\Game\AoE-HD\Screenshot\FullMap"
 
@@ -73,7 +74,7 @@ def run(args):
                             fog_dim=args.fog_dim)
     else:
         t0 = time.time()
-        dat = D.load(os.path.join(args.game_dir, "data", "empires.dat"))
+        dat = D.load(gamefiles.dat_path(args.game_dir))
         D.parse_units_by_scan(dat)
         store = SpriteStore(args.game_dir, palette)
         renderer = FullRenderer(dat, store, palette, scale=args.scale, fog_dim=args.fog_dim,

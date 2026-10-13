@@ -707,10 +707,10 @@ class VideoRenderer:
             return cache[sid]
         s = None
         try:
-            from .drs import read_drs
+            from .gamefiles import read_group
             from .slp import SLP
             gdir = getattr(self.store, "game_dir", None)
-            files = read_drs(os.path.join(gdir, "data", "interfac.drs")) if gdir else {}
+            files = read_group(gdir, "interface") if gdir else {}
             data = files.get(("slp", sid))
             s = SLP(data) if data else None
         except Exception as e:  # noqa: BLE001
@@ -746,10 +746,10 @@ class VideoRenderer:
             return cache[1]
         icons = {}
         try:
-            from .drs import read_drs
+            from .gamefiles import read_group
             from .slp import SLP
             gdir = getattr(self.store, "game_dir", None)
-            files = read_drs(os.path.join(gdir, "data", "interfac.drs")) if gdir else {}
+            files = read_group(gdir, "interface") if gdir else {}
             data = files.get(("slp", self.RES_ICON_SLP))
             if data:
                 s = SLP(data)

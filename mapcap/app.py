@@ -24,6 +24,7 @@ from .memory import ProcessMemory, MemoryError_, find_game_process
 from .recorder import MatchRecorder, find_ffmpeg, pick_encoder, recover_partials
 from .render_full import FullRenderer, SpriteStore
 from .video_render import VideoRenderer
+from . import gamefiles
 
 DEFAULT_INI = """[mapcap]
 ; Thư mục game (chứa data\\empires.dat, data\\graphic.drs)
@@ -214,7 +215,7 @@ def run():
         log(f"video lưu tại: {video_dir}")
 
     palette = drs.load_palette(cfg["game_dir"])
-    dat = D.load(os.path.join(cfg["game_dir"], "data", "empires.dat"))
+    dat = D.load(gamefiles.dat_path(cfg["game_dir"]))
     D.parse_units_by_scan(dat)
     store = SpriteStore(cfg["game_dir"], palette)
     vrender = VideoRenderer(dat, store, palette, width=cfg["video_width"], fog_dim=cfg["fog_dim"], log=log,
@@ -240,10 +241,10 @@ def run():
         # dữ liệu đồ hoạ lấy theo thư mục của chính game đang chạy (nếu có), để khớp bản đang chơi
         try:
             gdir = os.path.dirname(proc.exe())
-            if os.path.isfile(os.path.join(gdir, "data", "empires.dat")) and os.path.normcase(gdir) != os.path.normcase(cfg["game_dir"]):
+            if gamefiles.dat_path(gdir) and os.path.normcase(gdir) != os.path.normcase(cfg["game_dir"]):
                 log(f"game chạy từ {gdir}, nạp lại dữ liệu đồ hoạ từ đó")
                 palette = drs.load_palette(gdir)
-                dat = D.load(os.path.join(gdir, "data", "empires.dat")); D.parse_units_by_scan(dat)
+                dat = D.load(gamefiles.dat_path(gdir)); D.parse_units_by_scan(dat)
                 store = SpriteStore(gdir, palette)
                 vrender = VideoRenderer(dat, store, palette, width=cfg["video_width"], fog_dim=cfg["fog_dim"], log=log,
                                 outline_alpha=cfg["map_outline"])

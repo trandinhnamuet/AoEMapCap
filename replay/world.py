@@ -44,7 +44,8 @@ class ViewerSpriteStore(SpriteStore):
 
 def load_graphics(game_dir):
     palette = np.asarray(drs.load_palette(game_dir), np.uint8)    # mảng numpy: SLP.decode không phải chuyển mỗi lần
-    dat = D.load(os.path.join(game_dir, "data", "empires.dat"))
+    from mapcap.gamefiles import dat_path
+    dat = D.load(dat_path(game_dir))
     D.parse_units_by_scan(dat)
     store = ViewerSpriteStore(game_dir, palette)
     return dat, store, palette

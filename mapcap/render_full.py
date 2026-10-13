@@ -27,7 +27,8 @@ TILE_W, TILE_H, ELEV_H = 64, 32, 16
 class SpriteStore:
     def __init__(self, game_dir, palette):
         self.game_dir = game_dir
-        self.files = read_drs(os.path.join(game_dir, "data", "graphic.drs"))
+        from .gamefiles import read_group               # graphic.drs (AoE-HD) / graphics+terrain+border.drs (AOE1R)
+        self.files = read_group(game_dir, "graphics")
         self.pal = palette
         self._slp = {}
         self._img = {}
