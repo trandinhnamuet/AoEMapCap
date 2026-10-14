@@ -3,8 +3,9 @@
 # - mỗi lần đẩy lên main: build AoE-MapCap-win64.zip (AoE-MapCap.exe + AoE-Replay.exe), lưu ở Actions > artifact;
 # - tag v* (vd v1): đăng thêm GitHub Release kèm chứng nhận nguồn gốc (build provenance) để ai cũng kiểm được exe
 #   được build từ commit nào:  gh attestation verify AoE-MapCap.exe -R trandinhnamuet/AoEMapCap
-#   Số phiên bản trong app = số của tag (release/make_release.py set-version). Release đính kèm zip, hai exe và
-#   version.json (bộ tự cập nhật trong app đọc releases/latest/download/version.json). Mô tả từng bản lấy từ
+#   Số phiên bản trong app = số của tag (release/make_release.py set-version). Release đính kèm zip, zip.sha256 và
+#   version.json (bộ tự cập nhật trong app đọc releases/latest/download/version.json, tải zip rồi giải nén exe;
+#   từ v5 không đính kèm exe lẻ). Mô tả từng bản lấy từ
 #   release/notes/v<N>.md; mỗi lần đăng bản mới thì mô tả các bản cũ cũng được viết lại cho đồng bộ.
 #
 # Build hoàn toàn trên máy windows-latest của GitHub bằng đúng script build.py / build_replay.py của repo.
@@ -91,7 +92,7 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: |
           NAME=${{ steps.pkg.outputs.name }}
-          python release/make_release.py manifest "${{ github.ref_name }}" "$NAME" version.json
+          python release/make_release.py manifest "${{ github.ref_name }}" "$NAME.zip" version.json
           python release/make_release.py bodies "${{ github.ref_name }}" release-bodies --zip-sha="$(cut -d' ' -f1 "$NAME.zip.sha256")" --commit=${{ github.sha }}
 
       - uses: actions/upload-artifact@v7
@@ -118,8 +119,6 @@ jobs:
           files: |
             ${{ steps.pkg.outputs.name }}.zip
             ${{ steps.pkg.outputs.name }}.zip.sha256
-            ${{ steps.pkg.outputs.name }}/AoE-MapCap.exe
-            ${{ steps.pkg.outputs.name }}/AoE-Replay.exe
             version.json
 
       - name: Viết lại mô tả các bản cũ
@@ -134,5 +133,8 @@ jobs:
             [ "$t" = "${{ github.ref_name }}" ] && continue
             if gh release view "$t" > /dev/null 2>&1; then
               gh release edit "$t" --notes-file "$f" && echo "đã viết lại mô tả $t"
+              for x in AoE-MapCap.exe AoE-Replay.exe; do       # từ v5 không đính kèm exe lẻ (cả bản cũ)
+                gh release delete-asset "$t" "$x" -y > /dev/null 2>&1 && echo "đã xoá $x khỏi $t" || true
+              done
             fi
           done

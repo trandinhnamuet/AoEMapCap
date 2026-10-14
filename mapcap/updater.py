@@ -5,8 +5,9 @@ Luồng:
      (https://github.com/<repo>/releases/latest/download/version.json, do GitHub Actions tạo khi đăng bản).
      Không có mạng / không vào được GitHub -> None: dùng bình thường, không báo gì.
      So APP_VERSION với "version" (có bản mới) và "min_version" (bản này đã ngừng hỗ trợ, bắt buộc cập nhật).
-  2. download_all(): tải exe của mình và exe "anh em" cùng thư mục (AoE-MapCap.exe <-> AoE-Replay.exe, để hai bản
-     luôn cùng phiên bản) về <exe>.new, kiểm cỡ + SHA-256 theo version.json.
+  2. download_all(): exe của mình và exe "anh em" cùng thư mục (AoE-MapCap.exe <-> AoE-Replay.exe, để hai bản
+     luôn cùng phiên bản) -> <exe>.new. Từ v5 Release chỉ đính kèm zip: tải zip (kiểm cỡ + SHA-256), giải nén exe cần
+     thay (kiểm SHA-256 từng exe theo version.json "zip.files"). version.json v3/v4 có "assets" = exe lẻ.
   3. install(): Windows không cho ghi đè / xoá exe đang chạy nhưng cho đổi tên: <exe> -> <exe>.old, <exe>.new -> <exe>.
      Lỗi giữa chừng thì đổi tên ngược lại mọi file đã đổi (không bao giờ mất exe).
   4. restart(): chạy lại exe (đã là bản mới), thoát bản cũ. Lần mở sau cleanup_old() xoá các <exe>.old.
@@ -23,6 +24,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import zipfile
 
 from .version import APP_VERSION
 
@@ -161,8 +163,15 @@ def download(url, dst, size, sha256, progress=None, cancel=None, chunk=1 << 18):
     return dst
 
 
+ZIP_TEMP = ".aoemapcap_update.zip"
+
+
 def download_all(info, role, exe_path=None, progress=None, cancel=None):
-    """Tải mọi exe cần thay về <exe>.new. Trả [(exe, exe.new)]. progress(đã tải, tổng, tên)."""
+    """Tải mọi exe cần thay về <exe>.new. Trả [(exe, exe.new)]. progress(đã tải, tổng, tên).
+    Từ v5: Release chỉ có zip -> tải zip (kiểm SHA-256), giải nén đúng exe cần thay (kiểm SHA-256 từng exe).
+    version.json cũ (v3, v4) có "assets" = exe lẻ: tải thẳng từng exe."""
+    if info.manifest.get("zip"):
+        return _download_from_zip(info.manifest["zip"], role, exe_path, progress, cancel)
     assets = info.manifest["assets"]
     todo = [(name, p) for name, p in targets(role, exe_path) if name in assets]
     if not todo:
@@ -220,19 +229,70 @@ def install(pairs):
         raise
 
 
+def _download_from_zip(z, role, exe_path, progress, cancel):
+    files = z.get("files") or {}
+    todo = [(name, p) for name, p in targets(role, exe_path) if name in files]
+    if not todo:
+        raise UpdateError("bản phát hành không có file exe để cập nhật")
+    d = os.path.dirname(todo[0][1])
+    _check_writable(d)
+    need = int(z.get("size") or 0) + sum(int(files[n].get("size") or 0) for n, _p in todo)
+    if shutil.disk_usage(d).free < need * 1.2 + (50 << 20):
+        raise UpdateError(f"ổ đĩa không đủ chỗ trống (cần ~{need / 1e6:.0f} MB)")
+    zpath = os.path.join(d, ZIP_TEMP)
+    out = []
+    try:
+        download(z["url"], zpath, z.get("size"), z.get("sha256"),
+                 progress=(lambda k, t: progress(k, t or int(z.get("size") or 1), "AoE-MapCap-win64.zip"))
+                 if progress else None, cancel=cancel)
+        with zipfile.ZipFile(zpath) as zf:
+            by_base = {os.path.basename(i.filename).lower(): i for i in zf.infolist() if not i.is_dir()}
+            for name, p in todo:
+                meta = files[name]
+                info = zf.getinfo(meta["path"]) if meta.get("path") in zf.namelist() else by_base.get(name.lower())
+                if info is None:
+                    raise UpdateError(f"zip không có {name}")
+                dst = p + ".new"
+                h = hashlib.sha256()
+                with zf.open(info) as src, open(dst, "wb") as f:
+                    out.append((p, dst))
+                    for b in iter(lambda: src.read(1 << 20), b""):
+                        if cancel and cancel():
+                            raise UpdateError("đã huỷ")
+                        f.write(b)
+                        h.update(b)
+                if meta.get("sha256") and h.hexdigest().lower() != str(meta["sha256"]).lower():
+                    raise UpdateError(f"{name} trong zip không khớp mã SHA-256")
+    except BaseException:
+        for _p, n in out:
+            try:
+                os.remove(n)
+            except OSError:
+                pass
+        raise
+    finally:
+        try:
+            os.remove(zpath)
+        except OSError:
+            pass
+    return out
+
+
 def cleanup_old(exe_path=None):
     """Xoá <exe>.old* / .new / .part còn sót của lần cập nhật trước (exe cũ đã thoát)."""
     if not is_frozen() and exe_path is None:
         return 0
     d = os.path.dirname(os.path.abspath(exe_path or sys.executable))
     n = 0
+    leftovers = glob.glob(os.path.join(d, ZIP_TEMP)) + glob.glob(os.path.join(d, ZIP_TEMP + ".part"))
     for name in EXE_NAMES.values():
-        for p in glob.glob(os.path.join(d, name + ".old*")) + glob.glob(os.path.join(d, name + ".new.part")):
-            try:
-                os.remove(p)
-                n += 1
-            except OSError:
-                pass                             # còn đang chạy (vd AoE-Replay cũ chưa đóng): lần sau xoá
+        leftovers += glob.glob(os.path.join(d, name + ".old*")) + glob.glob(os.path.join(d, name + ".new.part"))
+    for p in leftovers:
+        try:
+            os.remove(p)
+            n += 1
+        except OSError:
+            pass                                 # còn đang chạy (vd AoE-Replay cũ chưa đóng): lần sau xoá
     return n
 
 

@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -176,15 +177,22 @@ def test_make_release():
     sys.path.insert(0, os.path.join(ROOT, "release"))
     import make_release
     d = fresh_dir("rel")
-    for n in make_release.EXES:
-        with open(os.path.join(d, n), "wb") as f:
-            f.write(n.encode() * 100)
+    zp = os.path.join(d, "AoE-MapCap-win64.zip")
+    with zipfile.ZipFile(zp, "w", zipfile.ZIP_DEFLATED) as zf:     # như bước Đóng gói: thư mục AoE-MapCap-win64/
+        for n in make_release.EXES:
+            zf.writestr("AoE-MapCap-win64/" + n, n.encode() * 100)
+        zf.writestr("AoE-MapCap-win64/README.md", b"x")
     out = os.path.join(d, "version.json")
-    make_release.manifest("v3", d, out)
+    make_release.manifest("v3", zp, out)
     m = json.load(open(out, encoding="utf-8"))
     assert m["version"] == "3" and m["tag"] == "v3" and set(m["notes"]) >= {"1", "2", "3"}
-    assert m["assets"]["AoE-Replay.exe"]["url"].endswith("/releases/download/v3/AoE-Replay.exe")
-    assert m["assets"]["AoE-MapCap.exe"]["size"] == len(b"AoE-MapCap.exe" * 100)
+    assert m["assets"] == {}, "từ v5 không còn exe lẻ (assets rỗng cho bộ cập nhật v3/v4)"
+    z = m["zip"]
+    assert z["url"].endswith("/releases/download/v3/AoE-MapCap-win64.zip") and z["size"] == os.path.getsize(zp)
+    assert z["sha256"] == hashlib.sha256(open(zp, "rb").read()).hexdigest()
+    f = z["files"]["AoE-MapCap.exe"]
+    assert f["path"] == "AoE-MapCap-win64/AoE-MapCap.exe" and f["size"] == len(b"AoE-MapCap.exe" * 100)
+    assert f["sha256"] == hashlib.sha256(b"AoE-MapCap.exe" * 100).hexdigest() and set(z["files"]) == set(make_release.EXES)
     i = updater.UpdateInfo(m, "1")
     assert i.state == "available" and i.notes_since().startswith("v3\n• Tự cập nhật") and "\n\nv2\n" in i.notes_since()
     make_release.bodies("v3", os.path.join(d, "bodies"), zip_sha="abc", commit="c0ffee")
@@ -195,6 +203,88 @@ def test_make_release():
     with open(os.path.join(ROOT, "mapcap", "version.py"), encoding="utf-8") as f:
         assert 'APP_VERSION = "3"' in f.read()
     print("make_release: version.json + mô tả các bản: OK")
+
+
+def make_zip(files):
+    import io
+    b = io.BytesIO()
+    with zipfile.ZipFile(b, "w", zipfile.ZIP_DEFLATED) as zf:
+        for n, data in files.items():
+            zf.writestr("AoE-MapCap-win64/" + n, data)
+    return b.getvalue()
+
+
+def zip_manifest(url, version, files, zdata, min_version="1"):
+    return {"version": version, "tag": f"v{version}", "min_version": min_version, "page": url + "/page",
+            "notes": {"5": "- zip"}, "assets": {},
+            "zip": {"url": url + "/AoE-MapCap-win64.zip", "size": len(zdata), "sha256": hashlib.sha256(zdata).hexdigest(),
+                    "files": {n: {"path": "AoE-MapCap-win64/" + n, "size": len(b), "sha256": hashlib.sha256(b).hexdigest()}
+                              for n, b in files.items()}}}
+
+
+def test_update_from_zip():
+    """Từ v5: Release chỉ có zip -> tải zip, giải nén exe cần thay, kiểm SHA-256 zip và từng exe; dọn file tạm."""
+    d = fresh_dir("zip")
+    me = os.path.join(d, "AoE-MapCap.exe")
+    sib = os.path.join(d, "AoE-Replay.exe")
+    shutil.copy(r"C:\Windows\System32\PING.EXE", me)
+    with open(sib, "wb") as f:
+        f.write(b"replay cu")
+    new = {"AoE-MapCap.exe": os.urandom(2_500_000), "AoE-Replay.exe": os.urandom(1_000_000)}
+    zdata = make_zip(new)
+    srv = Server({"/AoE-MapCap-win64.zip": zdata})
+    m = zip_manifest(srv.url, "5", new, zdata)
+    srv.files["/version.json"] = json.dumps(m).encode()
+    proc = subprocess.Popen([me, "-n", "30", "127.0.0.1"], stdout=subprocess.DEVNULL, creationflags=0x08000000)
+    try:
+        time.sleep(0.5)
+        info = updater.check("4", url=srv.url + "/version.json")
+        assert info is not None and info.state == "available"
+        seen = []
+        pairs = updater.download_all(info, "mapcap", me, progress=lambda a, b, n: seen.append((a, b, n)))
+        assert seen and seen[-1][0] == len(zdata) and seen[-1][2] == "AoE-MapCap-win64.zip"
+        assert sorted(os.path.basename(n) for _e, n in pairs) == ["AoE-MapCap.exe.new", "AoE-Replay.exe.new"]
+        assert not os.path.exists(os.path.join(d, updater.ZIP_TEMP)), "zip tạm phải được xoá"
+        updater.install(pairs)
+        assert open(me, "rb").read() == new["AoE-MapCap.exe"] and open(sib, "rb").read() == new["AoE-Replay.exe"]
+        assert proc.poll() is None
+    finally:
+        proc.kill()
+        proc.wait()
+    time.sleep(0.3)
+    updater.cleanup_old(me)
+    # chỉ AoE-Replay (không có AoE-MapCap cạnh) -> chỉ giải nén AoE-Replay
+    d2 = fresh_dir("zip_replay")
+    r2 = os.path.join(d2, "AoE-Replay.exe")
+    with open(r2, "wb") as f:
+        f.write(b"cu")
+    pairs = updater.download_all(info, "replay", r2)
+    assert [os.path.basename(n) for _e, n in pairs] == ["AoE-Replay.exe.new"]
+    os.remove(pairs[0][1])
+    # sai mã zip / sai mã exe trong zip / huỷ: giữ nguyên, không sót file
+    for bad in ("zip", "exe", "cancel"):
+        mm = json.loads(json.dumps(m))
+        if bad == "zip":
+            mm["zip"]["sha256"] = "0" * 64
+        elif bad == "exe":
+            mm["zip"]["files"]["AoE-Replay.exe"]["sha256"] = "0" * 64
+        i2 = updater.UpdateInfo(mm, "4")
+        try:
+            updater.download_all(i2, "replay", r2, cancel=(lambda: True) if bad == "cancel" else None)
+            raise AssertionError("phải lỗi: " + bad)
+        except updater.UpdateError as e:
+            assert ("SHA-256" in str(e)) if bad != "cancel" else str(e) == "đã huỷ", (bad, e)
+        assert sorted(os.listdir(d2)) == ["AoE-Replay.exe"] and open(r2, "rb").read() == b"cu", (bad, os.listdir(d2))
+    # version.json mới đọc bằng logic cũ (chỉ "assets"): assets rỗng -> báo lỗi kèm link tải tay, không hỏng gì
+    legacy = dict(m)
+    legacy.pop("zip")
+    try:
+        updater.download_all(updater.UpdateInfo(legacy, "4"), "replay", r2)
+        raise AssertionError("bản cũ gặp assets rỗng phải báo lỗi")
+    except updater.UpdateError as e:
+        assert "không có file exe" in str(e)
+    srv.close()
+    print("cập nhật từ zip: giải nén exe cần thay, kiểm SHA-256 zip + exe, huỷ / sai mã giữ nguyên, bản cũ báo tải tay: OK")
 
 
 def test_newer_format_file():
@@ -304,6 +394,7 @@ if __name__ == "__main__":
     test_update_running_exe()
     test_bad_hash_cancel_rollback()
     test_make_release()
+    test_update_from_zip()
     test_newer_format_file()
     test_ui()
     print("OK")

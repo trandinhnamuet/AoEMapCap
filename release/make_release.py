@@ -2,9 +2,9 @@
 
     python release/make_release.py set-version v3
         ghi APP_VERSION = "3" vào mapcap/version.py (trước khi build)
-    python release/make_release.py manifest v3 <thư mục có 2 exe> <ra version.json>
-        version.json cho bộ tự cập nhật: phiên bản, min_version (release/policy.json), link + cỡ + SHA-256 từng exe,
-        ghi chú mọi bản <= v3
+    python release/make_release.py manifest v5 <AoE-MapCap-win64.zip> <ra version.json>
+        version.json cho bộ tự cập nhật: phiên bản, min_version (release/policy.json), link + cỡ + SHA-256 của zip
+        và của từng exe trong zip, ghi chú mọi bản <= v5 (Release chỉ đính kèm zip, không còn exe lẻ)
     python release/make_release.py bodies v3 <thư mục ra> [--zip-sha=...] [--commit=...]
         mô tả trang Release cho mọi bản có ghi chú release/notes/v<N>.md: <thư mục ra>/v<N>.md
         (workflow đăng bản hiện tại với mô tả này và sửa lại mô tả các bản cũ cho đồng bộ)
@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import time
+import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NOTES = os.path.join(ROOT, "release", "notes")
@@ -65,7 +66,7 @@ def sha256(path):
     return h.hexdigest()
 
 
-def manifest(tag, exe_dir, out):
+def manifest(tag, zip_path, out):
     v = tag_version(tag)
     with open(os.path.join(ROOT, "release", "policy.json"), encoding="utf-8") as f:
         policy = json.load(f)
@@ -75,17 +76,32 @@ def manifest(tag, exe_dir, out):
     notes = {k: t for k, t in all_notes().items() if vkey(k) <= vkey(v)}
     if v not in notes:
         raise SystemExit(f"thiếu ghi chú release/notes/v{v}.md")
-    assets = {}
-    for name in EXES:
-        p = os.path.join(exe_dir, name)
-        assets[name] = {"url": f"https://github.com/{REPO}/releases/download/{tag}/{name}",
-                        "size": os.path.getsize(p), "sha256": sha256(p)}
+    # từ v5 Release chỉ đính kèm zip: app tải zip rồi giải nén exe cần thay. Mã SHA-256 từng exe lấy thẳng từ zip.
+    files = {}
+    with zipfile.ZipFile(zip_path) as zf:
+        for info in zf.infolist():
+            name = os.path.basename(info.filename)
+            if name in EXES:
+                h = hashlib.sha256()
+                with zf.open(info) as src:
+                    for b in iter(lambda: src.read(1 << 20), b""):
+                        h.update(b)
+                files[name] = {"path": info.filename, "size": info.file_size, "sha256": h.hexdigest()}
+    missing = [n for n in EXES if n not in files]
+    if missing:
+        raise SystemExit(f"zip thiếu {missing}")
+    zname = os.path.basename(zip_path)
+    z = {"url": f"https://github.com/{REPO}/releases/download/{tag}/{zname}", "size": os.path.getsize(zip_path),
+         "sha256": sha256(zip_path), "files": files}
+    # "assets" rỗng: bộ cập nhật v3/v4 (chỉ biết exe lẻ) vẫn báo "có bản mới", bấm Cập nhật thì báo tải tay ở trang
+    # phát hành (thiếu khoá này thì v3/v4 coi version.json hỏng và không báo gì)
     m = {"version": v, "tag": tag, "min_version": min_v,
          "published": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-         "page": f"https://github.com/{REPO}/releases/tag/{tag}", "notes": notes, "assets": assets}
+         "page": f"https://github.com/{REPO}/releases/tag/{tag}", "notes": notes, "zip": z, "assets": {}}
     with open(out, "w", encoding="utf-8") as f:
         json.dump(m, f, ensure_ascii=False, indent=1)
-    print(f"{out}: v{v}, min v{min_v}, " + ", ".join(f"{n} {a['size'] / 1e6:.1f} MB" for n, a in assets.items()))
+    print(f"{out}: v{v}, min v{min_v}, zip {z['size'] / 1e6:.1f} MB, "
+          + ", ".join(f"{n} {a['size'] / 1e6:.1f} MB" for n, a in files.items()))
 
 
 def _commit_of(tag):
@@ -103,8 +119,7 @@ def body(v, current, zip_sha="", commit=""):
              f"- Tải **{ZIP}**, giải nén, mở `AoE-MapCap.exe` (ghi trận + bảng trận đã ghi) hoặc `AoE-Replay.exe` "
              "(chỉ xem replay)."]
     if vkey(v) >= (3,):
-        lines.append(f"- Chỉ cần tải **{ZIP}**. Các file `AoE-MapCap.exe`, `AoE-Replay.exe`, `version.json` "
-                     "đính kèm là để app tự cập nhật, không cần tải.")
+        lines.append("- File `version.json` đính kèm là để app tự cập nhật, không cần tải.")
         lines.append("- Đang dùng từ v3 trở lên: app tự báo có bản mới, bấm **Cập nhật** là xong, không cần tải lại.")
     if not current:
         lines.append(f"- Đây là bản cũ. Bản mới nhất: https://github.com/{REPO}/releases/latest")

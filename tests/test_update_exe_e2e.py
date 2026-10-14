@@ -57,18 +57,20 @@ def main():
     log = os.path.join(d, "Video", "Raw", "_replay.log")
     new = open(exe, "rb").read()
     srv = Server({})
-    asset = {"url": srv.url + "/AoE-Replay.exe", "size": len(new), "sha256": hashlib.sha256(new).hexdigest()}
+    from test_updater import make_zip, zip_manifest
+    zdata = make_zip({"AoE-Replay.exe": new, "AoE-MapCap.exe": b"khong dung"})
+    m4 = zip_manifest(srv.url, "99", {"AoE-Replay.exe": new, "AoE-MapCap.exe": b"khong dung"}, zdata)
+    from mapcap.version import APP_VERSION
 
-    def manifest():
-        v = "3" if srv.hits.get("/AoE-Replay.exe") else "4"
-        return json.dumps({"version": v, "min_version": "1", "page": srv.url, "notes": {"4": "- thử"},
-                           "assets": {"AoE-Replay.exe": asset}}).encode()
-    srv.files.update({"/version.json": manifest, "/AoE-Replay.exe": new})
+    def manifest():                                      # tải zip xong thì báo đã là bản mới nhất (không cập nhật lặp)
+        v = APP_VERSION if srv.hits.get("/AoE-MapCap-win64.zip") else "99"
+        return json.dumps(dict(m4, version=v)).encode()
+    srv.files.update({"/version.json": manifest, "/AoE-MapCap-win64.zip": zdata})
     env = dict(os.environ, AOEMAPCAP_UPDATE_URL=srv.url + "/version.json", AOEMAPCAP_UPDATE_AUTO="1")
     t0 = time.time()
     first = subprocess.Popen([exe], env=env, cwd=d)
     try:
-        wait(lambda: srv.hits.get("/AoE-Replay.exe"), 60, "exe tải bản mới")
+        wait(lambda: srv.hits.get("/AoE-MapCap-win64.zip"), 60, "exe tải zip bản mới")
         print(f"đã tải bản mới sau {time.time() - t0:.1f} s")
         wait(lambda: first.poll() is not None, 30, "bản cũ thoát")
         print(f"bản cũ thoát (mã {first.returncode}) sau {time.time() - t0:.1f} s")
@@ -80,8 +82,8 @@ def main():
         time.sleep(1.5)
         text = open(log, encoding="utf-8").read()
         print(text.strip())
-        assert "đã cập nhật lên v4: khởi động lại" in text
-        assert "phiên bản đang dùng v3, mới nhất v3" in text
+        assert "đã cập nhật lên v99: khởi động lại" in text
+        assert f"phiên bản đang dùng v{APP_VERSION}, mới nhất v{APP_VERSION}" in text
         assert procs_of(exe), "bản mới phải còn chạy (không lỗi khi mở)"
     finally:
         for p in procs_of(exe):
