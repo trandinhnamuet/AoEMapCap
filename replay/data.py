@@ -48,11 +48,13 @@ def _apply_static_delta(arr, changed, removed):
 
 
 class KeyState:
-    __slots__ = ("frame", "t", "at", "units", "vis", "pstate", "tech_times", "pstat", "go", "prs", "prod")
+    __slots__ = ("frame", "t", "at", "units", "vis", "pstate", "tech_times", "pstat", "go", "prs", "prod", "pav", "ptr")
 
-    def __init__(self, frame, t, at, units, vis, pstate, tech_times, pstat, go, prs=None, prod=None):
+    def __init__(self, frame, t, at, units, vis, pstate, tech_times, pstat, go, prs=None, prod=None, pav=None, ptr=None):
         self.prs = prs or {}
         self.prod = prod or {}
+        self.pav = pav or {}
+        self.ptr = ptr or {}
         self.frame, self.t, self.at = frame, t, at
         self.units, self.vis, self.pstate, self.tech_times = units, vis, pstate, tech_times
         self.pstat, self.go = pstat, go
@@ -71,6 +73,8 @@ class FrameState:
         self.prod = {}               # uid công trình -> (hàng đợi, dat id đang sinh, giây, tỉ lệ) — file từ 2026-10-10
         self.go = 0                  # 1 = ván đã kết thúc
         self.prs = {}                # index -> {id công nghệ đang nghiên cứu: giây đã chạy}
+        self.pav = {}                # index -> frozenset id công nghệ "có thể nghiên cứu" (trạng thái 1) — file từ 2026-10-13
+        self.ptr = {}                # index -> frozenset (dat id, nhà sinh, nút) unit đã mở — file từ 2026-10-13
         self.frame = -1
         self.t = 0
         self.at = 0.0
@@ -137,6 +141,10 @@ class FrameState:
             self.go = p["go"]
         if "prs" in p:
             self.prs.update(p["prs"])
+        for idx, v in p.get("pav", {}).items():
+            self.pav[idx] = frozenset(v)
+        for idx, v in p.get("ptr", {}).items():
+            self.ptr[idx] = frozenset(tuple(x) for x in v)
         for uid, v in p.get("prod", {}).items():
             if v is None:
                 self.prod.pop(uid, None)
@@ -153,7 +161,7 @@ class FrameState:
     def snapshot(self):
         return KeyState(self.frame, self.t, self.at, self.units(), self.vis.copy(), dict(self.pstate),
                         {k: dict(v) for k, v in self.tech_times.items()}, dict(self.pstat), self.go,
-                        {k: dict(v) for k, v in self.prs.items()}, dict(self.prod))
+                        {k: dict(v) for k, v in self.prs.items()}, dict(self.prod), dict(self.pav), dict(self.ptr))
 
     def restore(self, k: KeyState):
         self._reset_units(k.units)
@@ -163,6 +171,8 @@ class FrameState:
         self.pstat, self.go = dict(k.pstat), k.go
         self.prs = {i: dict(v) for i, v in k.prs.items()}
         self.prod = dict(getattr(k, "prod", {}) or {})
+        self.pav = dict(getattr(k, "pav", {}) or {})
+        self.ptr = dict(getattr(k, "ptr", {}) or {})
         self.frame, self.t, self.at = k.frame, k.t, k.at
 
 
@@ -448,6 +458,8 @@ class ReplayData:
                 q.attrs, q.techs = ps
             q.tech_times = dict(st.tech_times.get(p.index, {}))
             q.researching = dict(st.prs.get(p.index, {}))
+            q.available = st.pav.get(p.index)          # None: file trước 2026-10-13 (trình xem tự suy ra)
+            q.trainable = st.ptr.get(p.index)
             ps = st.pstat.get(p.index)
             if ps is not None:
                 q.ptype, q.resigned = ps

@@ -79,6 +79,8 @@ class Hud:
         self.r_minimap = None
         self.score_rows = []         # [(Rect, index người chơi)]
         self.hover_timeline = None   # tỉ lệ 0..1 khi chuột trên thanh thời gian
+        self.cmd_hits = []           # [(Rect, chữ gợi ý)] các nút bảng lệnh công trình vừa vẽ
+        self.hover_cmd = None        # chỉ số nút đang rê chuột
 
     # ---- chữ --------------------------------------------------------------------------
     def font(self, size, bold=False):
@@ -448,8 +450,18 @@ class Hud:
         queue = info.get("queue")
         if queue:
             prog_h += int(52 * u)
+        cmd = info.get("cmd")
+        cell = int(46 * u)
+        gap = int(4 * u)
+        cmd_rows = 0
+        if cmd and cmd["slots"]:
+            cmd_rows = max((b - 1) // 5 for b, _v in cmd["slots"]) + 1
+        cmd_note = self.text(cmd["note"], int(12 * u), GREY) if cmd and cmd.get("note") else None
+        cmd_h = (cmd_rows * (cell + gap) + int(10 * u) if cmd_rows else 0) + (cmd_note.get_height() + int(4 * u) if cmd_note else 0)
+        prog_h += cmd_h
         w = max([int(12 * u) + port + int(12 * u) + max(s.get_width() for s in head) + int(16 * u),
-                 cols * cell_w + int(24 * u), int(360 * u)] + [e.get_width() + int(24 * u) for e in extra])
+                 cols * cell_w + int(24 * u), int(360 * u), 5 * (cell + gap) + int(24 * u)]
+                + [e.get_width() + int(24 * u) for e in extra + ([cmd_note] if cmd_note else [])])
         top_h = max(port, sum(s.get_height() for s in head) + (int(30 * u) if hp else 0)) + int(16 * u)
         h = top_h + res_h + n_rows * row_h + prog_h + sum(e.get_height() for e in extra) + int(12 * u)
         r = pygame.Rect(int(10 * u), self.bottom - h - int(6 * u), w, h)
@@ -535,9 +547,38 @@ class Hud:
             b2 = bar.copy(); b2.width = int(bar.width * queue["frac"])
             pygame.draw.rect(surf, (90, 200, 90), b2)
             y += int(52 * u)
+        self.cmd_hits = []
+        if cmd_rows:                                      # bảng lệnh 2 x 5 như trong game: nút b -> hàng (b-1)//5, cột (b-1)%5
+            y += int(6 * u)
+            x0 = r.x + int(12 * u)
+            mouse = pygame.mouse.get_pos()
+            for b, (kind, ic, label, cost) in cmd["slots"]:
+                k = b - 1
+                box = pygame.Rect(x0 + (k % 5) * (cell + gap), y + (k // 5) * (cell + gap), cell, cell)
+                pygame.draw.rect(surf, (30, 30, 30), box)
+                if ic is not None:
+                    surf.blit(pygame.transform.smoothscale(ic, (cell, cell)), box)
+                else:
+                    t = self.text(label[:6], int(11 * u), WHITE)
+                    surf.blit(t, t.get_rect(center=box.center))
+                hov = box.collidepoint(mouse)
+                pygame.draw.rect(surf, GOLD if hov else ((150, 135, 90) if kind == "tech" else (110, 130, 160)), box,
+                                 max(1, int(2 * u)) if hov else 1)
+                self.cmd_hits.append((box, label + (f"  ({cost})" if cost else "")))
+            y += cmd_rows * (cell + gap) + int(4 * u)
+        if cmd_note is not None:
+            surf.blit(cmd_note, (r.x + int(12 * u), y))
+            y += cmd_note.get_height() + int(4 * u)
         for e in extra:
             surf.blit(e, (r.x + int(12 * u), y))
             y += e.get_height()
+        if self.hover_cmd is not None and self.hover_cmd < len(self.cmd_hits):
+            box, tip = self.cmd_hits[self.hover_cmd]
+            t = self.text(tip, int(14 * u), WHITE, True)
+            tr = pygame.Rect(0, 0, t.get_width() + int(12 * u), t.get_height() + int(8 * u))
+            tr.bottomleft = (box.x, box.y - int(4 * u))
+            self.panel(surf, tr, (8, 10, 14, 240), border=GOLD)
+            surf.blit(t, (tr.x + int(6 * u), tr.y + int(4 * u)))
 
     def _help(self, surf):
         W, H = self.size

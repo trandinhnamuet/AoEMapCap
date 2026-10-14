@@ -130,6 +130,9 @@ class Research:
     icon: int
     costs: list             # [(loại tài nguyên, số lượng)]
     required: list          # id công nghệ cần trước
+    reqn: int = 0           # cần đủ bao nhiêu công nghệ trong required (thời đại: 2 trong vài công trình...)
+    button: int = -1        # vị trí nút trên bảng lệnh của công trình (1.. theo hàng, như unit +0x15E)
+    effect: int = -1        # id hiệu ứng (bảng effects trong DAT)
 
     @property
     def researchable(self):
@@ -408,8 +411,9 @@ def parse_research(dat):
     for i, (q, name) in enumerate(recs):
         req = [x for x in struct.unpack_from("<4h", d, q) if x >= 0]
         costs = [(t, a) for t, a, _f in (struct.unpack_from("<hhB", d, q + 8 + 5 * k) for k in range(3)) if t >= 0]
-        _reqn, loc, ln, _ld, t, _eff, typ, icon = struct.unpack_from("<hhHHhhhh", d, q + 23)
-        out.append(Research(i, name, ln, t, loc, typ, icon, costs, req))
+        reqn, loc, ln, _ld, t, eff, typ, icon = struct.unpack_from("<hhHHhhhh", d, q + 23)
+        button = struct.unpack_from("<b", d, q + 39)[0]
+        out.append(Research(i, name, ln, t, loc, typ, icon, costs, req, reqn, button, eff))
     dat.research = out
     return out
 

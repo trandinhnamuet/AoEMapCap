@@ -71,6 +71,8 @@ class PlayerInfo:
     techs: frozenset = None   # id công nghệ đã nghiên cứu xong; None = chưa đọc được
     tech_times: dict = None   # id công nghệ -> time_ms game lúc lần đầu thấy đã xong (tích luỹ từ đầu bản ghi)
     researching: dict = None  # id công nghệ đang nghiên cứu -> giây đã nghiên cứu (trạng thái 2)
+    available: frozenset = None  # id công nghệ có thể nghiên cứu (trạng thái 1) = nút trên bảng lệnh công trình
+    trainable: frozenset = None  # (dat id, nhà sinh, nút) unit đã mở; chỉ có ở mẫu vừa đọc (2 s/lần)
     resigned: int = 0         # PLAYER+0x81: 1 = đã đầu hàng (ptype = PLAYER+0x80: 0 đang chơi, 1 thắng, 2 thua)
     diplomacy: tuple = ()     # PLAYER+0xB0 int32 theo từng người chơi (thái độ ngoại giao, giá trị thô)
 
@@ -420,6 +422,56 @@ class GameReader:
         cache[key] = (val, time.time())
         return val
 
+    TRAIN_EVERY = 2.0          # giây: đọc lại unit đã mở của từng người chơi (bảng quân của công trình)
+
+    def maybe_trainable(self, players):
+        """Mỗi TRAIN_EVERY giây gán pl.trainable cho từng người chơi; lỗi thì bỏ qua (pl.trainable = None)."""
+        now = time.time()
+        if now - getattr(self, "_train_t", 0.0) < self.TRAIN_EVERY:
+            return
+        self._train_t = now
+        try:
+            self.read_trainable(players)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def read_trainable(self, players):
+        """Như hàm 0x4F3160 của game: unit loại >= 70 đã mở (+0x52) trong mảng def của người chơi (PLAYER+0x24),
+        theo nhà sinh (+0x15C) và vị trí nút (+0x15E). Loại/id/nhà/nút của mỗi def không đổi -> đọc một lần."""
+        meta = self.__dict__.setdefault("_def_meta", {})        # địa chỉ def -> (loại, dat id, nhà sinh, nút)
+        heads = self.bulk.read_many([pl.addr + O.PLAYER_UNITDEF_COUNT for pl in players if pl.index > 0 and pl.addr], 8)
+        tables = {}
+        for pl in players:
+            hb = heads.get(pl.addr + O.PLAYER_UNITDEF_COUNT) if pl.index > 0 and pl.addr else None
+            if not hb:
+                continue
+            n = struct.unpack_from("<h", hb, 0)[0]
+            tab = struct.unpack_from("<I", hb, O.PLAYER_UNITDEFS - O.PLAYER_UNITDEF_COUNT)[0]
+            if tab and 0 < n <= 4096:
+                b = self.mem.try_read(tab, 4 * n)
+                if b:
+                    tables[pl.index] = [a for a in struct.unpack(f"<{n}I", b) if a]
+        new = sorted({a for t in tables.values() for a in t if a not in meta})
+        if new:
+            raws = self.bulk.read_many(new, O.UNITDEF_BUTTON + 1)
+            for a in new:
+                b = raws.get(a)
+                if b:
+                    meta[a] = (b[O.UNITDEF_TYPE], struct.unpack_from("<h", b, O.UNITDEF_ID)[0],
+                               struct.unpack_from("<h", b, O.UNITDEF_TRAIN_LOCATION)[0],
+                               struct.unpack_from("<b", b, O.UNITDEF_BUTTON)[0])
+        cand = {a for t in tables.values() for a in t if a in meta and meta[a][0] >= 70 and meta[a][2] >= 0}
+        flags = self.bulk.read_many(sorted(a + O.UNITDEF_ENABLED for a in cand), 1)   # chỉ cờ +0x52 mỗi lần
+        by_index = {pl.index: pl for pl in players}
+        for idx, t in tables.items():
+            out = set()
+            for a in t:
+                f = flags.get(a + O.UNITDEF_ENABLED)
+                if f and f[0]:
+                    typ, did, loc, btn = meta[a]
+                    out.add((did, loc, btn))
+            by_index[idx].trainable = frozenset(out)
+
     def maybe_production(self, units, players):
         now = time.time()
         if now - getattr(self, "_prod_t", 0.0) < self.PROD_EVERY:
@@ -642,6 +694,7 @@ class GameReader:
             st = np.frombuffer(data, np.int16)[O.RESEARCH_ENTRY_STATE // 2::O.RESEARCH_ENTRY_SIZE // 2]
             prog = np.frombuffer(data, np.float32)[O.RESEARCH_ENTRY_PROGRESS // 4::O.RESEARCH_ENTRY_SIZE // 4]
             active = np.nonzero(st == O.RESEARCH_STATE_ACTIVE)[0].tolist()
+            self._available = frozenset(np.nonzero(st == O.RESEARCH_STATE_AVAILABLE)[0].tolist())
             self._researching = {int(t): round(float(prog[t]), 1) for t in active}
             return frozenset(np.nonzero(st == O.RESEARCH_STATE_DONE)[0].tolist())
         except (MemoryError_, struct.error):
@@ -799,8 +852,10 @@ class GameReader:
             if O.PLAYER_CIV is not None:
                 pl.civ = raw[O.PLAYER_CIV]
             self._researching = None
+            self._available = None
             pl.techs = self._read_techs(raw, p)
             pl.researching = self._researching
+            pl.available = self._available
             if pl.techs is not None:
                 tt = self._tech_times.setdefault(i, {})
                 for tid in pl.techs:
@@ -850,6 +905,7 @@ class GameReader:
             snap.units.extend(self.doppels.update(snap))
             snap.def_stats = self.maybe_def_stats()
             snap.production = self.maybe_production(snap.units, players)
+            self.maybe_trainable(players)
         return snap
 
     UNIT_RAW_DT = np.dtype({

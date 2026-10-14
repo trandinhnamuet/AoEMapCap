@@ -7,7 +7,9 @@ File = chuỗi bản ghi [type u8][len u32][zlib(pickle(payload))]. Có thể đ
   'F' frame  : time_ms, taken_at, vis_raw (XOR với mẫu trước, nén), unit thay đổi/xoá
              (từ 2026-10-09 thêm 'pstat' {index: (trạng thái thắng/thua, đã đầu hàng)} khi đổi, 'go' = cờ hết ván,
               'prs' {index: {id công nghệ: giây đã nghiên cứu}} khi đổi; unit có thêm rtype/ramount;
-              từ 2026-10-10 'prod' {uid công trình: ((dat id, số lượng)...), dat id đang sinh, giây, tỉ lệ) | None})
+              từ 2026-10-10 'prod' {uid công trình: ((dat id, số lượng)...), dat id đang sinh, giây, tỉ lệ) | None};
+              từ 2026-10-13 'pav' {index: id công nghệ có thể nghiên cứu}, 'ptr' {index: ((dat id, nhà sinh, nút)...)}
+              = bảng lệnh của công trình như người chơi thấy, chỉ khi đổi)
   'U' stats  : {index def: chỉ số} khi chỉ số đổi (công, giáp, tầm, tốc độ... đã nâng cấp), từ 2026-10-09
   'E' end    : tổng kết khi đóng file (giờ cuối, số mẫu, trạng thái cuối từng người chơi, lý do dừng)
 Sau 'E' là đuôi 16 byte: END_MAGIC + offset u64 của bản ghi 'E' -> đọc tổng kết không phải quét cả file.
@@ -106,6 +108,8 @@ class RawWriter:
         self.prev_pstat = {}         # index -> (trạng thái, đã đầu hàng)
         self.prev_prs = {}           # index -> {id công nghệ đang nghiên cứu: giây}
         self.prev_prod = {}          # uid công trình -> (hàng đợi, đang sinh, giây, tỉ lệ)
+        self.prev_pav = {}           # index -> công nghệ có thể nghiên cứu (đã ghi)
+        self.prev_ptr = {}           # index -> unit đã mở (dat id, nhà sinh, nút) (đã ghi)
         self.prev_go = 0
         self.def_stats = {}          # địa chỉ def -> chỉ số mới nhất đọc được
         self.written_stats = {}      # index def -> chỉ số đã ghi
@@ -287,6 +291,21 @@ class RawWriter:
                 self.prev_prs[p.index] = cur
         if prs:
             rec["prs"] = prs                           # công nghệ đang nghiên cứu -> giây đã chạy
+        # bảng lệnh công trình (2026-10-13): công nghệ có thể nghiên cứu + unit đã mở, chỉ khi đổi
+        pav, ptr = {}, {}
+        for p in snap.players:
+            av = getattr(p, "available", None)
+            if av is not None and self.prev_pav.get(p.index) != av:
+                pav[p.index] = tuple(sorted(av))
+                self.prev_pav[p.index] = av
+            tr = getattr(p, "trainable", None)
+            if tr is not None and self.prev_ptr.get(p.index) != tr:
+                ptr[p.index] = tuple(sorted(tr))
+                self.prev_ptr[p.index] = tr
+        if pav:
+            rec["pav"] = pav
+        if ptr:
+            rec["ptr"] = ptr
         prod = getattr(snap, "production", None)
         if prod is not None:                           # hàng đợi sinh unit: chỉ ghi công trình đổi (None = hết hàng)
             ch = {uid: v for uid, v in prod.items() if self.prev_prod.get(uid) != v}

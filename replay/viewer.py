@@ -666,6 +666,9 @@ class Viewer:
                 nm = self._unit_name(SimpleNamespace(dat_id=cur, name=du2.name if du2 else "?"), None) if cur >= 0 else "?"
                 queue = {"name": nm, "count": total, "frac": frac if making >= 0 else 0.0,
                          "icon": self._dat_icon(cur, owner)}
+        cmd = None
+        if utype == 80 and int(u["kind"]) != 25 and int(u["status"]) == 2 and owner > 0 and hp > 0:
+            cmd = self._command_panel(dfi.dat_id, owner)
         if int(u["kind"]) == 25:
             lines.append("Hình ghi nhớ trong sương mù")
         elif int(u["status"]) >= 3 or hp <= 0:
@@ -676,9 +679,53 @@ class Viewer:
         owner_txt = (p.name if p and owner > 0 else "Gaia") + (f"  ·  {civ}" if civ and owner > 0 else "")
         return {"name": self._unit_name(dfi, stats), "owner": owner_txt,
                 "rgb": w.player_rgb(owner) if owner > 0 else (200, 200, 200), "stats": rows, "lines": lines,
-                "res": res, "progress": progress, "queue": queue,
+                "res": res, "progress": progress, "queue": queue, "cmd": cmd,
                 "hp": (max(hp, 0.0), hp_max) if hp_max > 0 else None,
                 "icon": self._unit_icon(dfi, owner)}
+
+    @staticmethod
+    def _prereq_ok(r, done):
+        """Đủ công nghệ yêu cầu (reqn trong danh sách required; reqn = 0 -> cần tất cả)."""
+        req = list(r.required)
+        need = min(len(req), r.reqn) if r.reqn > 0 else len(req)
+        return sum(1 for x in req if x in done) >= need
+
+    def _command_panel(self, bid, owner):
+        """Bảng lệnh của công trình (DAT id bid) của người chơi owner tại mẫu hiện tại, như người chơi thấy:
+        unit đã mở sinh ở nhà này + công nghệ ở trạng thái "có thể nghiên cứu" (đã nghiên cứu thì biến mất, bậc sau
+        hiện ở cùng ô). File trước 2026-10-13 không ghi trạng thái 1: suy từ DAT (chưa xong + đủ yêu cầu), ước lượng."""
+        pls = self.data.players_at(self.cursor.state)
+        if not 0 < owner < len(pls):
+            return None
+        pl = pls[owner]
+        dat = self.world.dat
+        research = getattr(dat, "research", None) or []
+        slots = {}
+        note = None
+        if pl.trainable is not None:
+            for did, loc, btn in sorted(pl.trainable):
+                if loc == bid and btn > 0 and btn not in slots:
+                    du = dat.units.get(did)
+                    nm = self._unit_name(SimpleNamespace(dat_id=did, name=du.name if du else "?"), None)
+                    slots[btn] = ("unit", self._dat_icon(did, owner), nm, "")
+        active = set(pl.researching or {})
+        done = pl.techs or frozenset()
+        if pl.available is not None:
+            techs = [research[t] for t in sorted(pl.available) if 0 <= t < len(research)]
+        else:
+            techs = [r for r in research if r.researchable and r.id not in done and r.id not in active
+                     and self._prereq_ok(r, done)]
+            note = "Trận ghi trước 13/10/2026: công nghệ ước lượng, chưa có quân"
+        names = {0: "thực", 1: "gỗ", 2: "đá", 3: "vàng"}
+        for r in techs:
+            if r.location != bid or r.button <= 0 or not r.researchable or r.button in slots:
+                continue
+            cost = ", ".join(f"{a} {names.get(t, '?')}" for t, a in r.costs if a > 0)
+            icon = self.hud.tech_icon(r.icon, 64) if self.hud.tech_icon else None
+            slots[r.button] = ("tech", icon, self.world.resolver._tech_label(r), cost)
+        if not slots and note is None:
+            return {"slots": [], "note": None}
+        return {"slots": sorted(slots.items()), "note": note}
 
     def _dat_icon(self, dat_id, owner):
         """Chân dung theo DAT id (unit đang sinh trong hàng đợi)."""
@@ -1046,6 +1093,10 @@ class Viewer:
         if hov != hud.hover_timeline:
             hud.hover_timeline = hov
             self._hud_dirty = True
+        hc = next((k for k, (rc, _t) in enumerate(hud.cmd_hits) if rc.collidepoint(ev.pos)), None)
+        if hc != hud.hover_cmd:                            # rê chuột lên nút bảng lệnh: hiện tên + giá
+            hud.hover_cmd = hc
+            self._hud_dirty = True
         d = self.drag
         if d is None:
             return
@@ -1225,6 +1276,22 @@ class Viewer:
                     self._hud_dirty = True
                     self._settle(10)
                     self._shot("9_nha_chinh_nghien_cuu")
+                # bảng lệnh: nhà BS (Storage Pit 103) và nhà lính (Barracks 12) của người ghi, như người chơi thấy
+                for bid, name in ((103, "11_bang_lenh_nha_bs"), (12, "12_bang_lenh_nha_linh")):
+                    bl = np.nonzero((U["owner"] == rec) & (U["status"] == 2) &
+                                    (defs["dat_id"][np.clip(U["def"], 0, defs["n"] - 1)] == bid))[0]
+                    if len(bl):
+                        pick = U[int(bl[0])]
+                        self.sel_unit = ("u", int(pick["uid"]))
+                        ax, ay = self.world.anchors(np.array([pick], dtype=pick.dtype))
+                        self.cx, self.cy = float(ax[0]), float(ay[0])
+                        self._hud_dirty = True
+                        self._settle(5)
+                        self.hud.hover_cmd = 0 if self.hud.cmd_hits else None    # như rê chuột lên ô đầu: tên + giá
+                        self._hud_dirty = True
+                        self._settle(5)
+                        self._shot(name)
+                        self.hud.hover_cmd = None
                 S = getattr(self, "static_rows", None)
                 if S is not None and len(S):
                     pick = S[len(S) // 2]

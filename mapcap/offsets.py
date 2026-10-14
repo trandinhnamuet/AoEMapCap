@@ -225,6 +225,13 @@ UNITDEF_DISP_RANGE = 0x140       # float tầm hiển thị gốc
 UNITDEF_DISP_RELOAD = 0x144      # float
 UNITDEF_COSTS = 0x148            # 3 x {int16 loại, int16 số lượng, int16 cờ} (loại >= 70)
 UNITDEF_TRAIN_TIME = 0x15A       # int16 giây
+UNITDEF_TRAIN_LOCATION = 0x15C   # int16 DAT id công trình sinh ra unit (RE 2026-10-13: loader loại 70 0x4EEF40)
+UNITDEF_BUTTON = 0x15E           # int8 vị trí nút trên bảng lệnh (1..5 hàng trên, 6..10 hàng dưới)
+UNITDEF_ENABLED = 0x52           # byte: unit đã mở cho người chơi (DAT byte 48 -> 0x52, loader 0x441FA0; công
+                                 #   nghệ bật/tắt qua 0x443E80). Bảng quân của nhà = hàm 0x4F3160: duyệt
+                                 #   PLAYER+0x24, loại >= 70, +0x52 != 0, +0x15C == id nhà
+PLAYER_UNITDEF_COUNT = 0x22      # int16 số phần tử mảng PLAYER_UNITDEFS
+RESEARCH_STATE_AVAILABLE = 1     # trạng thái 1 = có thể nghiên cứu: nút hiện trên bảng lệnh công trình
 UNITDEF_DISP_PIERCE = 0x160      # int16 giáp xuyên hiển thị gốc (= max giáp lớp 3)
 ARMOR_CLASS_PIERCE = 3           # lớp giáp/công 3 = xuyên (tên, đạn); khác = cận chiến
 UNITDEF_STATS_SIZE = 0x168

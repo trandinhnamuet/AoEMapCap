@@ -124,7 +124,8 @@ này xem được bằng dữ liệu của bản kia: hình giống hệt).
 
 Replay mở theo góc nhìn đội của người ghi (F3 để xem toàn bản đồ). Bấm vào unit (cả cây, mỏ) để xem bảng thông tin
 như trong game: chân dung, tên, chủ, thanh máu còn/mất, công, giáp, giáp xuyên, tầm, tốc đánh, tốc chạy, tầm nhìn
-(dạng "3+2" = gốc + nâng cấp; công/giáp chỉ có ở trận ghi từ 09/10/2026). Bấm thanh thời gian hoặc minimap để nhảy tới. Chi tiết: `docs/10-trinh-xem-replay.md`.
+(dạng "3+2" = gốc + nâng cấp; công/giáp chỉ có ở trận ghi từ 09/10/2026). Bấm vào nhà để xem bảng quân và nâng
+cấp như người chơi thấy (nâng xong thì biến mất, bậc sau hiện ở cùng ô; rê chuột xem tên + giá). Bấm thanh thời gian hoặc minimap để nhảy tới. Chi tiết: `docs/10-trinh-xem-replay.md`.
 
 Dòng lệnh: `AoE-MapCap.exe --nogui [--fps=25 --capture=25 --width=1920]` chạy với cấu hình đã lưu.
 Mã nguồn quản lý bằng git ngay trong thư mục này (`git log`).
