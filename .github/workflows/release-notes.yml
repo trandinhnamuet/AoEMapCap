@@ -1,0 +1,46 @@
+# Viết lại mô tả mọi bản trên trang Releases từ release/notes/v<N>.md + release/make_release.py (không build).
+# Chạy khi ghi chú / mẫu mô tả trên main đổi, hoặc chạy tay (Actions > release-notes > Run workflow).
+# Bản mới nhất giữ SHA-256 của zip (lấy từ file .zip.sha256 đính kèm) và commit build của tag.
+name: release-notes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'release/notes/**'
+      - 'release/make_release.py'
+      - '.github/workflows/release-notes.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: release-notes
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0              # cần các tag để ghi commit build của từng bản
+
+      - name: Viết lại mô tả các bản
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          latest=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          [ -n "$latest" ] || { echo "chưa có tag v*"; exit 0; }
+          sha=$(gh release download "$latest" -p '*.zip.sha256' -O - 2>/dev/null | cut -d' ' -f1 || true)
+          python3 release/make_release.py bodies "$latest" bodies --zip-sha="$sha" --commit="$(git rev-list -n 1 "$latest")"
+          for f in bodies/v*.md; do
+            t=$(basename "$f" .md)
+            if gh release view "$t" > /dev/null 2>&1; then
+              gh release edit "$t" --notes-file "$f" && echo "đã viết lại mô tả $t"
+            fi
+          done

@@ -103,6 +103,8 @@ def body(v, current, zip_sha="", commit=""):
              f"- Tải **{ZIP}**, giải nén, mở `AoE-MapCap.exe` (ghi trận + bảng trận đã ghi) hoặc `AoE-Replay.exe` "
              "(chỉ xem replay)."]
     if vkey(v) >= (3,):
+        lines.append(f"- Chỉ cần tải **{ZIP}**. Các file `AoE-MapCap.exe`, `AoE-Replay.exe`, `version.json` "
+                     "đính kèm là để app tự cập nhật, không cần tải.")
         lines.append("- Đang dùng từ v3 trở lên: app tự báo có bản mới, bấm **Cập nhật** là xong, không cần tải lại.")
     if not current:
         lines.append(f"- Đây là bản cũ. Bản mới nhất: https://github.com/{REPO}/releases/latest")
