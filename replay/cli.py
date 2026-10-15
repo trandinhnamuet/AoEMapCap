@@ -31,7 +31,7 @@ def main(argv, standalone=False):
             from mapcap import telemetry
             from .picker import default_folder
             ini = os.path.join(os.path.dirname(default_folder()), "_settings.ini")
-            telemetry.send("replay", "open", telemetry.flag_from_settings(ini))
+            telemetry.send("replay", "open", telemetry.flag_from_settings(ini), raw_dir=default_folder())
         except Exception:  # noqa: BLE001
             pass
     if path is None:

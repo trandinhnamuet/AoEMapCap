@@ -29,9 +29,9 @@ nút Cập nhật / Thoát. Bản v1, v2 chưa có tính năng này: tải v3 b�
 ## Thống kê sử dụng
 
 Từ v6, mỗi lần mở app (có mạng) và mỗi trận ghi xong, app gửi một lượt thống kê lên Cloudflare: **mã máy ngẫu
-nhiên** (tạo lần đầu, lưu ở `%APPDATA%\AoE-MapCap\install_id`), phiên bản; máy
-nhận ghi thêm địa chỉ IP. Không gửi tên người chơi, trận đấu hay bất kì dữ liệu nào khác. Mục đích: biết bao nhiêu
-máy đang dùng. Tắt trong thẻ **Cài đặt** (bỏ ô "Gửi thống kê sử dụng"). Mã nguồn phía nhận: `telemetry/`.
+nhiên** (tạo lần đầu, lưu ở `%APPDATA%\AoE-MapCap\install_id`), **tên người chơi** (nickname của người ghi, lấy từ
+trận đã ghi gần nhất), phiên bản; máy nhận ghi thêm địa chỉ IP. Không gửi nội dung trận đấu hay dữ liệu nào khác.
+Mục đích: biết bao nhiêu máy, những ai đang dùng. Tắt trong thẻ **Cài đặt** (bỏ ô "Gửi thống kê sử dụng"). Mã nguồn phía nhận: `telemetry/`.
 
 ## Kiểm tra file tải về
 

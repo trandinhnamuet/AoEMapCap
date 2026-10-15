@@ -569,7 +569,12 @@ class Engine:
         if path:
             self.session_files.append(path)
             from . import telemetry                     # thống kê: ghi xong một trận
-            telemetry.send("mapcap", "match", self.cfg.telemetry)
+            try:                                        # tên người ghi (nickname) của trận vừa ghi
+                from .rawrec import read_header
+                nm = telemetry.name_from_header(read_header(path) or {})
+            except Exception:  # noqa: BLE001
+                nm = ""
+            telemetry.send("mapcap", "match", self.cfg.telemetry, name=nm or None, raw_dir=self.cfg.raw_dir())
         return path
 
     def run(self):

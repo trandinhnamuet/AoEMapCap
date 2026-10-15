@@ -1,5 +1,6 @@
 // Thống kê sử dụng AoE-MapCap: Cloudflare Worker + D1 (không server riêng, không tên miền riêng).
-//   POST /v1/e            app gửi một lượt: {"id": mã máy UUID, "app": "mapcap"|"replay", "v": phiên bản, "ev": "open"|"match"}
+//   POST /v1/e            app gửi một lượt: {"id": mã máy UUID, "app": "mapcap"|"replay", "v": phiên bản, "ev": "open"|"match",
+//                         "name": tên người chơi (nickname trong game, có thể rỗng / trùng; từ v7)}
 //   GET  /stats           trang thống kê (đăng nhập bằng mật khẩu STATS_PASSWORD, đặt bằng `wrangler secret put`)
 //   GET  /api/stats       số liệu cho trang thống kê (Authorization: Bearer <mật khẩu>)
 // IP lấy từ CF-Connecting-IP (app kết nối bằng IPv4), nước từ request.cf.country. Ngày tính theo giờ Việt Nam.
@@ -49,6 +50,8 @@ async function ingest(request, env) {
   const version = String(body.v || "").slice(0, 16);
   const ev = String(body.ev || "open");
   if (!UUID.test(id) || !APPS.has(app) || !version || !EVENTS.has(ev)) return json({ ok: false, error: "bad event" }, 400);
+  // tên người chơi: bỏ ký tự điều khiển, tối đa 40 ký tự; rỗng = chưa biết (giữ tên cũ của máy)
+  const name = String(body.name || "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 40);
   const ip = request.headers.get("cf-connecting-ip") || "";
   const country = (request.cf && request.cf.country) || "";
   const now = Date.now();
@@ -60,14 +63,14 @@ async function ingest(request, env) {
   const burst = await db.prepare("SELECT COUNT(*) AS n FROM events WHERE ip = ? AND ts > ?").bind(ip, now - 60000).first();
   if (burst && burst.n > 120) return json({ ok: true, dropped: "rate" });
   await db.batch([
-    db.prepare("INSERT INTO events (ts, install, app, version, ev, ip, country) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .bind(now, id, app, version, ev, ip, country),
+    db.prepare("INSERT INTO events (ts, install, app, version, ev, ip, country, name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .bind(now, id, app, version, ev, ip, country, name || null),
     db.prepare(
-      `INSERT INTO installs (install, first_ts, last_ts, first_ip, last_ip, country, app, version, opens, matches)
-       VALUES (?1, ?2, ?2, ?3, ?3, ?4, ?5, ?6, ?7, ?8)
+      `INSERT INTO installs (install, first_ts, last_ts, first_ip, last_ip, country, app, version, opens, matches, name)
+       VALUES (?1, ?2, ?2, ?3, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
        ON CONFLICT(install) DO UPDATE SET last_ts = ?2, last_ip = ?3, country = ?4, app = ?5, version = ?6,
-         opens = opens + ?7, matches = matches + ?8`)
-      .bind(id, now, ip, country, app, version, ev === "open" ? 1 : 0, ev === "match" ? 1 : 0),
+         opens = opens + ?7, matches = matches + ?8, name = COALESCE(?9, name)`)
+      .bind(id, now, ip, country, app, version, ev === "open" ? 1 : 0, ev === "match" ? 1 : 0, name || null),
   ]);
   return json({ ok: true });
 }
@@ -96,9 +99,9 @@ async function stats(request, env, url) {
   const from = rangeStart(range);
   const day = `strftime('%Y-%m-%d', (ts + ${VN}) / 1000, 'unixepoch')`;
   const like = "%" + q.replace(/[%_]/g, "") + "%";
-  const qWhere = q ? " AND (e.ip LIKE ?2 OR e.install LIKE ?2 OR e.version LIKE ?2)" : "";
+  const qWhere = q ? " AND (e.ip LIKE ?2 OR e.install LIKE ?2 OR e.version LIKE ?2 OR e.name LIKE ?2 OR i.name LIKE ?2)" : "";
 
-  const [summary, newInstalls, daily, versions, apps, countries, kinds, top, recent, recentTotal] = await db.batch([
+  const [summary, newInstalls, daily, versions, apps, countries, kinds, top, recent, recentTotal, players] = await db.batch([
     db.prepare(`SELECT SUM(ev = 'open') AS opens, SUM(ev = 'match') AS matches, COUNT(DISTINCT install) AS installs,
                        COUNT(DISTINCT ip) AS ips FROM events WHERE ts >= ?1`).bind(from),
     db.prepare("SELECT COUNT(*) AS n FROM installs WHERE first_ts >= ?1").bind(from),
@@ -113,15 +116,20 @@ async function stats(request, env, url) {
     db.prepare(`SELECT ev AS name, COUNT(*) AS value FROM events WHERE ts >= ?1 GROUP BY ev ORDER BY value DESC`).bind(from),
     db.prepare(`SELECT e.install AS install, SUM(e.ev = 'open') AS opens, SUM(e.ev = 'match') AS matches,
                        COUNT(DISTINCT e.ip) AS ipCount, i.last_ip AS lastIp, i.version AS version, i.app AS app,
-                       i.country AS country, i.first_ts AS firstSeen, i.last_ts AS lastSeen
+                       i.country AS country, i.first_ts AS firstSeen, i.last_ts AS lastSeen, i.name AS name
                 FROM events e JOIN installs i ON i.install = e.install WHERE e.ts >= ?1
                 GROUP BY e.install ORDER BY opens DESC, lastSeen DESC LIMIT 20`).bind(from),
     db.prepare(`SELECT e.id, e.ts, e.install, e.app, e.version, e.ev, e.ip, e.country,
-                       (e.ts = i.first_ts) AS isNew
+                       COALESCE(e.name, i.name) AS name, (e.ts = i.first_ts) AS isNew
                 FROM events e JOIN installs i ON i.install = e.install
                 WHERE e.ts >= ?1${qWhere} ORDER BY e.ts DESC LIMIT ${PAGE} OFFSET ${(page - 1) * PAGE}`)
       .bind(...(q ? [from, like] : [from])),
-    db.prepare(`SELECT COUNT(*) AS n FROM events e WHERE e.ts >= ?1${qWhere}`).bind(...(q ? [from, like] : [from])),
+    db.prepare(`SELECT COUNT(*) AS n FROM events e JOIN installs i ON i.install = e.install WHERE e.ts >= ?1${qWhere}`)
+      .bind(...(q ? [from, like] : [from])),
+    db.prepare(`SELECT pname AS name, COUNT(*) AS value FROM (
+                  SELECT COALESCE(NULLIF(i.name, ''), '(chưa biết)') AS pname
+                  FROM events e JOIN installs i ON i.install = e.install WHERE e.ts >= ?1 AND e.ev = 'open')
+                GROUP BY pname ORDER BY value DESC LIMIT 10`).bind(from),
   ]);
   const s = summary.results[0] || {};
   const opens = s.opens || 0;
@@ -135,6 +143,7 @@ async function stats(request, env, url) {
     apps: apps.results,
     countries: countries.results,
     kinds: kinds.results,
+    players: players.results,
     topInstalls: top.results,
     recent: recent.results,
     recentTotal: recentTotal.results[0].n || 0,

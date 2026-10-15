@@ -1,8 +1,9 @@
 """Thống kê sử dụng: mỗi lần mở app (có mạng) gửi một lượt lên Cloudflare Worker (telemetry/ trong repo).
 
 Gửi: mã máy (UUID ngẫu nhiên tạo lần đầu, lưu %APPDATA%\\AoE-MapCap\\install_id để tải lại zip / tự cập nhật vẫn giữ),
-app (mapcap / replay), phiên bản, loại (open = mở app, match = ghi xong một trận). IP do phía nhận ghi; app kết nối
-bằng IPv4 để IP ghi lại là IPv4. Không gửi tên người chơi, trận đấu hay gì khác.
+app (mapcap / replay), phiên bản, loại (open = mở app, match = ghi xong một trận), tên người chơi (từ v7: nickname
+của người ghi trong trận đã ghi gần nhất, nhớ ở %APPDATA%\\AoE-MapCap\\player_name; chưa biết thì rỗng). IP do phía
+nhận ghi; app kết nối bằng IPv4 để IP ghi lại là IPv4. Không gửi nội dung trận đấu hay gì khác.
 Chạy ngầm, chờ tối đa 6 giây; không mạng / lỗi thì bỏ qua. Tắt trong Cài đặt ("Gửi thống kê sử dụng") hoặc biến môi
 trường AOEMAPCAP_TELEMETRY=0. Chạy từ mã nguồn (không đóng gói) thì không gửi trừ khi AOEMAPCAP_TELEMETRY=1.
 AOEMAPCAP_TELEMETRY_URL thay địa chỉ nhận (kiểm thử).
@@ -46,6 +47,59 @@ def flag_from_settings(path):
         return v.strip().lower() in ("1", "true", "yes", "on")
     except Exception:  # noqa: BLE001
         return True
+
+
+def _name_path():
+    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    return os.path.join(base, "AoE-MapCap", "player_name")
+
+
+def name_from_header(hdr):
+    """Tên (nickname) của người ghi trận từ header .aoerec: người chơi ở cur_player_index."""
+    try:
+        cur = int(hdr.get("cur_player_index", -1))
+        for p in hdr.get("players") or ():
+            if int(p[0]) == cur:
+                return str(p[3] or "").strip()
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
+def remember_name(name):
+    name = (name or "").strip()[:40]
+    if not name:
+        return
+    try:
+        os.makedirs(os.path.dirname(_name_path()), exist_ok=True)
+        with open(_name_path(), "w", encoding="utf-8") as f:
+            f.write(name)
+    except OSError:
+        pass
+
+
+def last_name(raw_dir=None):
+    """Tên người chơi đã nhớ; chưa có thì lấy từ trận ghi mới nhất trong raw_dir (và nhớ lại); không có thì ""."""
+    try:
+        with open(_name_path(), encoding="utf-8") as f:
+            v = f.read().strip()
+        if v:
+            return v
+    except OSError:
+        pass
+    if raw_dir and os.path.isdir(raw_dir):
+        try:
+            from .rawrec import read_header
+            files = sorted((os.path.join(raw_dir, f) for f in os.listdir(raw_dir) if f.endswith(".aoerec")),
+                           key=os.path.getmtime, reverse=True)
+            for p in files[:5]:
+                v = name_from_header(read_header(p) or {})
+                if v:
+                    remember_name(v)
+                    return v
+        except Exception:  # noqa: BLE001
+            pass
+    return ""
 
 
 def _id_path():
@@ -107,14 +161,18 @@ def _post(url, payload, timeout=TIMEOUT):
         conn.close()
 
 
-def send(app, ev="open", cfg_enabled=True, log=None, wait=False):
-    """Gửi một lượt (chạy ngầm). app: "mapcap" | "replay"; ev: "open" | "match". wait=True: chờ xong (kiểm thử)."""
+def send(app, ev="open", cfg_enabled=True, log=None, wait=False, name=None, raw_dir=None):
+    """Gửi một lượt (chạy ngầm). app: "mapcap" | "replay"; ev: "open" | "match". name: tên người chơi (None = tên đã
+    nhớ, hoặc từ trận mới nhất trong raw_dir). wait=True: chờ xong (kiểm thử)."""
+    if name:
+        remember_name(name)
     if not enabled(cfg_enabled):
         return None
 
     def job():
         try:
-            st = _post(endpoint(), {"id": install_id(), "app": app, "v": APP_VERSION, "ev": ev})
+            nm = name or last_name(raw_dir)
+            st = _post(endpoint(), {"id": install_id(), "app": app, "v": APP_VERSION, "ev": ev, "name": nm})
             if log and st != 200:
                 log(f"thống kê: máy chủ trả {st}")
         except Exception as e:  # noqa: BLE001  - không mạng / bị chặn: bỏ qua, không ảnh hưởng app

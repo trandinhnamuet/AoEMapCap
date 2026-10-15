@@ -27,6 +27,7 @@ for _s in (sys.stdout, sys.stderr):
 from mapcap import telemetry  # noqa: E402
 
 WORK = os.path.join(ROOT, "Video", "_test", "telemetry")
+APPDATA = os.path.join(WORK, "appdata")       # mọi test dùng APPDATA tạm: không ghi mã máy / tên giả vào máy thật
 TELE = os.path.join(ROOT, "telemetry")
 DEV_PORT = 8799
 DEV_PW = "local-test-password"
@@ -34,7 +35,7 @@ DEV_PW = "local-test-password"
 
 def test_install_id_and_switch():
     shutil.rmtree(WORK, ignore_errors=True)
-    os.makedirs(WORK)
+    os.makedirs(APPDATA)
     old = os.environ.get("APPDATA")
     os.environ["APPDATA"] = WORK
     try:
@@ -47,10 +48,7 @@ def test_install_id_and_switch():
         b = telemetry.install_id()
         assert b != a and uuid.UUID(b)
     finally:
-        if old is None:
-            os.environ.pop("APPDATA", None)
-        else:
-            os.environ["APPDATA"] = old
+        os.environ["APPDATA"] = APPDATA
     env = os.environ.pop("AOEMAPCAP_TELEMETRY", None)
     try:
         assert telemetry.enabled() is False, "chạy từ mã nguồn mặc định không gửi"
@@ -67,6 +65,29 @@ def test_install_id_and_switch():
         f.write("[mapcap]\ntelemetry = 0\n")
     assert telemetry.flag_from_settings(ini) is False and telemetry.flag_from_settings(ini + ".x") is True
     print("mã máy lưu %APPDATA%, bật/tắt theo môi trường / Cài đặt: OK")
+
+
+def test_names():
+    """Tên người chơi: lấy từ header trận (người ở cur_player_index), nhớ ở %APPDATA%, chưa nhớ thì lấy trận mới nhất."""
+    hdr = {"cur_player_index": 2, "players": [(0, 0, 0, " ", 0), (1, 0, 0, "AI 1", 0), (2, 0, 0, " TranKhoaCu ", 0)]}
+    assert telemetry.name_from_header(hdr) == "TranKhoaCu" and telemetry.name_from_header({}) == ""
+    assert telemetry.last_name() == ""
+    raw = os.path.join(WORK, "raw")
+    os.makedirs(raw, exist_ok=True)
+    import pickle
+    import struct
+    import zlib
+    from mapcap.rawrec import MAGIC
+    data = zlib.compress(pickle.dumps({"cur_player_index": 1, "players": [(0, 0, 0, "", 0), (1, 0, 0, "Nick Tu File", 0)],
+                                       "map_w": 1, "map_h": 1}))
+    with open(os.path.join(raw, "a.aoerec"), "wb") as f:
+        f.write(MAGIC + b"H" + struct.pack("<I", len(data)) + data)
+    assert telemetry.last_name(raw) == "Nick Tu File"
+    assert telemetry.last_name() == "Nick Tu File", "lấy từ file xong thì nhớ lại"
+    telemetry.remember_name("TranKhoaCu")
+    assert telemetry.last_name(raw) == "TranKhoaCu", "tên đã nhớ (trận ghi gần nhất) được ưu tiên"
+    os.remove(os.path.join(APPDATA, "AoE-MapCap", "player_name"))
+    print("tên người chơi: từ header trận, nhớ %APPDATA%, trận mới nhất khi chưa nhớ: OK")
 
 
 def test_send_payload():
@@ -87,18 +108,20 @@ def test_send_payload():
     os.environ["AOEMAPCAP_TELEMETRY"] = "1"
     os.environ["AOEMAPCAP_TELEMETRY_URL"] = f"http://127.0.0.1:{srv.server_address[1]}/v1/e"
     try:
-        telemetry.send("replay", "open", wait=True)
-        telemetry.send("mapcap", "match", wait=True)
+        telemetry.send("replay", "open", wait=True)                    # chưa biết tên -> rỗng
+        telemetry.send("mapcap", "match", wait=True, name="ChimSeDiNet")  # ghi xong trận: tên người ghi, nhớ lại
+        telemetry.send("mapcap", "open", wait=True)                    # lần mở sau: dùng tên đã nhớ
     finally:
         os.environ.pop("AOEMAPCAP_TELEMETRY", None)
         os.environ.pop("AOEMAPCAP_TELEMETRY_URL", None)
         srv.shutdown()
-    assert len(got) == 2, got
+    assert len(got) == 3, got
+    assert got[1][1]["name"] == "ChimSeDiNet" and got[2][1]["name"] == "ChimSeDiNet", got
     ip, p, ua = got[0]
     from mapcap.version import APP_VERSION
-    assert p == {"id": telemetry.install_id(), "app": "replay", "v": APP_VERSION, "ev": "open"}, p
+    assert p == {"id": telemetry.install_id(), "app": "replay", "v": APP_VERSION, "ev": "open", "name": ""}, p
     assert got[1][1]["ev"] == "match" and ua.startswith("AoE-MapCap/")
-    assert set(p) == {"id", "app", "v", "ev"}, "không gửi gì ngoài mã máy, app, phiên bản, loại"
+    assert set(p) == {"id", "app", "v", "ev", "name"}, "chỉ gửi mã máy, app, phiên bản, loại, tên người chơi"
     # không mạng: không treo, không lỗi
     os.environ["AOEMAPCAP_TELEMETRY"] = "1"
     os.environ["AOEMAPCAP_TELEMETRY_URL"] = "http://127.0.0.1:9/v1/e"
@@ -110,7 +133,7 @@ def test_send_payload():
     finally:
         os.environ.pop("AOEMAPCAP_TELEMETRY", None)
         os.environ.pop("AOEMAPCAP_TELEMETRY_URL", None)
-    print("gửi đúng 4 trường (mã máy, app, phiên bản, loại), không mạng thì bỏ qua: OK")
+    print("gửi đúng 5 trường (mã máy, app, phiên bản, loại, tên người chơi), không mạng thì bỏ qua: OK")
 
 
 def _get(url, pw=None):
@@ -150,7 +173,7 @@ def test_worker_local():
         os.environ["AOEMAPCAP_TELEMETRY"] = "1"
         os.environ["AOEMAPCAP_TELEMETRY_URL"] = base + "/v1/e"
         try:
-            telemetry.send("mapcap", "open", wait=True)
+            telemetry.send("mapcap", "open", wait=True, name="ChimSeDiNet")
             telemetry.send("mapcap", "open", wait=True)          # trùng trong 5 s -> bỏ
             telemetry.send("mapcap", "match", wait=True)
             telemetry.send("replay", "open", wait=True)          # khác loại -> nhận
@@ -171,6 +194,10 @@ def test_worker_local():
         assert d["recentTotal"] == 3 and d["recent"][-1]["isNew"] == 1 and d["recent"][0]["isNew"] == 0
         assert {r["name"] for r in d["apps"]} == {"mapcap", "replay"} and d["daily"][0]["opens"] == 2
         assert d["topInstalls"][0]["opens"] == 2 and d["topInstalls"][0]["matches"] == 1
+        assert d["topInstalls"][0]["name"] == "ChimSeDiNet" and all(r["name"] == "ChimSeDiNet" for r in d["recent"])
+        assert d["players"] == [{"name": "ChimSeDiNet", "value": 2}], d["players"]
+        st, dn = _get(base + "/api/stats?range=all&q=ChimSe", DEV_PW)
+        assert dn["recentTotal"] == 3, "tìm theo tên người chơi"
         st, d2 = _get(base + "/api/stats?range=all&q=" + telemetry.install_id()[:8], DEV_PW)
         assert d2["recentTotal"] == 3
         st, d3 = _get(base + "/api/stats?range=all&q=khongco", DEV_PW)
@@ -185,7 +212,9 @@ def test_worker_local():
 
 
 if __name__ == "__main__":
+    os.environ["APPDATA"] = APPDATA
     test_install_id_and_switch()
+    test_names()
     test_send_payload()
     test_worker_local()
     print("OK")

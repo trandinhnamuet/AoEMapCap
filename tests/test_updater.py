@@ -8,6 +8,7 @@ Máy chủ HTTP cục bộ (127.0.0.1) đóng vai GitHub; exe "đang chạy" là
 import hashlib
 import http.server
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -201,7 +202,7 @@ def test_make_release():
     assert "## Có gì mới trong v3" in b3 and "`abc`" in b3 and "c0ffee" in b3 and "Đây là bản cũ" not in b3
     assert "Đây là bản cũ" in b1 and "abc" not in b1 and "tự báo có bản mới" not in b1
     with open(os.path.join(ROOT, "mapcap", "version.py"), encoding="utf-8") as f:
-        assert 'APP_VERSION = "3"' in f.read()
+        assert re.search(r'^APP_VERSION = "\d+"\r?$', f.read(), re.M)
     print("make_release: version.json + mô tả các bản: OK")
 
 
@@ -323,7 +324,9 @@ def test_ui():
     body.pack(fill="both", expand=True)
     busy = {"v": "Đang ghi trận"}
     srv = Server({})
-    m = manifest(srv.url, "4", {"AoE-MapCap.exe": b"z"})
+    from mapcap.version import APP_VERSION
+    nxt = str(int(APP_VERSION) + 1)                    # luôn giả lập bản cao hơn bản đang dùng một bậc
+    m = manifest(srv.url, nxt, {"AoE-MapCap.exe": b"z"})
     srv.files["/version.json"] = lambda: json.dumps(m).encode()
     os.environ["AOEMAPCAP_UPDATE_URL"] = srv.url + "/version.json"
     try:
@@ -334,7 +337,7 @@ def test_ui():
             root.update()
             time.sleep(0.02)
         assert ctl.info is not None and ctl.info.state == "available"
-        assert ctl.bar.winfo_manager() == "pack" and "v4" in ctl.lbl.cget("text")
+        assert ctl.bar.winfo_manager() == "pack" and ("v" + nxt) in ctl.lbl.cget("text")
         frozen = updater.is_frozen
         updater.is_frozen = lambda: True
         started = []
@@ -351,7 +354,7 @@ def test_ui():
         ctl._later()
         assert ctl.bar.winfo_manager() == ""
         # bắt buộc cập nhật: chỉ hiện khi không bận
-        m["min_version"] = "4"
+        m["min_version"] = nxt
         busy["v"] = "Đang ghi trận"
         ctl._on_checked(updater.check("3"))
         for _ in range(10):

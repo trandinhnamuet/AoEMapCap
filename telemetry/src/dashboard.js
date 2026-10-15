@@ -163,7 +163,7 @@ td small{display:block;font-size:11.5px;color:var(--muted-2)}
     var d = state.data;
     var ranges = [["today", "Hôm nay"], ["7d", "7 ngày"], ["28d", "28 ngày"], ["90d", "90 ngày"], ["all", "Tất cả"]];
     var h = '<div class="an-head"><div><h1>Thống kê sử dụng AoE-MapCap</h1><p>Mỗi lần mở app có mạng gửi một lượt ' +
-      '(mã máy ngẫu nhiên, phiên bản, IP) · lưu trên Cloudflare D1' +
+      '(mã máy ngẫu nhiên, tên người chơi, phiên bản, IP) · lưu trên Cloudflare D1' +
       (d ? ' · cập nhật ' + new Intl.DateTimeFormat("vi-VN", { timeZone: TZ, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date(d.updatedAt)) : '') +
       '</p></div><div class="an-actions"><button class="an-btn" id="rf">Làm mới</button>' +
       '<button class="an-btn" id="lo">Đăng xuất</button></div></div>';
@@ -186,29 +186,33 @@ td small{display:block;font-size:11.5px;color:var(--muted-2)}
         '<div class="an-legend"><span><i style="background:var(--s1)"></i>Lượt mở app</span>' +
         '<span><i style="background:var(--s2)"></i>Máy duy nhất</span><span><i style="background:var(--s3)"></i>Trận đã ghi</span></div>' +
         '<div class="an-chart"><canvas id="ch"></canvas></div></div>';
-      h += '<div class="an-grid">' + barList("Phiên bản", "Số máy theo phiên bản", d.versions, "máy", function (n) { return "v" + n; }) +
-        barList("Ứng dụng", "Lượt mở theo app", d.apps, "lượt", appName) + '</div>';
+      // từ v6 chỉ còn AoE-MapCap.exe: bỏ ô "Ứng dụng", xếp 2 hàng (Người chơi, Phiên bản) / (Quốc gia, Loại sự kiện)
+      h += '<div class="an-grid">' + barList("Người chơi", "Lượt mở app theo tên người chơi (nickname, cho phép trùng)",
+        d.players || [], "lượt") +
+        barList("Phiên bản", "Số máy theo phiên bản", d.versions, "máy", function (n) { return "v" + n; }) + '</div>';
       h += '<div class="an-grid">' + barList("Quốc gia", "Số máy, theo Cloudflare", d.countries, "máy") +
         barList("Loại sự kiện", "Mở app / ghi xong trận", d.kinds, "lượt", evName) + '</div>';
       h += '<div class="an-card"><h2>Máy dùng nhiều nhất</h2><div class="an-hint">Xếp theo số lượt mở trong kỳ · top 20</div>' +
-        '<div class="an-tablewrap"><table><thead><tr><th>Mã máy</th><th>Lượt mở</th><th>Trận ghi</th><th>IP gần nhất</th>' +
+        '<div class="an-tablewrap"><table><thead><tr><th>Người chơi</th><th>Mã máy</th><th>Lượt mở</th><th>Trận ghi</th><th>IP gần nhất</th>' +
         '<th>Phiên bản</th><th>Lần đầu</th><th>Lần cuối</th></tr></thead><tbody>' +
         (d.topInstalls.length ? d.topInstalls.map(function (r) {
-          return '<tr><td class="mono" title="' + esc(r.install) + '">' + esc(r.install.slice(0, 8)) + '</td><td>' + fmt.format(r.opens) +
+          return '<tr><td>' + (r.name ? esc(r.name) : '<span class="dim">(chưa biết)</span>') +
+            '</td><td class="mono" title="' + esc(r.install) + '">' + esc(r.install.slice(0, 8)) + '</td><td>' + fmt.format(r.opens) +
             '</td><td>' + fmt.format(r.matches) + '</td><td class="mono">' + esc(r.lastIp) +
             (r.ipCount > 1 ? '<small>' + r.ipCount + ' IP khác nhau</small>' : '') + '</td><td>v' + esc(r.version) +
             '<small>' + esc(appName(r.app)) + (r.country ? ' · ' + esc(r.country) : '') + '</small></td><td class="dim">' +
             dt(r.firstSeen, true) + '</td><td class="dim">' + dt(r.lastSeen, true) + '</td></tr>';
-        }).join("") : '<tr><td colspan="7" class="an-empty">Chưa có dữ liệu trong kỳ này</td></tr>') + '</tbody></table></div></div>';
+        }).join("") : '<tr><td colspan="8" class="an-empty">Chưa có dữ liệu trong kỳ này</td></tr>') + '</tbody></table></div></div>';
       var pages = Math.max(1, Math.ceil(d.recentTotal / d.pageSize));
       h += '<div class="an-card"><div class="an-tablehead"><div><h2>Từng lượt</h2><div class="an-hint">Mới nhất trước · ' +
-        fmt.format(d.recentTotal) + ' bản ghi</div></div><input class="an-search" id="sq" placeholder="Tìm theo IP, mã máy hoặc phiên bản…" value="' +
+        fmt.format(d.recentTotal) + ' bản ghi</div></div><input class="an-search" id="sq" placeholder="Tìm theo tên người chơi, IP, mã máy hoặc phiên bản…" value="' +
         esc(state.q) + '"></div><div class="an-tablewrap"><table><thead><tr><th>Thời điểm</th><th>IP</th><th>Máy</th>' +
         '<th>Ứng dụng</th><th>Phiên bản</th><th>Sự kiện</th><th>Quốc gia</th></tr></thead><tbody>' +
         (d.recent.length ? d.recent.map(function (r) {
           var tag = r.ev === "match" ? '<span class="an-tag match">trận</span>' :
                     r.isNew ? '<span class="an-tag new">mới</span>' : '<span class="an-tag back">quay lại</span>';
-          return '<tr><td class="dim">' + dt(r.ts) + '</td><td class="mono">' + esc(r.ip) + '</td><td><span class="mono" title="' +
+          return '<tr><td class="dim">' + dt(r.ts) + '</td><td class="mono">' + esc(r.ip) + '</td><td>' +
+            (r.name ? esc(r.name) + ' ' : '') + '<span class="mono dim" title="' +
             esc(r.install) + '">' + esc(r.install.slice(0, 8)) + '</span>' + tag + '</td><td>' + esc(appName(r.app)) +
             '</td><td>v' + esc(r.version) + '</td><td>' + esc(evName(r.ev)) + '</td><td class="dim">' + esc(r.country) + '</td></tr>';
         }).join("") : '<tr><td colspan="7" class="an-empty">Không có bản ghi nào khớp</td></tr>') +
