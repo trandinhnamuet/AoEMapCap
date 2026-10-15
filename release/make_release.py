@@ -21,7 +21,7 @@ import zipfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NOTES = os.path.join(ROOT, "release", "notes")
 REPO = os.environ.get("GITHUB_REPOSITORY") or "trandinhnamuet/AoEMapCap"
-EXES = ("AoE-MapCap.exe", "AoE-Replay.exe")
+EXES = ("AoE-MapCap.exe",)          # từ v6 chỉ còn AoE-MapCap.exe (xem replay ngay trong app; bỏ AoE-Replay.exe)
 ZIP = "AoE-MapCap-win64.zip"
 
 
@@ -116,8 +116,10 @@ def body(v, current, zip_sha="", commit=""):
     notes = all_notes()[v]
     tag = f"v{v}"
     lines = [f"## Có gì mới trong {tag}", "", notes, "", "## Tải về", "",
-             f"- Tải **{ZIP}**, giải nén, mở `AoE-MapCap.exe` (ghi trận + bảng trận đã ghi) hoặc `AoE-Replay.exe` "
-             "(chỉ xem replay)."]
+             (f"- Tải **{ZIP}**, giải nén, mở `AoE-MapCap.exe` (ghi trận, bảng trận đã ghi, xem replay)."
+              if vkey(v) >= (6,) else
+              f"- Tải **{ZIP}**, giải nén, mở `AoE-MapCap.exe` (ghi trận + bảng trận đã ghi) hoặc `AoE-Replay.exe` "
+              "(chỉ xem replay).")]
     if vkey(v) >= (3,):
         lines.append("- File `version.json` đính kèm là để app tự cập nhật, không cần tải.")
         lines.append("- Đang dùng từ v3 trở lên: app tự báo có bản mới, bấm **Cập nhật** là xong, không cần tải lại.")

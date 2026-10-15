@@ -26,6 +26,14 @@ def main(argv, standalone=False):
             selftest = a[len("--selftest="):]
         elif not a.startswith("--") and path is None:
             path = a
+    if standalone and not selftest:                     # AoE-Replay.exe chạy riêng: thống kê một lượt mở app
+        try:
+            from mapcap import telemetry
+            from .picker import default_folder
+            ini = os.path.join(os.path.dirname(default_folder()), "_settings.ini")
+            telemetry.send("replay", "open", telemetry.flag_from_settings(ini))
+        except Exception:  # noqa: BLE001
+            pass
     if path is None:
         from .picker import pick_match
         path = pick_match(folder, check_update=standalone)

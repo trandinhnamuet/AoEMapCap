@@ -51,7 +51,7 @@ def file_version(hdr):
 
 
 NEWER_FORMAT_MSG = ("File này được ghi bằng bản AoE-MapCap mới hơn (định dạng {v}), bản đang dùng chỉ đọc được tới "
-                    "định dạng {mine}. Hãy cập nhật AoE-MapCap / AoE-Replay: "
+                    "định dạng {mine}. Hãy cập nhật AoE-MapCap: "
                     "https://github.com/trandinhnamuet/AoEMapCap/releases")
 
 

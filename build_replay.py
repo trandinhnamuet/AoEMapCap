@@ -1,4 +1,5 @@
-"""Build dist\AoE-Replay.exe: trình xem replay chạy riêng (không cần quyền admin, không kèm ffmpeg/bộ ghi).
+"""Build dist\AoE-Replay.exe: trình xem replay chạy riêng — CHỈ ĐỂ KIỂM THỬ (tests/test_update_exe_e2e.py thử tự
+cập nhật mà không cần hộp UAC). Từ v6 bản phát hành chỉ có AoE-MapCap.exe.
 Giống build.py: exe đang chạy thì xuất ra dist\AoE-Replay.exe.new."""
 import os, shutil, subprocess, sys
 ROOT = os.path.dirname(os.path.abspath(__file__))

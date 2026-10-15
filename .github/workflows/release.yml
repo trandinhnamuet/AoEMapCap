@@ -1,6 +1,7 @@
 # AoE-MapCap: build bản Windows và đăng Release.
 #
-# - mỗi lần đẩy lên main: build AoE-MapCap-win64.zip (AoE-MapCap.exe + AoE-Replay.exe), lưu ở Actions > artifact;
+# - mỗi lần đẩy lên main: build AoE-MapCap-win64.zip (AoE-MapCap.exe; từ v6 không còn AoE-Replay.exe), lưu ở
+#   Actions > artifact;
 # - tag v* (vd v1): đăng thêm GitHub Release kèm chứng nhận nguồn gốc (build provenance) để ai cũng kiểm được exe
 #   được build từ commit nào:  gh attestation verify AoE-MapCap.exe -R trandinhnamuet/AoEMapCap
 #   Số phiên bản trong app = số của tag (release/make_release.py set-version). Release đính kèm zip, zip.sha256 và
@@ -8,7 +9,7 @@
 #   từ v5 không đính kèm exe lẻ). Mô tả từng bản lấy từ
 #   release/notes/v<N>.md; mỗi lần đăng bản mới thì mô tả các bản cũ cũng được viết lại cho đồng bộ.
 #
-# Build hoàn toàn trên máy windows-latest của GitHub bằng đúng script build.py / build_replay.py của repo.
+# Build hoàn toàn trên máy windows-latest của GitHub bằng đúng script build.py của repo.
 # ffmpeg (chỉ dùng khi xuất video) lấy từ gói imageio-ffmpeg 0.6.0 (bản 7.1 essentials), như bản build tay.
 name: release
 
@@ -67,7 +68,6 @@ jobs:
         env:
           PYTHONIOENCODING: utf-8
         run: |
-          python build_replay.py
           python build.py
 
       - name: Đóng gói
@@ -76,11 +76,11 @@ jobs:
         run: |
           NAME=AoE-MapCap-win64
           mkdir -p "$NAME"
-          cp -p dist/AoE-MapCap.exe dist/AoE-Replay.exe README.md "$NAME/"
+          cp -p dist/AoE-MapCap.exe README.md "$NAME/"
           echo "source: ${{ github.server_url }}/${{ github.repository }}/tree/${{ github.sha }}" > "$NAME/VERSION.txt"
           echo "ref: ${{ github.ref_name }}" >> "$NAME/VERSION.txt"
           python -c "from mapcap.version import APP_VERSION as v; print('version: ' + v)" >> "$NAME/VERSION.txt"
-          (cd "$NAME" && sha256sum AoE-MapCap.exe AoE-Replay.exe > SHA256SUMS.txt)
+          (cd "$NAME" && sha256sum AoE-MapCap.exe > SHA256SUMS.txt)
           7z a -tzip "$NAME.zip" "$NAME" > /dev/null
           sha256sum "$NAME.zip" | tee "$NAME.zip.sha256"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
@@ -107,7 +107,6 @@ jobs:
           subject-path: |
             ${{ steps.pkg.outputs.name }}.zip
             ${{ steps.pkg.outputs.name }}/AoE-MapCap.exe
-            ${{ steps.pkg.outputs.name }}/AoE-Replay.exe
 
       - name: Đăng Release
         if: startsWith(github.ref, 'refs/tags/v')

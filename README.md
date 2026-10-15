@@ -13,7 +13,6 @@ Giải nén zip là chạy, không cần cài đặt:
 - `AoE-MapCap.exe`: mở lên là tự bắt đầu ghi (chờ game), cứ thế vào game; mỗi trận lưu vào `Video\Raw\*.aoerec`. Thẻ **Trận đã ghi**
   liệt kê các trận (người chơi, quân, kết quả, 4v4/1v1, thể thức, bản đồ), bấm đúp để xem replay, **Xuất video...**
   khi cần file mp4.
-- `AoE-Replay.exe`: chỉ xem replay (không cần quyền admin), mở bảng các trận trong `Video\Raw` cạnh exe.
 
 Tool chạy **song song, bên ngoài game**, chỉ **đọc** bộ nhớ tiến trình game (ReadProcessMemory). Không ghi bộ nhớ,
 không nạp DLL vào game. Cần thư mục game AoE-HD hoặc AOE1R trên máy để lấy đồ hoạ.
@@ -21,16 +20,23 @@ không nạp DLL vào game. Cần thư mục game AoE-HD hoặc AOE1R trên máy
 ## Cập nhật
 
 Từ v3, mỗi khi mở (và 6 giờ một lần) app tự xem có bản mới chưa. Có bản mới thì hiện thanh **Có bản mới vN**:
-**Có gì mới** xem thay đổi, **Cập nhật** để app tự tải bản mới (cả `AoE-MapCap.exe` và `AoE-Replay.exe` cùng thư
+**Có gì mới** xem thay đổi, **Cập nhật** để app tự tải bản mới (cả `AoE-MapCap.exe` và `AoE-Replay.exe` nếu có trong cùng thư
 mục), kiểm mã SHA-256, thay file rồi tự mở lại; **Để sau** thì dùng tiếp bản đang có. Đang ghi trận hoặc đang xuất
 video thì app chờ xong việc mới cập nhật. Không có mạng vẫn dùng bình thường. Bản quá cũ (đã ngừng hỗ trợ) chỉ còn
 nút Cập nhật / Thoát. Bản v1, v2 chưa có tính năng này: tải v3 bằng tay một lần. Mỗi bản có gì mới:
 [trang Releases](https://github.com/trandinhnamuet/AoEMapCap/releases).
 
+## Thống kê sử dụng
+
+Từ v6, mỗi lần mở app (có mạng) và mỗi trận ghi xong, app gửi một lượt thống kê lên Cloudflare: **mã máy ngẫu
+nhiên** (tạo lần đầu, lưu ở `%APPDATA%\AoE-MapCap\install_id`), phiên bản; máy
+nhận ghi thêm địa chỉ IP. Không gửi tên người chơi, trận đấu hay bất kì dữ liệu nào khác. Mục đích: biết bao nhiêu
+máy đang dùng. Tắt trong thẻ **Cài đặt** (bỏ ô "Gửi thống kê sử dụng"). Mã nguồn phía nhận: `telemetry/`.
+
 ## Kiểm tra file tải về
 
 Bản Windows được build hoàn toàn trên GitHub Actions ([.github/workflows/release.yml](.github/workflows/release.yml))
-từ mã nguồn công khai của repo này bằng chính `build.py` / `build_replay.py`, không build trên máy cá nhân nào. Mỗi
+từ mã nguồn công khai của repo này bằng chính `build.py`, không build trên máy cá nhân nào. Mỗi
 Release có chứng nhận nguồn gốc (build provenance) do GitHub ký:
 
 ```
@@ -102,7 +108,7 @@ cũ" thu nhỏ file ghi bằng bản cũ 5-10 lần mà không mất dữ liệu
 Từ 09/10/2026 file ghi thêm thiết lập ván (kiểu/cỡ bản đồ, đội, tài nguyên...) và kết quả thắng/thua; file cũ hiện
 kết quả "Không rõ". Đội có người **đầu tiên** đầu hàng hoặc rớt mạng tính là đội thua (đội kia thắng, nếu trận có 2 đội),
 kể cả khi dừng ghi trước lúc game tự kết luận ván.
-Chạy riêng được bằng `dist\AoE-Replay.exe [file.aoerec]` (không cần quyền admin) hoặc
+Mở trận bất kì (kể cả file người khác gửi): nút **Mở file khác...** hoặc
 `AoE-MapCap.exe --replay file.aoerec`. Cần thư mục game AoE-HD hoặc AOE1R trên máy để lấy đồ hoạ (trận của bản
 này xem được bằng dữ liệu của bản kia: hình giống hệt).
 
@@ -209,7 +215,8 @@ Chế độ mini:
 - `mapcap/video_render.py`: bộ vẽ tăng dần cho video; `mapcap/recorder.py`: ghi qua ffmpeg;
   `mapcap/engine.py`: vòng lặp ghi dùng chung; `mapcap/gui.py`: giao diện tkinter; `mapcap/app.py`: bản dòng lệnh cũ.
 - `mapcap/main.py`: vòng lặp theo mốc phút.
-- `replay/`: trình xem replay (pygame + moderngl), điểm vào riêng `run_replay.py`, build riêng `build_replay.py`.
+- `replay/`: trình xem replay (pygame + moderngl); `run_replay.py` / `build_replay.py` chỉ để chạy thử và kiểm thử
+  (từ v6 bản phát hành chỉ có AoE-MapCap.exe).
 - `probe.py`: kiểm chứng offset khi đang trong game.
 - `re/`: script dịch ngược tĩnh đã dùng để tìm offset (capstone).
 

@@ -66,7 +66,8 @@ def main():
         v = APP_VERSION if srv.hits.get("/AoE-MapCap-win64.zip") else "99"
         return json.dumps(dict(m4, version=v)).encode()
     srv.files.update({"/version.json": manifest, "/AoE-MapCap-win64.zip": zdata})
-    env = dict(os.environ, AOEMAPCAP_UPDATE_URL=srv.url + "/version.json", AOEMAPCAP_UPDATE_AUTO="1")
+    env = dict(os.environ, AOEMAPCAP_UPDATE_URL=srv.url + "/version.json", AOEMAPCAP_UPDATE_AUTO="1",
+               AOEMAPCAP_TELEMETRY="0")              # không gửi thống kê thật khi kiểm thử
     t0 = time.time()
     first = subprocess.Popen([exe], env=env, cwd=d)
     try:
@@ -94,6 +95,7 @@ def main():
         srv.close()
     # HTTPS thật tới GitHub từ exe: chưa có bản nào đính kèm version.json -> 404 (TLS vẫn phải thành công)
     env = {k: v for k, v in os.environ.items() if not k.startswith("AOEMAPCAP_")}
+    env["AOEMAPCAP_TELEMETRY"] = "0"
     open(log, "w").close()
     p = subprocess.Popen([exe], env=env, cwd=d)
     try:

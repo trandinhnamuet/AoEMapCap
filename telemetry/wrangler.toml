@@ -1,0 +1,14 @@
+# Cloudflare Worker nhận thống kê sử dụng AoE-MapCap (xem src/index.js). Triển khai: npx wrangler deploy
+# Mật khẩu trang /stats: npx wrangler secret put STATS_PASSWORD
+name = "aoe-mapcap-telemetry"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+workers_dev = true
+
+[observability]
+enabled = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "aoe-mapcap-telemetry"
+database_id = "3c3ce8b1-5c55-4e91-9246-6254e91b89b4"

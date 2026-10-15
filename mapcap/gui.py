@@ -121,6 +121,8 @@ class App:
                                         restart_args=lambda: ["--autostart"] if self._restart_recording else [],
                                         bar_before=self.nb, on_block=self._on_update_block)
         self.updater.start()
+        from . import telemetry                         # thống kê sử dụng: một lượt mỗi lần mở app (có mạng)
+        telemetry.send("mapcap", "open", self.cfg.telemetry)
 
     # ---- giao diện ---------------------------------------------------------------
     def _build(self):
@@ -192,6 +194,9 @@ class App:
         self.var_auto = tk.BooleanVar(value=cfg.auto_start)
         ttk.Checkbutton(rec, text="Tự bắt đầu ghi khi mở AoE-MapCap (không cần bấm ● Bắt đầu ghi)",
                         variable=self.var_auto).grid(row=2, column=0, columnspan=4, sticky="w", **pad)
+        self.var_tele = tk.BooleanVar(value=cfg.telemetry)
+        ttk.Checkbutton(rec, text="Gửi thống kê sử dụng (mã máy ngẫu nhiên, phiên bản, IP; không gửi tên hay trận đấu)",
+                        variable=self.var_tele).grid(row=3, column=0, columnspan=4, sticky="w", **pad)
         rec.columnconfigure(2, weight=1)
 
         vid = ttk.LabelFrame(tab, text="Xuất video (tuỳ chọn)")
@@ -242,6 +247,7 @@ class App:
             return None
         cfg.render_after = bool(self.var_render_after.get())
         cfg.auto_start = bool(self.var_auto.get())
+        cfg.telemetry = bool(self.var_tele.get())
         cfg.record_mode = "raw"
         cfg.record_video = True
         cfg.keep_raw = True

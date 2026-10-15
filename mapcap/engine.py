@@ -81,6 +81,7 @@ class Config:
     reader_process: bool = True              # raw: đọc + ghi trong tiến trình riêng (GIL riêng, nhịp đều hơn)
     render_cpus_in_game: str = "auto"        # CPU cho tiến trình dựng khi đang có trận: auto = E-core (8..), "8-15", "" = không ghim
     auto_start: bool = True                  # mở AoE-MapCap là tự bắt đầu ghi (chờ game), không cần bấm (2026-10-13)
+    telemetry: bool = True                   # gửi thống kê sử dụng: mã máy ngẫu nhiên, phiên bản, IP (2026-10-15)
     config_version: int = 3                  # tăng khi đổi mặc định quan trọng (v2: nhịp đọc = FPS;
                                              # v3: chỉ ghi dữ liệu trận, không tự dựng video / ảnh tĩnh)
 
@@ -567,6 +568,8 @@ class Engine:
         path = rec.stop()
         if path:
             self.session_files.append(path)
+            from . import telemetry                     # thống kê: ghi xong một trận
+            telemetry.send("mapcap", "match", self.cfg.telemetry)
         return path
 
     def run(self):
