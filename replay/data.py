@@ -16,6 +16,7 @@ import numpy as np
 
 from mapcap.game import PlayerInfo, UnitDefInfo
 from mapcap.rawrec import FORMAT_VERSION, MAGIC, NEWER_FORMAT_MSG, UNIT_DT, decode_block, file_version
+from mapcap import safeload
 
 KEY_EVERY = 125          # điểm mốc mỗi 125 mẫu (~5 s ở 25 mẫu/giây): tua tới bất kì đâu áp tối đa 124 mẫu
 PAUSE_GAP = 1.0          # đồng hồ game đứng yên quá 1 s (game tạm dừng) thì không tính vào thời gian phát
@@ -99,7 +100,7 @@ class FrameState:
         self.free.extend(range(cap * 2 - 1, cap - 1, -1))
 
     def apply(self, p, frame):
-        raw = np.frombuffer(zlib.decompress(p["vis"]), np.uint32).reshape(self.h, self.w)
+        raw = np.frombuffer(safeload.zlib_raw(p["vis"], self.h * self.w * 4), np.uint32).reshape(self.h, self.w)
         if p["full_vis"] or self.vis is None:
             self.vis = raw.copy()
         else:
@@ -225,7 +226,7 @@ class ReplayData:
         return tag, pos + 5, n
 
     def _load(self, off, n):
-        return pickle.loads(zlib.decompress(self.mm[off:off + n]))
+        return safeload.zlib_loads(self.mm[off:off + n])
 
     def _read_header(self):
         r = self._record_at(self._pos)

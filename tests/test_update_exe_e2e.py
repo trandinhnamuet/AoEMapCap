@@ -54,6 +54,7 @@ def main():
     os.makedirs(os.path.join(d, "Video", "Raw"))
     exe = os.path.join(d, "AoE-Replay.exe")
     shutil.copy(os.path.join(ROOT, "dist", "AoE-Replay.exe"), exe)
+    open(os.path.join(d, "aoemapcap-test.flag"), "w").close()   # cho phép biến môi trường kiểm thử (bản phát hành bỏ qua)
     log = os.path.join(d, "Video", "Raw", "_replay.log")
     new = open(exe, "rb").read()
     srv = Server({})

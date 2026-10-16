@@ -1,6 +1,7 @@
 """Giao diện AoE-MapCap (tkinter): ghi trận và xem replay là chính; xuất video là tuỳ chọn.
 
-Bố cục: thanh trên (trạng thái, Bắt đầu ghi / Dừng) + ba thẻ:
+Giao diện tối kiểu XArena (mapcap/theme.py): thanh bên trái (logo, Trận đã ghi / Cài đặt / Nhật ký, trạng thái ghi),
+đầu trang chuyển sắc đỏ-đen kèm nút ● Bắt đầu ghi / ■ Dừng ghi, các trang:
   Trận đã ghi : bảng trận (replay.picker.MatchTable) -> Xem replay / Xuất video... / Mở file khác / Mở thư mục
   Cài đặt     : ghi trận (nhịp đọc, thư mục lưu) và xuất video (tự xuất sau trận, độ rộng, FPS, ...)
   Nhật ký     : log của bộ ghi và các lượt xuất video
@@ -12,7 +13,9 @@ import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from tkinter import font as tkfont
 
+from . import theme
 from .engine import Config, Engine, Logger, load_config, save_config
 from .version import APP_VERSION
 
@@ -44,6 +47,7 @@ class ExportDialog:
             top.iconbitmap(app_icon_path())
         except Exception:  # noqa: BLE001
             pass
+        theme.dark_window(top)
         pad = {"padx": 8, "pady": 4}
         frm = ttk.Frame(top)
         frm.pack(fill="both", padx=12, pady=10)
@@ -66,13 +70,13 @@ class ExportDialog:
             widget.grid(row=r, column=1, sticky="w", **pad)
         ttk.Checkbutton(frm, text="Viền trắng mờ quanh bản đồ", variable=self.v_outline).grid(
             row=len(rows), column=0, columnspan=2, sticky="w", **pad)
-        ttk.Label(frm, foreground="#666", wraplength=380, justify="left",
+        ttk.Label(frm, style="Muted.TLabel", wraplength=380, justify="left",
                   text="9216 = kích cỡ gốc của game (rất nặng, chỉ libx264). Video lưu vào thư mục Video, "
                        "tiến độ hiện ở thanh trạng thái.").grid(row=len(rows) + 1, column=0, columnspan=2, sticky="w", **pad)
         bot = ttk.Frame(top)
         bot.pack(fill="x", padx=12, pady=(0, 10))
         ttk.Button(bot, text="Huỷ", command=top.destroy).pack(side="right", padx=4)
-        ttk.Button(bot, text="Xuất video", command=self._ok).pack(side="right", padx=4)
+        ttk.Button(bot, text="Xuất video", style="Accent.TButton", command=self._ok).pack(side="right", padx=4)
         top.grab_set()
 
     def _ok(self):
@@ -95,15 +99,20 @@ class ExportDialog:
 
 
 class App:
+    PAGES = (("matches", "", "Trận đã ghi", "Xem lại trận như replay Liên Minh Huyền Thoại, xuất video khi cần"),
+             ("settings", "", "Cài đặt", "Ghi trận, thư mục lưu, xuất video, thống kê sử dụng"),
+             ("log", "", "Nhật ký", "Hoạt động của bộ ghi, xuất video và cập nhật"))
+
     def __init__(self, root):
         self.root = root
         root.title(f"{APP_TITLE} v{APP_VERSION} — ghi trận và xem replay")
-        root.minsize(900, 560)
-        root.geometry("1080x640")
+        root.minsize(980, 600)
+        root.geometry("1200x720")
         try:
             root.iconbitmap(default=app_icon_path())
         except Exception:  # noqa: BLE001
             pass
+        theme.apply(root)
         self.cfg = load_config()
         self.q = queue.Queue()
         self.state_text = "chưa ghi"
@@ -116,61 +125,179 @@ class App:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         from .update_ui import UpdateController
         self._restart_recording = False
-        self.updater = UpdateController(root, root, "mapcap", APP_TITLE, log=lambda m: self.q.put("cập nhật: " + m),
+        self.updater = UpdateController(root, self.main, "mapcap", APP_TITLE, log=lambda m: self.q.put("cập nhật: " + m),
                                         is_busy=self._busy_reason, before_restart=self._before_update_restart,
                                         restart_args=lambda: ["--autostart"] if self._restart_recording else [],
-                                        bar_before=self.nb, on_block=self._on_update_block)
+                                        bar_before=self.content, on_block=self._on_update_block)
         self.updater.start()
         from . import telemetry                         # thống kê sử dụng: một lượt mỗi lần mở app (có mạng)
         telemetry.send("mapcap", "open", self.cfg.telemetry, raw_dir=self.cfg.raw_dir())
 
-    # ---- giao diện ---------------------------------------------------------------
+    # ---- giao diện: thanh bên trái + đầu trang + các trang (kiểu XArena) ------------------
     def _build(self):
-        style = ttk.Style()
-        try:
-            style.configure("Big.TButton", font=("Segoe UI", 11, "bold"), padding=(14, 6))
-            style.configure("Title.TLabel", font=("Segoe UI", 15, "bold"))
-        except tk.TclError:
-            pass
-        head = ttk.Frame(self.root)
-        head.pack(fill="x", padx=12, pady=(10, 4))
-        ttk.Label(head, text=f"AoE-MapCap v{APP_VERSION}", style="Title.TLabel").pack(side="left")
-        self.btn_stop = ttk.Button(head, text="■ Dừng ghi", command=self._stop, state="disabled")
-        self.btn_stop.pack(side="right", padx=4)
-        self.btn_start = ttk.Button(head, text="● Bắt đầu ghi", style="Big.TButton", command=self._start)
-        self.btn_start.pack(side="right", padx=4)
-        self.lbl_status = ttk.Label(head, text="Trạng thái: chưa ghi", foreground="#555")
-        self.lbl_status.pack(side="left", padx=16)
+        C = theme.C
+        side = tk.Frame(self.root, bg=C["sidebar"], width=232)
+        side.pack(side="left", fill="y")
+        side.pack_propagate(False)
+        tk.Frame(self.root, bg=C["line2"], width=1).pack(side="left", fill="y")
+        self.main = tk.Frame(self.root, bg=C["bg"])
+        self.main.pack(side="left", fill="both", expand=True)
 
-        self.nb = ttk.Notebook(self.root)
-        self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 10))
+        # logo + tên
+        logo = tk.Frame(side, bg=C["sidebar"])
+        logo.pack(fill="x", padx=18, pady=(20, 18))
+        self._logo = self._logo_image(40)
+        if self._logo is not None:
+            tk.Label(logo, image=self._logo, bg=C["sidebar"]).pack(side="left")
+        names = tk.Frame(logo, bg=C["sidebar"])
+        names.pack(side="left", padx=(10, 0))
+        tk.Label(names, text="AoE-MapCap", bg=C["sidebar"], fg="#ffffff", font=theme.F(14, "bold")).pack(anchor="w")
+        tk.Label(names, text=f"PHIÊN BẢN {APP_VERSION}", bg=C["sidebar"], fg=C["gold"],
+                 font=theme.F(8, "bold")).pack(anchor="w")
+        tk.Frame(side, bg=C["line2"], height=1).pack(fill="x", padx=18, pady=(0, 12))
+
+        # mục điều hướng
+        icon_font = ("Segoe MDL2 Assets", 13) if "Segoe MDL2 Assets" in tkfont.families() else None
+        self.nav = {}
+        for key, glyph, label, _sub in self.PAGES:
+            item = tk.Frame(side, bg=C["sidebar"], cursor="hand2")
+            item.pack(fill="x", padx=10, pady=2)
+            bar = tk.Frame(item, bg=C["sidebar"], width=3)
+            bar.pack(side="left", fill="y")
+            ic = tk.Label(item, text=glyph if icon_font else "•", font=icon_font or theme.F(12), bg=C["sidebar"],
+                          fg=C["muted"], width=3)
+            ic.pack(side="left", pady=10, padx=(8, 0))
+            tx = tk.Label(item, text=label, font=theme.F(11, "bold"), bg=C["sidebar"], fg=C["muted"], anchor="w")
+            tx.pack(side="left", fill="x", expand=True, padx=(4, 0))
+            self.nav[key] = (item, bar, ic, tx)
+            for w in (item, ic, tx):
+                w.bind("<Button-1>", lambda e, k=key: self.show_page(k))
+                w.bind("<Enter>", lambda e, k=key: self._nav_hover(k, True))
+                w.bind("<Leave>", lambda e, k=key: self._nav_hover(k, False))
+
+        # trạng thái ghi (đáy thanh bên)
+        stat = tk.Frame(side, bg=C["panel"], highlightthickness=1, highlightbackground=C["line"])
+        stat.pack(side="bottom", fill="x", padx=14, pady=16)
+        tk.Label(stat, text="TRẠNG THÁI", bg=C["panel"], fg=C["dim"], font=theme.F(8, "bold")).pack(
+            anchor="w", padx=12, pady=(10, 2))
+        row = tk.Frame(stat, bg=C["panel"])
+        row.pack(fill="x", padx=12, pady=(0, 4))
+        self.dot = tk.Canvas(row, width=12, height=12, bg=C["panel"], highlightthickness=0)
+        self.dot.pack(side="left")
+        self.dot_id = self.dot.create_oval(2, 2, 11, 11, fill=C["dim"], outline="")
+        self.lbl_state = tk.Label(row, text="Chưa ghi", bg=C["panel"], fg="#ffffff", font=theme.F(11, "bold"))
+        self.lbl_state.pack(side="left", padx=(8, 0))
+        self.lbl_status = tk.Label(stat, text="", bg=C["panel"], fg=C["muted"], font=theme.F(9), justify="left",
+                                   anchor="w", wraplength=190)
+        self.lbl_status.pack(fill="x", padx=12, pady=(0, 10))
+
+        # đầu trang: nền chuyển sắc đỏ-đen, tiêu đề trang, nút ghi
+        self.head = tk.Canvas(self.main, height=96, bg=C["bg"], highlightthickness=0)
+        self.head.pack(fill="x")
+        self._head_bg = self.head.create_image(0, 0, anchor="nw")
+        self._head_title = self.head.create_text(30, 34, anchor="w", text="", fill="#ffffff", font=theme.F(20, "bold"))
+        self._head_sub = self.head.create_text(31, 64, anchor="w", text="", fill=C["muted"], font=theme.F(10))
+        btns = tk.Frame(self.head, bg=C["bg"])
+        self.btn_start = ttk.Button(btns, text="●  Bắt đầu ghi", style="Accent.TButton", command=self._start)
+        self.btn_start.pack(side="left", padx=4)
+        self.btn_stop = ttk.Button(btns, text="■  Dừng ghi", command=self._stop, state="disabled")
+        self.btn_stop.pack(side="left", padx=4)
+        self._head_btns = self.head.create_window(0, 48, anchor="e", window=btns)
+        self.head.bind("<Configure>", self._layout_head)
+
+        self.content = tk.Frame(self.main, bg=C["bg"])
+        self.content.pack(fill="both", expand=True, padx=24, pady=(16, 18))
+        self.pages = {}
         self._build_matches()
         self._build_settings()
         self._build_log()
+        self.show_page("matches")
+        self._refresh_status()
+
+    def _logo_image(self, size):
+        try:
+            from PIL import Image, ImageTk
+            im = Image.open(app_icon_path())
+            im = im.convert("RGBA").resize((size, size), Image.LANCZOS)
+            return ImageTk.PhotoImage(im)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _layout_head(self, e):
+        w, h = e.width, e.height
+        try:
+            ph = theme.gradient_photo(w, h, theme.C["bg"], "#5a0a12", glow_at=0.4, spread=0.24)  # góc phải tối: nút liền nền
+            self.head.itemconfigure(self._head_bg, image=ph)
+            self._head_photo = ph
+        except Exception:  # noqa: BLE001
+            pass
+        self.head.coords(self._head_btns, w - 26, h // 2)
+
+    def _nav_hover(self, key, on):
+        if key == getattr(self, "page", None):
+            return
+        item, bar, ic, tx = self.nav[key]
+        bg = "#1a1a20" if on else theme.C["sidebar"]
+        for w in (item, ic, tx):
+            w.configure(bg=bg)
+        bar.configure(bg=bg)
+        tx.configure(fg="#ffffff" if on else theme.C["muted"])
+
+    def show_page(self, key):
+        C = theme.C
+        self.page = key
+        for k, (item, bar, ic, tx) in self.nav.items():
+            sel = k == key
+            bg = C["red_sel"] if sel else C["sidebar"]
+            for w in (item, ic, tx):
+                w.configure(bg=bg)
+            bar.configure(bg=C["red"] if sel else C["sidebar"])
+            ic.configure(fg=C["gold_hi"] if sel else C["muted"])
+            tx.configure(fg="#ffffff" if sel else C["muted"])
+        for k, f in self.pages.items():
+            if k == key:
+                f.pack(fill="both", expand=True)
+            else:
+                f.pack_forget()
+        _k, _g, title, sub = next(p for p in self.PAGES if p[0] == key)
+        self.head.itemconfigure(self._head_title, text=title)
+        self.head.itemconfigure(self._head_sub, text=sub)
+
+    def _card(self, parent, title=None, **pack):
+        C = theme.C
+        card = tk.Frame(parent, bg=C["panel"], highlightthickness=1, highlightbackground=C["line2"])
+        card.pack(fill="x", **(pack or {"pady": (0, 14)}))
+        if title:
+            hd = tk.Frame(card, bg=C["panel"])
+            hd.pack(fill="x", padx=18, pady=(14, 6))
+            tk.Frame(hd, bg=C["red"], width=3, height=16).pack(side="left", padx=(0, 10))
+            ttk.Label(hd, text=title, style="CardTitle.TLabel").pack(side="left")
+        body = tk.Frame(card, bg=C["panel"])
+        body.pack(fill="x", padx=18, pady=(4, 16))
+        return body
 
     def _build_matches(self):
         from replay.picker import MatchTable
-        tab = ttk.Frame(self.nb)
-        self.nb.add(tab, text="  Trận đã ghi  ")
+        tab = tk.Frame(self.content, bg=theme.C["bg"])
+        self.pages["matches"] = tab
         raw_dir = self.cfg.raw_dir()
         os.makedirs(raw_dir, exist_ok=True)
-        self.table = MatchTable(tab, raw_dir, self._launch_replay, show_dir_button=False)
-        self.table.pack(fill="both", expand=True, padx=8, pady=(8, 4))
         bot = ttk.Frame(tab)
-        bot.pack(fill="x", padx=8, pady=(4, 8))
-        ttk.Button(bot, text="▶ Xem replay", style="Big.TButton", command=self.table.open_selected).pack(side="left")
-        ttk.Button(bot, text="Xuất video...", command=self._export_selected).pack(side="left", padx=8)
-        ttk.Button(bot, text="Mở file khác...", command=self._open_other).pack(side="left")
-        ttk.Button(bot, text="Mở thư mục", command=self._open_dir).pack(side="left", padx=8)
-        ttk.Button(bot, text="Xoá trận", command=self.table.delete_selected).pack(side="left")
-        ttk.Button(bot, text="Nén trận cũ", command=self._compact_old).pack(side="left", padx=8)
+        bot.pack(side="bottom", fill="x", pady=(12, 0))
+        self.table = MatchTable(tab, raw_dir, self._launch_replay, show_dir_button=False)
+        self.table.pack(fill="both", expand=True)
+        ttk.Button(bot, text="▶  Xem replay", style="Accent.TButton", command=self.table.open_selected).pack(side="left")
+        for text, cmd in (("Xuất video...", self._export_selected), ("Mở file khác...", self._open_other),
+                          ("Mở thư mục", self._open_dir), ("Xoá trận", self.table.delete_selected),
+                          ("Nén trận cũ", self._compact_old)):
+            ttk.Button(bot, text=text, command=cmd).pack(side="left", padx=(8, 0))
         self.table.is_busy = self._is_recording_path
-        ttk.Label(bot, textvariable=self.table.var_status, foreground="#666").pack(side="right")
+        ttk.Label(bot, textvariable=self.table.var_status, style="Muted.TLabel").pack(side="right")
 
     def _build_settings(self):
-        tab = ttk.Frame(self.nb)
-        self.nb.add(tab, text="  Cài đặt  ")
-        pad = {"padx": 8, "pady": 4}
+        tab = tk.Frame(self.content, bg=theme.C["bg"])
+        self.pages["settings"] = tab
+        pad = {"padx": (0, 14), "pady": 6}
         cfg = self.cfg
         self.var_cap = tk.IntVar(value=int(cfg.capture_fps))
         self.var_out = tk.StringVar(value=cfg.resolved_out_dir())
@@ -181,58 +308,57 @@ class App:
         self.var_fog = tk.StringVar(value=FOG_LABELS[1] if cfg.fog_style == "dither" else FOG_LABELS[0])
         self.var_outline = tk.BooleanVar(value=cfg.map_outline > 0)
         self.var_enc = tk.StringVar(value=cfg.encoder)
-
-        rec = ttk.LabelFrame(tab, text="Ghi trận")
-        rec.pack(fill="x", padx=8, pady=(10, 6))
-        ttk.Label(rec, text="Nhịp đọc game (lần/giây)").grid(row=0, column=0, sticky="w", **pad)
-        ttk.Spinbox(rec, from_=1, to=60, textvariable=self.var_cap, width=8).grid(row=0, column=1, sticky="w", **pad)
-        ttk.Label(rec, text="25 = mượt như game; thấp hơn thì file nhỏ hơn", foreground="#666").grid(
-            row=0, column=2, sticky="w", **pad)
-        ttk.Label(rec, text="Thư mục lưu").grid(row=1, column=0, sticky="w", **pad)
-        ttk.Entry(rec, textvariable=self.var_out, width=60).grid(row=1, column=1, columnspan=2, sticky="we", **pad)
-        ttk.Button(rec, text="Chọn...", command=self._choose_dir, width=8).grid(row=1, column=3, sticky="w", **pad)
         self.var_auto = tk.BooleanVar(value=cfg.auto_start)
-        ttk.Checkbutton(rec, text="Tự bắt đầu ghi khi mở AoE-MapCap (không cần bấm ● Bắt đầu ghi)",
-                        variable=self.var_auto).grid(row=2, column=0, columnspan=4, sticky="w", **pad)
         self.var_tele = tk.BooleanVar(value=cfg.telemetry)
+
+        rec = self._card(tab, "Ghi trận")
+        ttk.Label(rec, text="Nhịp đọc game (lần/giây)", style="Card.TLabel").grid(row=0, column=0, sticky="w", **pad)
+        ttk.Spinbox(rec, from_=1, to=60, textvariable=self.var_cap, width=8).grid(row=0, column=1, sticky="w", **pad)
+        ttk.Label(rec, text="25 = mượt như game; thấp hơn thì file nhỏ hơn", style="CardMuted.TLabel").grid(
+            row=0, column=2, sticky="w", **pad)
+        ttk.Label(rec, text="Thư mục lưu", style="Card.TLabel").grid(row=1, column=0, sticky="w", **pad)
+        ttk.Entry(rec, textvariable=self.var_out, width=60).grid(row=1, column=1, columnspan=2, sticky="we", **pad)
+        ttk.Button(rec, text="Chọn...", command=self._choose_dir).grid(row=1, column=3, sticky="w", pady=6)
+        ttk.Checkbutton(rec, text="Tự bắt đầu ghi khi mở AoE-MapCap (không cần bấm ● Bắt đầu ghi)",
+                        variable=self.var_auto, style="Card.TCheckbutton").grid(row=2, column=0, columnspan=4,
+                                                                                sticky="w", pady=(10, 2))
         ttk.Checkbutton(rec, text="Gửi thống kê sử dụng (mã máy ngẫu nhiên, tên người chơi, phiên bản, IP; không gửi trận đấu)",
-                        variable=self.var_tele).grid(row=3, column=0, columnspan=4, sticky="w", **pad)
+                        variable=self.var_tele, style="Card.TCheckbutton").grid(row=3, column=0, columnspan=4,
+                                                                                sticky="w", pady=2)
         rec.columnconfigure(2, weight=1)
 
-        vid = ttk.LabelFrame(tab, text="Xuất video (tuỳ chọn)")
-        vid.pack(fill="x", padx=8, pady=6)
+        vid = self._card(tab, "Xuất video (tuỳ chọn)")
         ttk.Checkbutton(vid, text="Tự xuất video sau mỗi trận (tốn CPU sau trận; mặc định tắt — dùng nút Xuất video... khi cần)",
-                        variable=self.var_render_after).grid(row=0, column=0, columnspan=4, sticky="w", **pad)
-        ttk.Label(vid, text="Độ rộng (px)").grid(row=1, column=0, sticky="w", **pad)
-        ttk.Combobox(vid, values=(1920, 2560, 3840, 9216), textvariable=self.var_rwidth, width=8).grid(
-            row=1, column=1, sticky="w", **pad)
-        ttk.Label(vid, text="FPS").grid(row=1, column=2, sticky="w", **pad)
-        ttk.Spinbox(vid, from_=1, to=60, textvariable=self.var_fps, width=8).grid(row=1, column=3, sticky="w", **pad)
-        ttk.Label(vid, text="Tua nhanh").grid(row=2, column=0, sticky="w", **pad)
-        ttk.Combobox(vid, values=(1, 2, 4, 8, 16), textvariable=self.var_speed, width=8).grid(
-            row=2, column=1, sticky="w", **pad)
-        ttk.Label(vid, text="Mã hoá").grid(row=2, column=2, sticky="w", **pad)
-        ttk.Combobox(vid, values=("auto", "h264_nvenc", "h264_qsv", "h264_amf", "libx264"), textvariable=self.var_enc,
-                     width=11).grid(row=2, column=3, sticky="w", **pad)
-        ttk.Label(vid, text="Sương mù").grid(row=3, column=0, sticky="w", **pad)
-        ttk.Combobox(vid, values=FOG_LABELS, textvariable=self.var_fog, width=20, state="readonly").grid(
-            row=3, column=1, sticky="w", **pad)
-        ttk.Checkbutton(vid, text="Viền trắng mờ quanh bản đồ", variable=self.var_outline).grid(
-            row=3, column=2, columnspan=2, sticky="w", **pad)
+                        variable=self.var_render_after, style="Card.TCheckbutton").grid(row=0, column=0, columnspan=4,
+                                                                                        sticky="w", pady=(0, 6))
+        rows = [("Độ rộng (px)", ttk.Combobox(vid, values=(1920, 2560, 3840, 9216), textvariable=self.var_rwidth, width=9)),
+                ("FPS", ttk.Spinbox(vid, from_=1, to=60, textvariable=self.var_fps, width=8)),
+                ("Tua nhanh", ttk.Combobox(vid, values=(1, 2, 4, 8, 16), textvariable=self.var_speed, width=9)),
+                ("Mã hoá", ttk.Combobox(vid, values=("auto", "h264_nvenc", "h264_qsv", "h264_amf", "libx264"),
+                                        textvariable=self.var_enc, width=12)),
+                ("Sương mù", ttk.Combobox(vid, values=FOG_LABELS, textvariable=self.var_fog, width=20, state="readonly"))]
+        for k, (label, w) in enumerate(rows):
+            r, c = 1 + k // 2, (k % 2) * 2
+            ttk.Label(vid, text=label, style="Card.TLabel").grid(row=r, column=c, sticky="w", **pad)
+            w.grid(row=r, column=c + 1, sticky="w", **pad)
+        ttk.Checkbutton(vid, text="Viền trắng mờ quanh bản đồ", variable=self.var_outline,
+                        style="Card.TCheckbutton").grid(row=3, column=2, columnspan=2, sticky="w", pady=6)
 
         bot = ttk.Frame(tab)
-        bot.pack(fill="x", padx=8, pady=8)
-        ttk.Button(bot, text="Lưu cài đặt", command=self._save_settings).pack(side="left")
-        ttk.Label(bot, foreground="#666", text="Cài đặt có hiệu lực từ lần Bắt đầu ghi tiếp theo.").pack(side="left", padx=12)
+        bot.pack(fill="x", pady=(4, 0))
+        ttk.Button(bot, text="Lưu cài đặt", style="Accent.TButton", command=self._save_settings).pack(side="left")
+        ttk.Label(bot, text="Cài đặt có hiệu lực từ lần Bắt đầu ghi tiếp theo.", style="Muted.TLabel").pack(
+            side="left", padx=14)
 
     def _build_log(self):
-        tab = ttk.Frame(self.nb)
-        self.nb.add(tab, text="  Nhật ký  ")
-        self.txt = tk.Text(tab, height=14, wrap="word", state="disabled", font=("Consolas", 9))
+        tab = tk.Frame(self.content, bg=theme.C["bg"])
+        self.pages["log"] = tab
+        self.txt = tk.Text(tab, height=14, wrap="word", state="disabled", font=("Consolas", 10), padx=12, pady=10,
+                           **theme.text_widget_colors())
         sb = ttk.Scrollbar(tab, command=self.txt.yview)
         self.txt.configure(yscrollcommand=sb.set)
-        self.txt.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
-        sb.pack(side="right", fill="y", pady=8)
+        self.txt.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y", padx=(4, 0))
 
     # ---- cài đặt -------------------------------------------------------------------
     def _collect(self):
@@ -469,7 +595,7 @@ class App:
         try:
             os.startfile(d)  # noqa: S606
         except Exception:  # noqa: BLE001
-            subprocess.Popen(["explorer", d])
+            subprocess.Popen([os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "explorer.exe"), d])
 
     # ---- nhật ký ------------------------------------------------------------------
     def _append(self, line):
@@ -519,10 +645,18 @@ class App:
             pass
         self.root.after(200, self._poll)
 
+    STATE_LOOK = {"đang ghi": ("ĐANG GHI TRẬN", "red_hi"), "chờ game": ("Đang chờ game", "gold"),
+                  "đã dừng": ("Đã dừng", "dim"), "chưa ghi": ("Chưa ghi", "dim")}
+
     def _refresh_status(self):
-        """Nhãn trạng thái = trạng thái ghi + tiến độ từng lượt xuất video đang chạy."""
-        parts = [self.state_text] + [f"xuất video {k}: {v}" for k, v in self.renders.items()]
-        self.lbl_status.configure(text="Trạng thái: " + " | ".join(p for p in parts if p))
+        """Thanh bên: chấm màu + trạng thái ghi; dòng nhỏ = tiến độ từng lượt xuất video / nén đang chạy."""
+        st = (self.state_text or "").strip()
+        label, color = self.STATE_LOOK.get(st, (st[:1].upper() + st[1:] if st else "Chưa ghi", "muted"))
+        self.lbl_state.configure(text=label, fg="#ffffff" if color != "dim" else theme.C["muted"])
+        self.dot.itemconfigure(self.dot_id, fill=theme.C[color])
+        extra = [f"{k}: {v}" for k, v in self.renders.items()]
+        self.lbl_status.configure(text="\n".join(extra) if extra else
+                                  ("Mở game AoE-HD / AOE1R là tự ghi" if st == "chờ game" else ""))
 
     # ---- tự cập nhật ------------------------------------------------------------------
     def _busy_reason(self):

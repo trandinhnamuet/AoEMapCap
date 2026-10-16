@@ -25,7 +25,8 @@ TIMEOUT = 6
 
 
 def endpoint():
-    return os.environ.get("AOEMAPCAP_TELEMETRY_URL") or ENDPOINT
+    from .updater import env_override                  # bản phát hành bỏ qua biến môi trường kiểm thử
+    return env_override("AOEMAPCAP_TELEMETRY_URL") or ENDPOINT
 
 
 def enabled(cfg_enabled=True):
@@ -79,7 +80,9 @@ def remember_name(name):
 
 
 def last_name(raw_dir=None):
-    """Tên người chơi đã nhớ; chưa có thì lấy từ trận ghi mới nhất trong raw_dir (và nhớ lại); không có thì ""."""
+    """Tên người chơi đã nhớ (chỉ từ trận do chính máy này ghi, xem engine._stop_rec); chưa có thì "".
+    Không đọc các file .aoerec trong thư mục: đó có thể là trận người khác gửi (sai tên, và không mở file lạ lúc khởi động)."""
+    raw_dir = None
     try:
         with open(_name_path(), encoding="utf-8") as f:
             v = f.read().strip()

@@ -244,7 +244,7 @@ def test_update_from_zip():
         seen = []
         pairs = updater.download_all(info, "mapcap", me, progress=lambda a, b, n: seen.append((a, b, n)))
         assert seen and seen[-1][0] == len(zdata) and seen[-1][2] == "AoE-MapCap-win64.zip"
-        assert sorted(os.path.basename(n) for _e, n in pairs) == ["AoE-MapCap.exe.new", "AoE-Replay.exe.new"]
+        assert sorted(os.path.basename(n) for _e, n, *_ in pairs) == ["AoE-MapCap.exe.new", "AoE-Replay.exe.new"]
         assert not os.path.exists(os.path.join(d, updater.ZIP_TEMP)), "zip tạm phải được xoá"
         updater.install(pairs)
         assert open(me, "rb").read() == new["AoE-MapCap.exe"] and open(sib, "rb").read() == new["AoE-Replay.exe"]
@@ -260,7 +260,7 @@ def test_update_from_zip():
     with open(r2, "wb") as f:
         f.write(b"cu")
     pairs = updater.download_all(info, "replay", r2)
-    assert [os.path.basename(n) for _e, n in pairs] == ["AoE-Replay.exe.new"]
+    assert [os.path.basename(n) for _e, n, *_ in pairs] == ["AoE-Replay.exe.new"]
     os.remove(pairs[0][1])
     # sai mã zip / sai mã exe trong zip / huỷ: giữ nguyên, không sót file
     for bad in ("zip", "exe", "cancel"):

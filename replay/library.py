@@ -10,6 +10,7 @@ import struct
 import time
 
 from mapcap.rawrec import FORMAT_VERSION, MAGIC, file_version, read_end, read_header
+from mapcap import safeload
 
 CACHE_NAME = "_matches.json"
 CACHE_VERSION = 5                 # 3: tên quân tiếng Anh; 4: đội có người bỏ cuộc đầu tiên là đội thua
@@ -124,7 +125,7 @@ def _scan_last_frame(path):
                 lastf = [p for t, p in decode_block(raw) if t == b"F"]
                 n_frames = sum(1 for t, _p in iter_records(path) if t == b"F")
                 return (lastf[-1] if lastf else None), n_frames
-            return pickle.loads(zlib.decompress(raw)), n_frames
+            return safeload.zlib_loads(raw), n_frames
         except Exception:  # noqa: BLE001
             return None, n_frames
 

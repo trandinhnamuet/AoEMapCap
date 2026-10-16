@@ -13,6 +13,8 @@ Luồng:
   4. restart(): chạy lại exe (đã là bản mới), thoát bản cũ. Lần mở sau cleanup_old() xoá các <exe>.old.
 Chạy từ mã nguồn (không đóng gói) chỉ kiểm tra và báo, không tự thay file.
 Biến môi trường (chỉ để kiểm thử): AOEMAPCAP_UPDATE_URL thay địa chỉ version.json, AOEMAPCAP_UPDATE_AUTO=1 tự bấm Cập nhật.
+Bản phát hành BỎ QUA các biến này (mã độc quyền thường có thể đặt biến môi trường cho tiến trình Admin), trừ khi cạnh
+exe có file aoemapcap-test.flag (chỉ dùng khi kiểm thử). Link tải phải thuộc https://github.com/<repo>/releases/.
 """
 import glob
 import hashlib
@@ -46,8 +48,33 @@ def vtuple(v):
     return tuple(int(n) for n in nums) or (0,)
 
 
+TEST_FLAG = "aoemapcap-test.flag"
+TRUSTED_PREFIX = f"https://github.com/{REPO}/releases/"
+
+
+def test_overrides_allowed():
+    """Biến môi trường kiểm thử chỉ có hiệu lực khi chạy từ mã nguồn hoặc cạnh exe có file cờ kiểm thử."""
+    if not getattr(sys, "frozen", False):
+        return True
+    return os.path.exists(os.path.join(os.path.dirname(os.path.abspath(sys.executable)), TEST_FLAG))
+
+
+def env_override(name):
+    return os.environ.get(name) if test_overrides_allowed() else None
+
+
+def safe_page(url):
+    """Chỉ mở trang https://github.com/... (webbrowser.open trên Windows = startfile: đường dẫn exe sẽ bị chạy)."""
+    return url if isinstance(url, str) and url.startswith("https://github.com/") else RELEASES_PAGE
+
+
+def _check_url(url):
+    if not test_overrides_allowed() and not str(url).startswith(TRUSTED_PREFIX):
+        raise UpdateError("link tải không thuộc trang phát hành của AoE-MapCap: bỏ qua")
+
+
 def manifest_url():
-    return os.environ.get("AOEMAPCAP_UPDATE_URL") or MANIFEST_URL
+    return env_override("AOEMAPCAP_UPDATE_URL") or MANIFEST_URL
 
 
 def _open(url, timeout=TIMEOUT):
@@ -77,7 +104,7 @@ class UpdateInfo:
             self.state = "available"
         else:
             self.state = "current"
-        self.page = manifest.get("page") or RELEASES_PAGE
+        self.page = safe_page(manifest.get("page"))
 
     def notes_since(self):
         """Ghi chú của mọi bản mới hơn bản đang dùng (mới nhất trước)."""
@@ -132,6 +159,7 @@ def _check_writable(d):
 
 def download(url, dst, size, sha256, progress=None, cancel=None, chunk=1 << 18):
     """Tải về dst (qua dst.part), kiểm cỡ + SHA-256. progress(đã tải, tổng). cancel() True -> dừng."""
+    _check_url(url)
     part = dst + ".part"
     h = hashlib.sha256()
     done = 0
@@ -191,23 +219,35 @@ def download_all(info, role, exe_path=None, progress=None, cancel=None):
             download(a["url"], dst, a.get("size"), a.get("sha256"),
                      progress=(lambda k, _t, b=base, n=name: progress(b + k, total, n)) if progress else None,
                      cancel=cancel)
-            out.append((p, dst))
+            out.append((p, dst, a.get("sha256")))
             base += int(a.get("size") or 0)
     except BaseException:
-        for _p, n in out:
+        for x in out:
             try:
-                os.remove(n)
+                os.remove(x[1])
             except OSError:
                 pass
         raise
     return out
 
 
+def _sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
 def install(pairs):
     """Thay exe bằng bản .new (đổi tên được cả exe đang chạy). Lỗi thì hoàn tác mọi file đã đổi."""
     undo = []
     try:
-        for exe, new in pairs:
+        for item in pairs:
+            exe, new = item[0], item[1]
+            want = item[2] if len(item) > 2 else None
+            if want and _sha256_file(new).lower() != str(want).lower():   # kiểm lại ngay trước khi thay (chống tráo .new)
+                raise UpdateError(f"{os.path.basename(new)} đã bị thay đổi sau khi tải: không cài")
             old = exe + ".old"
             if os.path.exists(old):
                 try:
@@ -255,7 +295,7 @@ def _download_from_zip(z, role, exe_path, progress, cancel):
                 dst = p + ".new"
                 h = hashlib.sha256()
                 with zf.open(info) as src, open(dst, "wb") as f:
-                    out.append((p, dst))
+                    out.append((p, dst, meta.get("sha256")))
                     for b in iter(lambda: src.read(1 << 20), b""):
                         if cancel and cancel():
                             raise UpdateError("đã huỷ")
@@ -264,9 +304,9 @@ def _download_from_zip(z, role, exe_path, progress, cancel):
                 if meta.get("sha256") and h.hexdigest().lower() != str(meta["sha256"]).lower():
                     raise UpdateError(f"{name} trong zip không khớp mã SHA-256")
     except BaseException:
-        for _p, n in out:
+        for x in out:
             try:
-                os.remove(n)
+                os.remove(x[1])
             except OSError:
                 pass
         raise

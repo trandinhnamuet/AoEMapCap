@@ -12,7 +12,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha384-bs/nf9FbdNouRbMiFcrcZfLXYPKiPaGVGplVbv7dLGECccEXDW+S3zjqSKR5ZEaD" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <style>
 :root{
   --blue:#0A66FF;--blue-600:#0556DA;--blue-700:#043FA8;--blue-50:#EAF2FF;
@@ -100,8 +100,9 @@ td small{display:block;font-size:11.5px;color:var(--muted-2)}
   var app = document.getElementById("app");
   var fmt = new Intl.NumberFormat("vi-VN");
   var TZ = "Asia/Ho_Chi_Minh";
-  function pw() { try { return sessionStorage.getItem(KEY) || ""; } catch (e) { return ""; } }
-  function setPw(v) { try { if (v) sessionStorage.setItem(KEY, v); else sessionStorage.removeItem(KEY); } catch (e) {} }
+  // nhớ mật khẩu trên trình duyệt này (localStorage): nhập một lần mỗi máy; Đăng xuất hoặc sai mật khẩu thì xoá
+  function pw() { try { return localStorage.getItem(KEY) || ""; } catch (e) { return ""; } }
+  function setPw(v) { try { if (v) localStorage.setItem(KEY, v); else localStorage.removeItem(KEY); } catch (e) {} }
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
     return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
   function dt(ms, withYear) {
@@ -118,7 +119,7 @@ td small{display:block;font-size:11.5px;color:var(--muted-2)}
 
   function login(msg) {
     app.innerHTML = '<div class="an-state"><h1>Thống kê sử dụng AoE-MapCap</h1>' +
-      '<p>Nhập mật khẩu trang thống kê.</p>' +
+      '<p>Nhập mật khẩu trang thống kê. Trình duyệt này sẽ nhớ, lần sau không cần nhập lại (bấm Đăng xuất để quên).</p>' +
       '<form id="lf"><input class="an-field" id="lp" type="password" placeholder="Mật khẩu" autofocus>' +
       '<button class="an-submit">Đăng nhập</button><div class="an-err">' + esc(msg || "") + '</div></form></div>';
     document.getElementById("lf").onsubmit = function (e) {

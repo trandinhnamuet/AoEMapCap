@@ -18,7 +18,7 @@ COLUMNS = (
     ("date", "Ngày đánh", 120, "w"),
     ("name", "Người chơi", 150, "w"),
     ("civ", "Quân", 100, "w"),
-    ("result", "Kết quả", 120, "w"),
+    ("result", "Kết quả", 160, "w"),
     ("mode", "Thể thức", 110, "w"),          # "2v1 Random", "4v4 Shang"
     ("kind", "Map", 170, "w"),               # "Hill Country - Large"
     ("dur", "Thời lượng", 80, "e"),
@@ -43,17 +43,19 @@ class MatchTable(ttk.Frame):
         self.after(100, self._poll)
 
     def _build(self, show_dir_button):
+        from mapcap import theme
+        dark = theme.APPLIED                                  # giao diện tối kiểu XArena (AoE-MapCap)
         bar = ttk.Frame(self)
-        bar.pack(fill="x", pady=(0, 4))
-        ttk.Label(bar, text="Thư mục:").pack(side="left")
+        bar.pack(fill="x", pady=(0, 8))
+        ttk.Label(bar, text="Thư mục:", style="Muted.TLabel" if dark else "TLabel").pack(side="left")
         self.var_dir = tk.StringVar()
-        ttk.Label(bar, textvariable=self.var_dir, foreground="#555").pack(side="left", padx=6)
+        ttk.Label(bar, textvariable=self.var_dir, style="Muted.TLabel" if dark else "TLabel").pack(side="left", padx=6)
         if show_dir_button:
             ttk.Button(bar, text="Đổi thư mục...", command=self._choose_dir).pack(side="right")
         ttk.Button(bar, text="Làm mới", command=self.reload).pack(side="right", padx=(4, 0))
         self.var_find = tk.StringVar()
-        ttk.Entry(bar, textvariable=self.var_find, width=18).pack(side="right", padx=(4, 12))
-        ttk.Label(bar, text="Tìm tên:").pack(side="right")
+        ttk.Entry(bar, textvariable=self.var_find, width=22).pack(side="right", padx=(4, 12))
+        ttk.Label(bar, text="Tìm tên người chơi:", style="Muted.TLabel" if dark else "TLabel").pack(side="right")
         self.var_find.trace_add("write", lambda *_: self._refill())
 
         mid = ttk.Frame(self)
@@ -62,9 +64,11 @@ class MatchTable(ttk.Frame):
         for key, label, w, anchor in COLUMNS:
             self.tree.heading(key, text=label, command=lambda k=key: self._sort(k))
             self.tree.column(key, width=w, anchor=anchor, stretch=key in ("name", "kind"))
-        self.tree.tag_configure("win", foreground="#1b7a1b")
-        self.tree.tag_configure("lose", foreground="#b02020")
-        self.tree.tag_configure("muted", foreground="#888888")
+        self.tree.tag_configure("win", foreground=theme.C["green"] if dark else "#1b7a1b")
+        self.tree.tag_configure("lose", foreground=theme.C["lose"] if dark else "#b02020")
+        self.tree.tag_configure("muted", foreground=theme.C["dim"] if dark else "#888888")
+        if dark:
+            self.tree.tag_configure("odd", background=theme.C["bg2"])    # dòng xen kẽ
         sb = ttk.Scrollbar(mid, command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -74,8 +78,8 @@ class MatchTable(ttk.Frame):
         self.tree.bind("<<TreeviewSelect>>", lambda e: self._show_detail())
         self.tree.bind("<Delete>", lambda e: self.delete_selected())
         self.var_detail = tk.StringVar(value="")
-        ttk.Label(self, textvariable=self.var_detail, foreground="#333", justify="left", wraplength=900).pack(
-            fill="x", pady=(6, 0))
+        ttk.Label(self, textvariable=self.var_detail, style="Detail.TLabel" if dark else "TLabel", justify="left",
+                  wraplength=900).pack(fill="x", pady=(8, 0))
         self.var_status = tk.StringVar(value="")
         self.bind("<Configure>", lambda e: self._wrap(e.width))
 
@@ -164,6 +168,7 @@ class MatchTable(ttk.Frame):
             if key == "dur":
                 return info.get("duration_ms", 0)
             return str(self._row(info)[0][idx]).lower()
+        row = 0
         for p, info in sorted(self.infos.items(), key=sort_val, reverse=desc):
             if find:
                 hay = " ".join([info.get("file", "")] + [pl.get("name", "") for pl in info.get("players", [])] +
@@ -171,7 +176,9 @@ class MatchTable(ttk.Frame):
                 if find not in hay:
                     continue
             vals, tag = self._row(info)
-            self.tree.insert("", "end", iid=p, values=vals, tags=(tag,) if tag else ())
+            tags = ((tag,) if tag else ()) + (("odd",) if row % 2 else ())
+            self.tree.insert("", "end", iid=p, values=vals, tags=tags)
+            row += 1
         if sel_path and self.tree.exists(sel_path):
             self.tree.selection_set(sel_path)
         elif self.tree.get_children():

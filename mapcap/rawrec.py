@@ -35,6 +35,7 @@ import zlib
 import numpy as np
 
 from .game import PlayerInfo, Snapshot, UnitDefInfo, UnitInfo
+from . import safeload
 
 MAGIC = b"AOEREC01"
 END_MAGIC = b"AOEEND01"
@@ -57,7 +58,7 @@ NEWER_FORMAT_MSG = ("File này được ghi bằng bản AoE-MapCap mới hơn (
 
 def decode_block(data):
     """Danh sách (tag, payload) bên trong một khối 'B'."""
-    return pickle.loads(lzma.decompress(data))
+    return safeload.lzma_loads(data)          # chỉ kiểu cho phép (file có thể do người khác gửi)
 
 
 def iter_records(path):
@@ -79,7 +80,7 @@ def iter_records(path):
                     for t, p in decode_block(data):
                         yield t, p
                 else:
-                    yield tag, pickle.loads(zlib.decompress(data))
+                    yield tag, safeload.zlib_loads(data)
             except Exception:  # noqa: BLE001
                 return
 UNIT_DT = np.dtype([("uid", "<i4"), ("def", "<i4"), ("owner", "<i2"), ("angle", "u1"), ("status", "u1"),
@@ -383,7 +384,7 @@ def read_header(path):
         data = f.read(n)
         if len(data) < n:
             return None
-        return pickle.loads(zlib.decompress(data))
+        return safeload.zlib_loads(data)
 
 
 def read_end(path):
@@ -403,7 +404,7 @@ def read_end(path):
             if head[:1] != b"E":
                 return None
             n = struct.unpack("<I", head[1:])[0]
-            return pickle.loads(zlib.decompress(f.read(n)))
+            return safeload.zlib_loads(f.read(n))
     except Exception:  # noqa: BLE001
         return None
 
@@ -482,7 +483,7 @@ class RawReader:
                 self.statics = list(cur.values())
             elif tag == b"F" and hdr is not None:
                 w, h = hdr["map_w"], hdr["map_h"]
-                raw = np.frombuffer(zlib.decompress(payload["vis"]), np.uint32).reshape(h, w)
+                raw = np.frombuffer(safeload.zlib_raw(payload["vis"], h * w * 4), np.uint32).reshape(h, w)
                 vis = raw.copy() if payload["full_vis"] or vis is None else np.bitwise_xor(vis, raw)
                 if payload["full_units"]:
                     units = {int(r["uid"]): r for r in payload["units"]}

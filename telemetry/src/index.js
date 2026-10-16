@@ -26,7 +26,12 @@ export default {
       if (url.pathname === "/stats" || url.pathname === "/stats/") {
         return new Response(DASHBOARD_HTML, {
           headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
-                     "x-robots-tag": "noindex" },
+                     "x-robots-tag": "noindex", "x-frame-options": "DENY", "referrer-policy": "no-referrer",
+                     "x-content-type-options": "nosniff",
+                     // chỉ chạy script của trang + Chart.js (đã kiểm SRI), chỉ gọi API cùng nguồn
+                     "content-security-policy": "default-src 'none'; script-src 'unsafe-inline' https://cdnjs.cloudflare.com; " +
+                       "style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; " +
+                       "connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" },
         });
       }
       if (url.pathname === "/api/stats") return await stats(request, env, url);

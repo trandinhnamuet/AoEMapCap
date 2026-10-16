@@ -9,7 +9,7 @@ for _s in (sys.stdout, sys.stderr):                 # in tiếng Việt cả khi
     except Exception:  # noqa: BLE001
         pass
 cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--windowed", "--uac-admin",
-       "--name", "AoE-MapCap", "--icon", "assets/app.ico", "--add-data", "assets/app.ico;assets",
+       "--name", "AoE-MapCap", "--icon", "assets/app.ico", "--add-data", "assets/app.ico;assets", "--add-data", "assets/fonts;assets/fonts",
        "--add-binary", "vendor/ffmpeg.exe;.", "--hidden-import", "glcontext.wgl",   # trình xem replay (moderngl)
        "--distpath", "dist_gui", "--workpath", "build", "run_app.py"]
 r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")

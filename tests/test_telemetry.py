@@ -82,12 +82,11 @@ def test_names():
                                        "map_w": 1, "map_h": 1}))
     with open(os.path.join(raw, "a.aoerec"), "wb") as f:
         f.write(MAGIC + b"H" + struct.pack("<I", len(data)) + data)
-    assert telemetry.last_name(raw) == "Nick Tu File"
-    assert telemetry.last_name() == "Nick Tu File", "lấy từ file xong thì nhớ lại"
-    telemetry.remember_name("TranKhoaCu")
-    assert telemetry.last_name(raw) == "TranKhoaCu", "tên đã nhớ (trận ghi gần nhất) được ưu tiên"
+    assert telemetry.last_name(raw) == "", "không lấy tên từ file trong thư mục (có thể là trận người khác gửi)"
+    telemetry.remember_name("TranKhoaCu")                 # engine._stop_rec: trận do chính máy này ghi
+    assert telemetry.last_name(raw) == "TranKhoaCu"
     os.remove(os.path.join(APPDATA, "AoE-MapCap", "player_name"))
-    print("tên người chơi: từ header trận, nhớ %APPDATA%, trận mới nhất khi chưa nhớ: OK")
+    print("tên người chơi: từ header trận do máy này ghi, nhớ %APPDATA%, không đọc file người khác gửi: OK")
 
 
 def test_send_payload():

@@ -33,7 +33,14 @@ permissions:
 jobs:
   win64:
     runs-on: windows-latest
+    env:
+      TAG: ${{ github.ref_name }}     # dùng qua biến môi trường, không chèn thẳng vào lệnh shell
     steps:
+      - name: Kiểm tên tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: '[[ "$TAG" =~ ^v[0-9]+(\.[0-9]+)*$ ]] || { echo "tag phải có dạng v<N>"; exit 1; }'
+
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0              # cần các tag cũ để ghi commit vào mô tả bản cũ
@@ -46,7 +53,8 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           PYTHONIOENCODING: utf-8
-        run: python release/make_release.py set-version "${{ github.ref_name }}"
+        shell: bash
+        run: python release/make_release.py set-version "$TAG"
 
       - name: Cài gói
         run: |
@@ -78,7 +86,7 @@ jobs:
           mkdir -p "$NAME"
           cp -p dist/AoE-MapCap.exe README.md "$NAME/"
           echo "source: ${{ github.server_url }}/${{ github.repository }}/tree/${{ github.sha }}" > "$NAME/VERSION.txt"
-          echo "ref: ${{ github.ref_name }}" >> "$NAME/VERSION.txt"
+          echo "ref: $TAG" >> "$NAME/VERSION.txt"
           python -c "from mapcap.version import APP_VERSION as v; print('version: ' + v)" >> "$NAME/VERSION.txt"
           (cd "$NAME" && sha256sum AoE-MapCap.exe > SHA256SUMS.txt)
           7z a -tzip "$NAME.zip" "$NAME" > /dev/null
@@ -92,8 +100,8 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: |
           NAME=${{ steps.pkg.outputs.name }}
-          python release/make_release.py manifest "${{ github.ref_name }}" "$NAME.zip" version.json
-          python release/make_release.py bodies "${{ github.ref_name }}" release-bodies --zip-sha="$(cut -d' ' -f1 "$NAME.zip.sha256")" --commit=${{ github.sha }}
+          python release/make_release.py manifest "$TAG" "$NAME.zip" version.json
+          python release/make_release.py bodies "$TAG" release-bodies --zip-sha="$(cut -d' ' -f1 "$NAME.zip.sha256")" --commit=${{ github.sha }}
 
       - uses: actions/upload-artifact@v7
         with:
@@ -129,7 +137,7 @@ jobs:
         run: |
           for f in release-bodies/v*.md; do
             t=$(basename "$f" .md)
-            [ "$t" = "${{ github.ref_name }}" ] && continue
+            [ "$t" = "$TAG" ] && continue
             if gh release view "$t" > /dev/null 2>&1; then
               gh release edit "$t" --notes-file "$f" && echo "đã viết lại mô tả $t"
               for x in AoE-MapCap.exe AoE-Replay.exe; do       # từ v5 không đính kèm exe lẻ (cả bản cũ)

@@ -36,13 +36,20 @@ class UpdateController:
         self.working = False
         self.cancel_flag = False
         self.block_win = None
-        self.bar = ttk.Frame(bar_parent)
+        from . import theme
+        self.dark = theme.APPLIED                       # giao diện tối kiểu XArena (AoE-MapCap)
+        self.bar = ttk.Frame(bar_parent, style="Notice.TFrame" if self.dark else "TFrame",
+                             padding=(14, 8) if self.dark else 0)
         self._bar_before = bar_before
-        self.lbl = ttk.Label(self.bar, text="", foreground="#0b5394")
+        if self.dark:
+            self.lbl = ttk.Label(self.bar, text="", style="Notice.TLabel")
+        else:
+            self.lbl = ttk.Label(self.bar, text="", foreground="#0b5394")
         self.lbl.pack(side="left", padx=(4, 10))
         self.pb = ttk.Progressbar(self.bar, length=220, mode="determinate", maximum=1000)
         self.btn_later = ttk.Button(self.bar, text="Để sau", command=self._later)
-        self.btn_update = ttk.Button(self.bar, text="Cập nhật", command=self.begin_update)
+        self.btn_update = ttk.Button(self.bar, text="Cập nhật", command=self.begin_update,
+                                     style="Accent.TButton" if self.dark else "TButton")
         self.btn_notes = ttk.Button(self.bar, text="Có gì mới", command=self.show_notes)
         self.btn_cancel = ttk.Button(self.bar, text="Huỷ", command=self._cancel)
         for b in (self.btn_later, self.btn_update, self.btn_notes):
@@ -97,7 +104,7 @@ class UpdateController:
                  + (f", tối thiểu v{info.min_version}" if info.state == "required" else ""))
         if info.state == "available" and self.dismissed != info.latest and not self.working:
             self._show_bar(f"Có bản mới v{info.latest} (đang dùng v{info.current}).")
-        if info.state != "current" and os.environ.get("AOEMAPCAP_UPDATE_AUTO") == "1":
+        if info.state != "current" and updater.env_override("AOEMAPCAP_UPDATE_AUTO") == "1":
             self.begin_update()                    # chỉ dùng khi kiểm thử exe: tự bấm Cập nhật
         # "required": _poll hiện cửa sổ chặn khi không bận
 
@@ -106,7 +113,7 @@ class UpdateController:
         self.lbl.configure(text=text)
         if not self.bar.winfo_ismapped():
             kw = {"before": self._bar_before} if self._bar_before is not None else {}
-            self.bar.pack(fill="x", padx=12, pady=(0, 4), **kw)
+            self.bar.pack(fill="x", padx=24 if self.dark else 12, pady=(12, 0) if self.dark else (0, 4), **kw)
 
     def _later(self):
         if self.info is not None:
@@ -120,7 +127,11 @@ class UpdateController:
         top = tk.Toplevel(parent or self.root)
         top.title(f"Có gì mới — v{self.info.latest}")
         top.geometry("640x420")
-        txt = tk.Text(top, wrap="word", font=("Segoe UI", 10), padx=10, pady=8)
+        from . import theme
+        if self.dark:
+            theme.dark_window(top)
+        txt = tk.Text(top, wrap="word", font=theme.F(10) if self.dark else ("Segoe UI", 10), padx=12, pady=10,
+                      **(theme.text_widget_colors() if self.dark else {}))
         sb = ttk.Scrollbar(top, command=txt.yview)
         txt.configure(yscrollcommand=sb.set)
         bot = ttk.Frame(top)
@@ -247,9 +258,14 @@ class BlockDialog:
         top.geometry("620x420")
         top.transient(ctl.root)
         top.protocol("WM_DELETE_WINDOW", self._quit)
+        from . import theme
+        if ctl.dark:
+            theme.dark_window(top)
         ttk.Label(top, text=f"Bản v{info.current} đã ngừng hỗ trợ. Hãy cập nhật lên v{info.latest} để tiếp tục dùng.",
-                  font=("Segoe UI", 11, "bold"), wraplength=580).pack(fill="x", padx=12, pady=(12, 6))
-        txt = tk.Text(top, wrap="word", font=("Segoe UI", 10), height=12, padx=8, pady=6)
+                  font=theme.F(12, "bold") if ctl.dark else ("Segoe UI", 11, "bold"), wraplength=580).pack(
+            fill="x", padx=12, pady=(12, 6))
+        txt = tk.Text(top, wrap="word", font=theme.F(10) if ctl.dark else ("Segoe UI", 10), height=12, padx=10, pady=8,
+                      **(theme.text_widget_colors() if ctl.dark else {}))
         txt.insert("end", info.notes_since())
         txt.configure(state="disabled")
         txt.pack(fill="both", expand=True, padx=12)
@@ -260,7 +276,8 @@ class BlockDialog:
         bot.pack(side="bottom", fill="x", padx=12, pady=10)
         self.btn_quit = ttk.Button(bot, text="Thoát", command=self._quit)
         self.btn_quit.pack(side="right")
-        self.btn_go = ttk.Button(bot, text="Cập nhật ngay", command=ctl.begin_update)
+        self.btn_go = ttk.Button(bot, text="Cập nhật ngay", command=ctl.begin_update,
+                                 style="Accent.TButton" if ctl.dark else "TButton")
         self.btn_go.pack(side="right", padx=6)
         self.btn_cancel = ttk.Button(bot, text="Huỷ tải", command=ctl._cancel)
         ttk.Button(bot, text="Mở trang phát hành", command=lambda: webbrowser.open(info.page)).pack(side="left")
