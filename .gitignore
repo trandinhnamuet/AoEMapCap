@@ -2,6 +2,7 @@
 build/
 dist/
 dist_*/
+build_assets/
 *.spec
 __pycache__/
 *.pyc
@@ -25,3 +26,5 @@ probe.bat
 render_snap.py
 tests/*
 !tests/test_*.py
+# nhật ký phát triển (không đưa lên public)
+NHAT_KY_PHAT_TRIEN.md

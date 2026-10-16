@@ -105,7 +105,8 @@ class App:
 
     def __init__(self, root):
         self.root = root
-        root.title(f"{APP_TITLE} v{APP_VERSION} — ghi trận và xem replay")
+        self._base_title = f"{APP_TITLE} v{APP_VERSION} — ghi trận và xem replay"
+        root.title(self._base_title)
         root.minsize(980, 600)
         root.geometry("1200x720")
         try:
@@ -116,6 +117,11 @@ class App:
         self.cfg = load_config()
         self.q = queue.Queue()
         self.state_text = "chưa ghi"
+        self._stopping = False       # đã bấm Dừng, bộ ghi đang chốt dữ liệu
+        self._rec_since = None       # time.monotonic() lúc bắt đầu ghi trận đang ghi
+        self._pulse = False
+        self._mode = None
+        self.tray = None             # biểu tượng khay hệ thống (_start_tray)
         self.renders = {}            # label -> dòng tiến độ của lượt xuất video đang chạy
         self.engine = None
         self.thread = None
@@ -127,9 +133,13 @@ class App:
         self._restart_recording = False
         self.updater = UpdateController(root, self.main, "mapcap", APP_TITLE, log=lambda m: self.q.put("cập nhật: " + m),
                                         is_busy=self._busy_reason, before_restart=self._before_update_restart,
-                                        restart_args=lambda: ["--autostart"] if self._restart_recording else [],
+                                        restart_args=self._restart_args,
                                         bar_before=self.content, on_block=self._on_update_block)
         self.updater.start()
+        self.tray = None
+        self._tray_hint_shown = False
+        self._start_tray()
+        root.bind("<Destroy>", lambda e: self._stop_tray() if e.widget is root else None, add="+")
         from . import telemetry                         # thống kê sử dụng: một lượt mỗi lần mở app (có mạng)
         telemetry.send("mapcap", "open", self.cfg.telemetry, raw_dir=self.cfg.raw_dir())
 
@@ -191,17 +201,31 @@ class App:
                                    anchor="w", wraplength=190)
         self.lbl_status.pack(fill="x", padx=12, pady=(0, 10))
 
-        # đầu trang: nền chuyển sắc đỏ-đen, tiêu đề trang, nút ghi
+        # dải màu trên cùng: đỏ = đang ghi trận, vàng = bộ ghi bật (chờ game / chờ trận), xám = không ghi
+        self.strip = tk.Frame(self.main, bg=C["line"], height=4)
+        self.strip.pack(fill="x")
+        # đầu trang: nền chuyển sắc đỏ-đen, tiêu đề trang, trạng thái ghi + nút bật/tắt
         self.head = tk.Canvas(self.main, height=96, bg=C["bg"], highlightthickness=0)
         self.head.pack(fill="x")
         self._head_bg = self.head.create_image(0, 0, anchor="nw")
         self._head_title = self.head.create_text(30, 34, anchor="w", text="", fill="#ffffff", font=theme.F(20, "bold"))
         self._head_sub = self.head.create_text(31, 64, anchor="w", text="", fill=C["muted"], font=theme.F(10))
         btns = tk.Frame(self.head, bg=C["bg"])
-        self.btn_start = ttk.Button(btns, text="●  Bắt đầu ghi", style="Accent.TButton", command=self._start)
-        self.btn_start.pack(side="left", padx=4)
-        self.btn_stop = ttk.Button(btns, text="■  Dừng ghi", command=self._stop, state="disabled")
-        self.btn_stop.pack(side="left", padx=4)
+        self.chip = tk.Frame(btns, bg=C["panel"], highlightthickness=1, highlightbackground=C["line"])
+        self.chip.pack(side="left", padx=(0, 10))
+        self.chip_dot = tk.Canvas(self.chip, width=16, height=16, bg=C["panel"], highlightthickness=0)
+        self.chip_dot.pack(side="left", padx=(12, 0), pady=9)
+        self.chip_dot_id = self.chip_dot.create_oval(2, 2, 15, 15, fill=C["dim"], outline="")
+        chip_txt = tk.Frame(self.chip, bg=C["panel"])
+        chip_txt.pack(side="left", padx=(9, 14), pady=4)
+        self.chip_title = tk.Label(chip_txt, text="KHÔNG GHI", bg=C["panel"], fg=C["muted"], font=theme.F(12, "bold"),
+                                   anchor="w", width=18)
+        self.chip_title.pack(anchor="w")
+        self.chip_sub = tk.Label(chip_txt, text="", bg=C["panel"], fg=C["muted"], font=theme.F(9), anchor="w", width=34)
+        self.chip_sub.pack(anchor="w")
+        self._chip_parts = (self.chip, self.chip_dot, chip_txt, self.chip_title, self.chip_sub)
+        self.btn_rec = ttk.Button(btns, text="●  Bắt đầu ghi", style="Accent.TButton", command=self._toggle, width=14)
+        self.btn_rec.pack(side="left", padx=4)
         self._head_btns = self.head.create_window(0, 48, anchor="e", window=btns)
         self.head.bind("<Configure>", self._layout_head)
 
@@ -213,6 +237,7 @@ class App:
         self._build_log()
         self.show_page("matches")
         self._refresh_status()
+        self.root.after(500, self._tick)
 
     def _logo_image(self, size):
         try:
@@ -310,6 +335,7 @@ class App:
         self.var_enc = tk.StringVar(value=cfg.encoder)
         self.var_auto = tk.BooleanVar(value=cfg.auto_start)
         self.var_tele = tk.BooleanVar(value=cfg.telemetry)
+        self.var_tray = tk.BooleanVar(value=cfg.close_to_tray)
 
         rec = self._card(tab, "Ghi trận")
         ttk.Label(rec, text="Nhịp đọc game (lần/giây)", style="Card.TLabel").grid(row=0, column=0, sticky="w", **pad)
@@ -322,8 +348,11 @@ class App:
         ttk.Checkbutton(rec, text="Tự bắt đầu ghi khi mở AoE-MapCap (không cần bấm ● Bắt đầu ghi)",
                         variable=self.var_auto, style="Card.TCheckbutton").grid(row=2, column=0, columnspan=4,
                                                                                 sticky="w", pady=(10, 2))
+        ttk.Checkbutton(rec, text="Bấm X: chạy ngầm ở khay hệ thống (góc phải thanh tác vụ), vẫn ghi trận",
+                        variable=self.var_tray, style="Card.TCheckbutton").grid(row=3, column=0, columnspan=4,
+                                                                                sticky="w", pady=2)
         ttk.Checkbutton(rec, text="Gửi thống kê sử dụng (mã máy ngẫu nhiên, tên người chơi, phiên bản, IP; không gửi trận đấu)",
-                        variable=self.var_tele, style="Card.TCheckbutton").grid(row=3, column=0, columnspan=4,
+                        variable=self.var_tele, style="Card.TCheckbutton").grid(row=4, column=0, columnspan=4,
                                                                                 sticky="w", pady=2)
         rec.columnconfigure(2, weight=1)
 
@@ -374,6 +403,7 @@ class App:
         cfg.render_after = bool(self.var_render_after.get())
         cfg.auto_start = bool(self.var_auto.get())
         cfg.telemetry = bool(self.var_tele.get())
+        cfg.close_to_tray = bool(self.var_tray.get())
         cfg.record_mode = "raw"
         cfg.record_video = True
         cfg.keep_raw = True
@@ -429,8 +459,9 @@ class App:
                              progress=lambda label, text: self.q.put(("__progress__", label, text)))
         self.thread = threading.Thread(target=self._run_engine, daemon=True)
         self.thread.start()
-        self.btn_start.configure(state="disabled")
-        self.btn_stop.configure(state="normal")
+        self._stopping = False
+        self.state_text = "chờ game"
+        self._refresh_status()
         self._append(f"=== bắt đầu ghi: nhịp đọc {int(cfg.capture_fps)}/s, lưu tại {cfg.raw_dir()}"
                      + ("; tự xuất video sau trận" if cfg.render_after else ""))
 
@@ -460,7 +491,15 @@ class App:
         if self.stop_event:
             self.stop_event.set()
             self._append("=== yêu cầu dừng ghi: đang chốt dữ liệu trận (nếu có)...")
-            self.btn_stop.configure(state="disabled")
+            self._stopping = True
+            self._refresh_status()
+
+    def _toggle(self):
+        """Một nút: không ghi -> Bắt đầu ghi; bộ ghi đang bật -> Dừng ghi."""
+        if self.engine is None:
+            self._start()
+        elif not self._stopping:
+            self._stop()
 
     # ---- trận đã ghi -----------------------------------------------------------------
     def _game_dir_for(self, path):
@@ -623,13 +662,14 @@ class App:
                         else:
                             self.renders[label] = text
                         self._refresh_status()
+                    elif kind == "__tray__":           # từ luồng khay / bản mở sau (instance.signal_show)
+                        self._tray_action(item[1])
                     elif kind == "__done__":
                         self._append("=== đã dừng ghi")
-                        self.btn_start.configure(state="normal")
-                        self.btn_stop.configure(state="disabled")
                         self.state_text = "đã dừng"
-                        self._refresh_status()
                         self.engine = None
+                        self._stopping = False
+                        self._refresh_status()
                         self.table.reload()
                 elif item == "__reload_table__":
                     self.table.reload()
@@ -640,23 +680,84 @@ class App:
                     if "lỗi dựng" in item:            # xuất video thất bại: báo rõ, không để người dùng chờ
                         self.state_text = "xuất video LỖI"
                         self._refresh_status()
+                        self._show_window()
                         messagebox.showerror(APP_TITLE, item)
         except queue.Empty:
             pass
         self.root.after(200, self._poll)
 
-    STATE_LOOK = {"đang ghi": ("ĐANG GHI TRẬN", "red_hi"), "chờ game": ("Đang chờ game", "gold"),
-                  "đã dừng": ("Đã dừng", "dim"), "chưa ghi": ("Chưa ghi", "dim")}
+    # chế độ hiển thị: rec = đang ghi trận | armed = bộ ghi bật, chờ game/trận | stopping = đang dừng | off = không ghi
+    MODE_LOOK = {
+        "rec": ("ĐANG GHI TRẬN", "red_hi", "■  Dừng ghi", "TButton"),
+        "armed": ("SẴN SÀNG GHI", "gold", "■  Dừng ghi", "TButton"),
+        "stopping": ("ĐANG DỪNG…", "muted", "Đang dừng…", "TButton"),
+        "off": ("KHÔNG GHI", "dim", "●  Bắt đầu ghi", "Accent.TButton"),
+    }
+    WAIT_TEXT = {"chờ game": "Chờ mở game AoE-HD / AOE1R", "trong game, chờ trận": "Đã thấy game — vào trận là tự ghi"}
+
+    def _mode_now(self):
+        if self.engine is None:
+            return "off"
+        if self._stopping:
+            return "stopping"
+        if getattr(self.engine, "state", "") == "đang ghi" or (self.state_text or "").strip() == "đang ghi":
+            return "rec"
+        return "armed"
 
     def _refresh_status(self):
-        """Thanh bên: chấm màu + trạng thái ghi; dòng nhỏ = tiến độ từng lượt xuất video / nén đang chạy."""
+        """Trạng thái ghi ở 4 chỗ cùng lúc: dải màu trên cùng, nhãn lớn + nút trên đầu trang, thẻ thanh bên, tiêu đề
+        cửa sổ. Dòng nhỏ ở thanh bên = tiến độ từng lượt xuất video / nén đang chạy."""
+        import time
+        C = theme.C
+        mode = self._mode_now()
         st = (self.state_text or "").strip()
-        label, color = self.STATE_LOOK.get(st, (st[:1].upper() + st[1:] if st else "Chưa ghi", "muted"))
-        self.lbl_state.configure(text=label, fg="#ffffff" if color != "dim" else theme.C["muted"])
-        self.dot.itemconfigure(self.dot_id, fill=theme.C[color])
+        title, color, btn_text, btn_style = self.MODE_LOOK[mode]
+        if mode == "rec":
+            if self._rec_since is None:
+                self._rec_since = time.monotonic()
+            s = int(time.monotonic() - self._rec_since)
+            sub = f"Đã ghi {s // 3600:d}:{s // 60 % 60:02d}:{s % 60:02d}" if s >= 3600 else f"Đã ghi {s // 60:02d}:{s % 60:02d}"
+        else:
+            self._rec_since = None
+            sub = {"armed": self.WAIT_TEXT.get(st, "Vào trận là tự ghi"), "stopping": "Đang chốt dữ liệu trận…",
+                   "off": "Bấm Bắt đầu ghi để tự ghi các trận"}[mode]
+        if mode != self._mode:                       # đổi màu cả khối chỉ khi đổi chế độ
+            self._mode = mode
+            chip_bg = {"rec": C["red_lo"], "armed": C["panel"], "stopping": C["panel"], "off": C["panel"]}[mode]
+            edge = {"rec": C["red_hi"], "armed": C["gold"], "stopping": C["line"], "off": C["line"]}[mode]
+            for w in self._chip_parts:
+                w.configure(bg=chip_bg)
+            self.chip.configure(highlightbackground=edge, highlightcolor=edge)
+            self.chip_title.configure(fg="#ffffff" if mode == "rec" else (C["gold_hi"] if mode == "armed" else C["muted"]))
+            self.chip_sub.configure(fg="#f0c8cc" if mode == "rec" else C["muted"])
+            self.strip.configure(bg={"rec": C["red_hi"], "armed": C["gold"], "stopping": C["line"], "off": C["line"]}[mode])
+            self.btn_rec.configure(text=btn_text, style=btn_style, state="disabled" if mode == "stopping" else "normal")
+            self.root.title(("● ĐANG GHI — " if mode == "rec" else "") + self._base_title)
+        self.chip_title.configure(text=title)
+        self.chip_sub.configure(text=sub)
+        dot = C[color] if mode != "rec" or not self._pulse else "#ffffff"
+        self.chip_dot.itemconfigure(self.chip_dot_id, fill=dot)
+        # thẻ trạng thái ở thanh bên: cùng chế độ
+        side = {"rec": "Đang ghi trận", "armed": "Sẵn sàng ghi", "stopping": "Đang dừng…", "off": "Không ghi"}[mode]
+        if st == "xuất video LỖI":
+            side = "Xuất video LỖI"
+        self.lbl_state.configure(text=side, fg="#ffffff" if mode in ("rec", "armed") else C["muted"])
+        self.dot.itemconfigure(self.dot_id, fill=dot)
         extra = [f"{k}: {v}" for k, v in self.renders.items()]
-        self.lbl_status.configure(text="\n".join(extra) if extra else
-                                  ("Mở game AoE-HD / AOE1R là tự ghi" if st == "chờ game" else ""))
+        self.lbl_status.configure(text="\n".join(extra) if extra else sub)
+        if self.tray is not None:
+            self.tray.update(f"AoE-MapCap — {side}\n{sub}", {"rec": "rec", "armed": "armed"}.get(mode),
+                             "Bắt đầu ghi" if mode == "off" else "Dừng ghi")
+
+    def _tick(self):
+        """Nhịp 0,5 s: chấm đỏ nhấp nháy + đồng hồ khi đang ghi trận."""
+        if self._mode_now() == "rec":
+            self._pulse = not self._pulse
+            self._refresh_status()
+        elif self._pulse:
+            self._pulse = False
+            self._refresh_status()
+        self.root.after(500, self._tick)
 
     # ---- tự cập nhật ------------------------------------------------------------------
     def _busy_reason(self):
@@ -678,7 +779,61 @@ class App:
             self.thread.join(timeout=30)
         return True
 
+    # ---- khay hệ thống: bấm X là chạy ngầm ------------------------------------------------
+    def _start_tray(self):
+        try:
+            from .tray import Tray
+            t = Tray(app_icon_path(), lambda act: self.q.put(("__tray__", act)), "AoE-MapCap")
+            self.tray = t if t.start() else None
+        except Exception as e:  # noqa: BLE001  - không có khay thì bấm X là thoát như cũ
+            self.tray = None
+            self.q.put(f"khay hệ thống: không dùng được ({e})")
+
+    def _stop_tray(self):
+        if self.tray is not None:
+            self.tray.stop()
+
+    def _tray_action(self, act):
+        if act == "open":
+            self._show_window()
+        elif act == "toggle":
+            self._toggle()
+        elif act == "quit":
+            self._quit()
+
+    def _show_window(self):
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.attributes("-topmost", True)       # đưa lên trên cửa sổ khác rồi bỏ "luôn trên cùng"
+            self.root.after(300, lambda: self.root.attributes("-topmost", False))
+            self.root.focus_force()
+        except tk.TclError:
+            pass
+
+    def _hidden(self):
+        try:
+            return self.root.state() == "withdrawn"
+        except tk.TclError:
+            return False
+
+    def _restart_args(self):
+        """Tham số cho bản mới sau tự cập nhật: chờ bản này thoát hẳn; đang ghi thì ghi tiếp; đang ẩn thì vẫn ẩn."""
+        return (["--autostart"] if self._restart_recording else []) + ["--wait-instance"] + \
+            (["--tray"] if self._hidden() and self.tray is not None else [])
+
     def _on_close(self):
+        """Nút X: có khay thì ẩn cửa sổ (vẫn ghi trận), thoát hẳn bằng menu khay -> Thoát."""
+        if self.tray is not None and self.tray.ok and self.var_tray.get():
+            self.root.withdraw()
+            if not self._tray_hint_shown:
+                self._tray_hint_shown = True
+                self.tray.balloon("AoE-MapCap vẫn chạy ngầm",
+                                  "Vẫn tự ghi trận. Bấm biểu tượng ở đây để mở lại, bấm phải -> Thoát để tắt hẳn.")
+            return
+        self._quit()
+
+    def _quit(self):
         from .offline import active_renders
         running = self.engine is not None and self.thread is not None and self.thread.is_alive()
         recording = running and getattr(self.engine, "state", "") == "đang ghi"
@@ -691,6 +846,8 @@ class App:
             msg = "Đang xuất video. Thoát bây giờ sẽ mất video đang xuất (xuất lại được từ trận đã ghi). Thoát?"
         else:
             msg = None
+        if msg:
+            self._show_window()
         if msg and not messagebox.askyesno(APP_TITLE, msg):
             return
         if rendering:
@@ -703,14 +860,42 @@ class App:
 
 
 def main():
+    from . import instance
+    inst = instance.Instance.acquire(wait_s=60 if "--wait-instance" in sys.argv else 0)
+    if inst is None:                          # đã có AoE-MapCap đang chạy (có thể đang ẩn ở khay): hiện nó lên
+        shown = instance.signal_show()
+        _close_splash()
+        if not shown:
+            r = tk.Tk()
+            r.withdraw()
+            messagebox.showinfo(APP_TITLE, "AoE-MapCap đang chạy (biểu tượng ở khay hệ thống, góc phải thanh tác vụ).")
+            r.destroy()
+        return
     root = tk.Tk()
     try:
         root.tk.call("tk", "scaling", 1.25)
     except Exception:  # noqa: BLE001
         pass
     app = App(root)
+    inst.watch(lambda: app.q.put(("__tray__", "open")))
+    if "--tray" in sys.argv and app.tray is not None:
+        root.withdraw()                       # tự cập nhật lúc đang ẩn ở khay: bản mới cũng ẩn
     schedule_autostart(app, sys.argv)
-    root.mainloop()
+    root.update_idletasks()
+    _close_splash()                           # cửa sổ chính đã dựng xong: tắt màn hình chờ của exe
+    try:
+        root.mainloop()
+    finally:
+        app._stop_tray()
+        inst.release()
+
+
+def _close_splash():
+    try:
+        import pyi_splash
+        pyi_splash.close()
+    except Exception:  # noqa: BLE001  - chạy từ mã nguồn: không có màn hình chờ
+        pass
 
 
 def schedule_autostart(app, argv, delay_ms=800):

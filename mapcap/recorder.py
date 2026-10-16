@@ -11,9 +11,65 @@ import time
 import numpy as np
 
 
-def find_ffmpeg(extra_dirs=()):
+_FFMPEG_OK = {}                                       # đường dẫn -> đã kiểm SHA-256 trong tiến trình này
+
+
+def _sha256_file(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def bundled_ffmpeg(extract=True):
+    """ffmpeg đóng gói trong exe ở dạng nén ffmpeg.exe.xz (exe một file giải nén mọi thứ mỗi lần mở: để ffmpeg 87 MB
+    ở dạng exe làm khởi động chậm ~0,5 s). Lần đầu cần (xuất video) mới giải nén ra %LOCALAPPDATA%\\AoE-MapCap\\ffmpeg,
+    kiểm SHA-256 (ghi lúc build) trước khi dùng — app chạy quyền Admin, thư mục đó user ghi được."""
+    meipass = getattr(sys, "_MEIPASS", None)
+    xz = os.path.join(meipass, "ffmpeg.exe.xz") if meipass else None
+    if not xz or not os.path.isfile(xz):
+        return None
+    try:
+        want = open(os.path.join(meipass, "ffmpeg.exe.sha256"), encoding="ascii").read().split()[0].lower()
+    except OSError:
+        return None
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or os.path.expanduser("~")
+    exe = os.path.join(base, "AoE-MapCap", "ffmpeg", f"ffmpeg-{want[:12]}.exe")
+    if _FFMPEG_OK.get(exe):
+        return exe
+    if os.path.isfile(exe) and _sha256_file(exe) == want:
+        _FFMPEG_OK[exe] = True
+        return exe
+    if not extract:
+        return None
+    import hashlib
+    import lzma
+    os.makedirs(os.path.dirname(exe), exist_ok=True)
+    part = exe + ".part"
+    h = hashlib.sha256()
+    with lzma.open(xz, "rb") as src, open(part, "wb") as dst:
+        for b in iter(lambda: src.read(1 << 20), b""):
+            dst.write(b)
+            h.update(b)
+    if h.hexdigest() != want:
+        os.remove(part)
+        return None
+    os.replace(part, exe)
+    _FFMPEG_OK[exe] = True
+    return exe
+
+
+def find_ffmpeg(extra_dirs=(), extract=True):
+    """extract=False: không giải nén ffmpeg đóng gói nếu chưa có sẵn (ghi trận không cần ffmpeg)."""
+    b = bundled_ffmpeg(extract)
+    if b:
+        return b
+    if getattr(sys, "_MEIPASS", None) and os.path.isfile(os.path.join(sys._MEIPASS, "ffmpeg.exe.xz")) and not extract:
+        return None                                   # có ffmpeg đóng gói nhưng chưa giải nén: không dò chỗ khác
     cands = []
-    meipass = getattr(sys, "_MEIPASS", None)          # ffmpeg gói trong exe (PyInstaller onefile)
+    meipass = getattr(sys, "_MEIPASS", None)          # bản build cũ: ffmpeg.exe gói thẳng trong exe
     if meipass:
         cands.append(os.path.join(meipass, "ffmpeg.exe"))
     exe_dir = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))

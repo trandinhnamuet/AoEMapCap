@@ -82,6 +82,7 @@ class Config:
     render_cpus_in_game: str = "auto"        # CPU cho tiến trình dựng khi đang có trận: auto = E-core (8..), "8-15", "" = không ghim
     auto_start: bool = True                  # mở AoE-MapCap là tự bắt đầu ghi (chờ game), không cần bấm (2026-10-13)
     telemetry: bool = True                   # gửi thống kê sử dụng: mã máy ngẫu nhiên, phiên bản, IP (2026-10-15)
+    close_to_tray: bool = True               # bấm X: ẩn xuống khay hệ thống, vẫn ghi trận; Thoát ở menu khay (2026-10-16)
     config_version: int = 3                  # tăng khi đổi mặc định quan trọng (v2: nhịp đọc = FPS;
                                              # v3: chỉ ghi dữ liệu trận, không tự dựng video / ảnh tĩnh)
 
@@ -606,11 +607,16 @@ class Engine:
         except Exception:  # noqa: BLE001
             pass
 
-        ffmpeg = find_ffmpeg([cfg.game_dir] if cfg.game_dir else [])
+        # chế độ dữ liệu thô chỉ cần ffmpeg khi tự xuất video sau trận (hoặc còn .part.mp4 cần đóng gói lại):
+        # không thì không giải nén ffmpeg (87 MB) mỗi lần bắt đầu ghi
+        need_ffmpeg = cfg.record_mode == "live" or cfg.render_after
+        try:
+            has_parts = any(n.lower().endswith(".part.mp4") for n in os.listdir(out_dir))
+        except OSError:
+            has_parts = False
+        ffmpeg = find_ffmpeg([cfg.game_dir] if cfg.game_dir else [], extract=need_ffmpeg or has_parts)
         encoder = None
         record_video = cfg.record_video
-        # chế độ dữ liệu thô chỉ cần ffmpeg khi tự xuất video sau trận
-        need_ffmpeg = cfg.record_mode == "live" or cfg.render_after
         if record_video and need_ffmpeg and not ffmpeg:
             if cfg.record_mode == "live":
                 log("KHÔNG tìm thấy ffmpeg. Chỉ chụp ảnh tĩnh.")

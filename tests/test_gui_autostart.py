@@ -78,7 +78,7 @@ def main():
     assert gui.schedule_autostart(app, [], delay_ms=50)
     pump(root, 1.0)
     assert len(STARTED) == 1 and app.engine is STARTED[0], "mở app phải tự bắt đầu ghi"
-    assert str(app.btn_start["state"]) == "disabled" and str(app.btn_stop["state"]) == "normal"
+    assert app.btn_rec["text"].endswith("Dừng ghi") and str(app.btn_rec["state"]) == "normal"
     assert app.var_auto.get() is True
     app._auto_start()                                      # gọi lại khi đang ghi: không chạy engine thứ hai
     assert len(STARTED) == 1

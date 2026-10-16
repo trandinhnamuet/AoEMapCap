@@ -22,7 +22,21 @@ def _log_child_error(kind, exc, out_path):
     except Exception:  # noqa: BLE001
         pass
 
+def close_splash():
+    """Đóng màn hình chờ của exe (build.py: Splash). Chạy từ mã nguồn / tiến trình con không có pyi_splash."""
+    try:
+        import pyi_splash
+        pyi_splash.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+CHILD_FLAGS = ("--replay", "--render-chunk", "--render-raw", "--render-still", "--nogui", "--multiprocessing-fork")
+
+
 def main():
+    if any(a.startswith(CHILD_FLAGS) for a in sys.argv[1:]):
+        close_splash()                        # không phải cửa sổ chính: tắt màn hình chờ ngay
     import multiprocessing
     multiprocessing.freeze_support()          # tiến trình ghi (recproc) khi đóng gói PyInstaller
     if "--replay" in sys.argv:
