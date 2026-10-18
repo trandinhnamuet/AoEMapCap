@@ -12,7 +12,7 @@ import psutil
 from . import dat as D
 from . import drs
 from .game import GameReader
-from .memory import ProcessMemory, MemoryError_, check_build, find_game_process
+from .memory import ProcessMemory, MemoryError_, check_build, find_game_process, has_window
 from .recorder import MatchRecorder, find_ffmpeg, pick_encoder, recover_partials
 from .rawrec import RawWriter
 from .render_full import FullRenderer, SpriteStore
@@ -644,13 +644,15 @@ class Engine:
         test_seconds = float(os.environ.get("MAPCAP_TEST_SECONDS", "0") or 0)
         t_start = time.time()
         unsupported = set()            # pid game có exe không đọc được: không ghi, chờ game khác
+        abandoned = set()              # pid game không cửa sổ đã bỏ để sang game khác (vd treo khi khởi động)
 
         while not self.stop_event.is_set():
             self._set("chờ game")
             proc = None
             shown = False
             while proc is None and not self.stop_event.is_set():
-                proc = find_game_process(exclude=unsupported)
+                abandoned = {p for p in abandoned if psutil.pid_exists(p)}
+                proc = find_game_process(exclude=unsupported | abandoned)
                 if proc is None:
                     if not shown:
                         log("chờ game (EMPIRESX*.EXE / empires.exe)...")
@@ -722,6 +724,8 @@ class Engine:
             last_seq = 0
             last_ticks = 0
             next_log = 0.0
+            next_switch_check = time.time() + 5
+            switched = False
             try:
                 with mem:
                     while mem.alive() and not self.stop_event.is_set():
@@ -854,6 +858,15 @@ class Engine:
                                     log("tắt ghi video cho phiên này")
                         elif not in_game:
                             self._set("trong game, chờ trận")
+                        if rec is None and not in_game and time.time() >= next_switch_check:
+                            # chưa vào trận mà có game khác, game đang bám lại không có cửa sổ: sang game kia
+                            next_switch_check = time.time() + 5
+                            other = find_game_process(exclude=unsupported | abandoned | {proc.pid})
+                            if other is not None and not has_window(proc.pid):
+                                log(f"game pid {proc.pid} không có cửa sổ, có game khác (pid {other.pid}): chuyển sang")
+                                abandoned.add(proc.pid)
+                                switched = True
+                                break
                         if rec is None:
                             self.stop_event.wait(0.5)
             finally:
@@ -866,7 +879,8 @@ class Engine:
             if self.stop_event.is_set():
                 log("đã dừng theo yêu cầu")
                 return
-            log("game đã thoát")
+            if not switched:
+                log("game đã thoát")
         self._set("đã dừng")
 
     def _load_graphics(self, gdir):

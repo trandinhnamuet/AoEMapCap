@@ -162,7 +162,7 @@ class App:
         names = tk.Frame(logo, bg=C["sidebar"])
         names.pack(side="left", padx=(10, 0))
         tk.Label(names, text="AoE-MapCap", bg=C["sidebar"], fg="#ffffff", font=theme.F(14, "bold")).pack(anchor="w")
-        tk.Label(names, text=f"PHIÊN BẢN {APP_VERSION}", bg=C["sidebar"], fg=C["gold"],
+        tk.Label(names, text=f"PHIÊN BẢN v{APP_VERSION}", bg=C["sidebar"], fg=C["gold"],
                  font=theme.F(8, "bold")).pack(anchor="w")
         tk.Frame(side, bg=C["line2"], height=1).pack(fill="x", padx=18, pady=(0, 12))
 

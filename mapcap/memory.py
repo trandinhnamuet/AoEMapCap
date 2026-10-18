@@ -2,11 +2,13 @@
 import ctypes
 import ctypes.wintypes as wt
 import struct
+import time
 
 import psutil
 
 PROCESS_VM_READ = 0x0010
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+SYNCHRONIZE = 0x00100000
 
 GAME_EXE_PREFIXES = ("empiresx", "empires")
 
@@ -16,18 +18,51 @@ _k32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
 _k32.ReadProcessMemory.restype = wt.BOOL
 _k32.ReadProcessMemory.argtypes = [wt.HANDLE, wt.LPCVOID, wt.LPVOID, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
 _k32.CloseHandle.argtypes = [wt.HANDLE]
+_k32.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
+_k32.WaitForSingleObject.restype = wt.DWORD
+_u32 = ctypes.WinDLL("user32", use_last_error=True)
+_EnumProc = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
 
 
 class MemoryError_(Exception):
     pass
 
 
+def process_runs(p):
+    """Tiến trình còn ít nhất một luồng. Game crash thì Windows Error Reporting tạo một bản chụp (cùng tên
+    EMPIRESX.EXE, cha = game vừa crash, 0 luồng, giữ nguyên bộ nhớ lúc crash) để ghi dump; bản chụp có thể nằm đó hàng
+    giờ. Bám vào nó thì không bao giờ thấy vào trận và không thấy game thật mở sau đó (2026-10-18: mất 4 trận)."""
+    try:
+        if not isinstance(p, psutil.Process):
+            p = psutil.Process(p)
+        return p.num_threads() > 0
+    except psutil.Error:
+        return False
+
+
+def has_window(pid):
+    """pid có cửa sổ chính đang hiện (kể cả thu nhỏ) trên màn hình này."""
+    found = []
+
+    def cb(h, _):
+        if _u32.IsWindowVisible(h):
+            owner = wt.DWORD()
+            _u32.GetWindowThreadProcessId(h, ctypes.byref(owner))
+            if owner.value == pid:
+                found.append(h)
+                return False
+        return True
+    _u32.EnumWindows(_EnumProc(cb), 0)
+    return bool(found)
+
+
 def find_game_process(exclude=()):
-    """Trả về psutil.Process của game đang chạy, hoặc None. exclude: pid bỏ qua (exe không hỗ trợ)."""
+    """Trả về psutil.Process của game đang chạy, hoặc None. exclude: pid bỏ qua (exe không hỗ trợ / đã bỏ).
+    Bỏ qua bản chụp lỗi 0 luồng (process_runs)."""
     for p in psutil.process_iter(["name", "exe"]):
         name = (p.info["name"] or "").lower()
         if name.endswith(".exe") and name[:-4].startswith(GAME_EXE_PREFIXES):
-            if name.startswith("empires") and "setup" not in name and p.pid not in exclude:
+            if name.startswith("empires") and "setup" not in name and p.pid not in exclude and process_runs(p):
                 return p
     return None
 
@@ -53,7 +88,10 @@ def check_build(pm):
 class ProcessMemory:
     def __init__(self, pid):
         self.pid = pid
-        self.h = _k32.OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        self._next_thread_check = 0.0
+        self.h = _k32.OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, pid)
+        if not self.h:
+            self.h = _k32.OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not self.h:
             err = ctypes.get_last_error()
             raise MemoryError_(f"OpenProcess(pid={pid}) thất bại, mã lỗi Windows {err}. "
@@ -71,6 +109,15 @@ class ProcessMemory:
         self.close()
 
     def alive(self):
+        """Game còn chạy. Chỉ pid_exists là không đủ: chính handle này giữ cho tiến trình đã thoát vẫn "tồn tại", và bản
+        chụp lỗi 0 luồng không bao giờ thoát. Kiểm luồng mỗi 2 s (quét danh sách tiến trình ~1 ms)."""
+        if self.h and _k32.WaitForSingleObject(self.h, 0) == 0:      # WAIT_OBJECT_0: đã thoát
+            return False
+        now = time.monotonic()
+        if now >= self._next_thread_check:
+            self._next_thread_check = now + 2.0
+            if not process_runs(self.pid):
+                return False
         return psutil.pid_exists(self.pid)
 
     def read(self, addr, size):
