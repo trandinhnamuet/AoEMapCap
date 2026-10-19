@@ -116,8 +116,10 @@ async function stats(request, env, url) {
                 GROUP BY version ORDER BY value DESC LIMIT 10`).bind(from),
     db.prepare(`SELECT app AS name, COUNT(*) AS value FROM events WHERE ts >= ?1 AND ev = 'open'
                 GROUP BY app ORDER BY value DESC`).bind(from),
+    // GROUP BY biểu thức, không dùng bí danh "name": từ v7 bảng events có cột name (tên người chơi) và SQLite ưu tiên
+    // cột thật hơn bí danh -> từng gom theo tên người chơi, hiện "VN" nhiều dòng, một máy đếm nhiều lần
     db.prepare(`SELECT COALESCE(NULLIF(country, ''), '?') AS name, COUNT(DISTINCT install) AS value FROM events
-                WHERE ts >= ?1 GROUP BY name ORDER BY value DESC LIMIT 10`).bind(from),
+                WHERE ts >= ?1 GROUP BY COALESCE(NULLIF(country, ''), '?') ORDER BY value DESC LIMIT 10`).bind(from),
     db.prepare(`SELECT ev AS name, COUNT(*) AS value FROM events WHERE ts >= ?1 GROUP BY ev ORDER BY value DESC`).bind(from),
     db.prepare(`SELECT e.install AS install, SUM(e.ev = 'open') AS opens, SUM(e.ev = 'match') AS matches,
                        COUNT(DISTINCT e.ip) AS ipCount, i.last_ip AS lastIp, i.version AS version, i.app AS app,

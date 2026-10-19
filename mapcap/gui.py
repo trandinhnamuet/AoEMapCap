@@ -99,7 +99,7 @@ class ExportDialog:
 
 
 class App:
-    PAGES = (("matches", "", "Trận đã ghi", "Xem lại trận như replay Liên Minh Huyền Thoại, xuất video khi cần"),
+    PAGES = (("matches", "", "Trận đã ghi", "Xem lại trận: tua, đổi góc nhìn, xuất video khi cần"),
              ("settings", "", "Cài đặt", "Ghi trận, thư mục lưu, xuất video, thống kê sử dụng"),
              ("log", "", "Nhật ký", "Hoạt động của bộ ghi, xuất video và cập nhật"))
 

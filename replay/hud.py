@@ -593,7 +593,7 @@ class Hud:
         r = pygame.Rect(0, 0, w, h)
         r.center = (W // 2, H // 2)
         self.panel(surf, r, (8, 10, 14, 235), border=(120, 110, 80))
-        surf.blit(self.text("Phím tắt (như replay Liên Minh Huyền Thoại)", int(20 * u), WHITE, bold=True),
+        surf.blit(self.text("Phím tắt", int(20 * u), WHITE, bold=True),
                   (r.x + int(24 * u), r.y + int(14 * u)))
         y = r.y + int(52 * u)
         for k, d in zip(keys, descs):

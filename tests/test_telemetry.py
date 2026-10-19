@@ -201,6 +201,15 @@ def test_worker_local():
         assert d2["recentTotal"] == 3
         st, d3 = _get(base + "/api/stats?range=all&q=khongco", DEV_PW)
         assert d3["recentTotal"] == 0 and d3["summary"]["opens"] == 2, "tìm kiếm chỉ lọc bảng từng lượt"
+        # máy thứ hai, tên người chơi khác, cùng nước: vẫn một dòng quốc gia 2 máy (từng gom nhầm theo cột name:
+        # mỗi tên một dòng "VN", một máy đếm nhiều lần)
+        from mapcap.version import APP_VERSION
+        other = urllib.request.Request(base + "/v1/e", headers={"content-type": "application/json"}, data=json.dumps(
+            {"id": str(uuid.uuid4()), "app": "mapcap", "v": APP_VERSION, "ev": "open", "name": "TranNgocP"}).encode())
+        urllib.request.urlopen(other, timeout=10).read()
+        st, dc = _get(base + "/api/stats?range=today", DEV_PW)
+        assert len(dc["countries"]) == 1 and dc["countries"][0]["value"] == 2, dc["countries"]
+        assert {r["name"] for r in dc["players"]} == {"ChimSeDiNet", "TranNgocP"}, dc["players"]
         with urllib.request.urlopen(base + "/stats", timeout=10) as r:
             html = r.read().decode("utf-8")
         assert "Thống kê sử dụng AoE-MapCap" in html and "chart.umd.min.js" in html
