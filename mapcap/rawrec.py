@@ -89,6 +89,56 @@ UNIT_DT = np.dtype([("uid", "<i4"), ("def", "<i4"), ("owner", "<i2"), ("angle", 
                     ("rtype", "<i2"), ("ramount", "<f4")])     # rtype/ramount từ 2026-10-09 (file cũ: -1 / 0)
 
 
+AGE_TECHS = {101: 2, 102: 3, 103: 4}               # Tool / Bronze / Iron Age -> đời 2 / 3 / 4
+AGE_RESEARCH_MS = {101: 120_000, 102: 140_000, 103: 160_000}   # thời gian nghiên cứu (đo trên trận thật 18/10)
+
+
+class AgeTracker:
+    """Giờ game lúc kích (bắt đầu nghiên cứu) và lúc xong từng đời của mỗi người chơi.
+    Kích = lần đầu thấy công nghệ lên đời trong danh sách đang nghiên cứu, trừ số giây đã chạy (XArena gọi là
+    "kích đời 3"); không thấy lúc đang nghiên cứu (file cũ) thì suy từ lúc xong trừ thời gian nghiên cứu."""
+
+    def __init__(self):
+        self.click = {}              # (index, tech) -> ms
+        self.done = {}
+
+    def researching(self, t, idx, cur):
+        for tid, el in (cur or {}).items():
+            if tid in AGE_TECHS and (idx, tid) not in self.click:
+                self.click[(idx, tid)] = max(0, int(t - float(el) * 1000))
+
+    def finished(self, t, idx, techs):
+        for tid in AGE_TECHS:
+            if techs and tid in techs and (idx, tid) not in self.done:
+                self.done[(idx, tid)] = int(t)
+
+    def result(self):
+        """{"index": {"2": {"click": ms, "done": ms hoặc None}, ...}} (khoá chuỗi: lưu JSON được)."""
+        out = {}
+        for (idx, tid) in set(self.click) | set(self.done):
+            done = self.done.get((idx, tid))
+            click = self.click.get((idx, tid))
+            if click is None and done is not None:
+                click = max(0, done - AGE_RESEARCH_MS[tid])
+            out.setdefault(str(idx), {})[str(AGE_TECHS[tid])] = {"click": click, "done": done}
+        return out
+
+
+def scan_ages(path):
+    """Quét cả file (file ghi trước khi 'E' có "ages"): ~5 s cho trận 40 phút."""
+    tr = AgeTracker()
+    for tag, pl in iter_records(path):
+        if tag != b"F":
+            continue
+        t = pl.get("t", 0)
+        for idx, cur in (pl.get("prs") or {}).items():
+            tr.researching(t, int(idx), cur)
+        for idx, (_attrs, techs) in (pl.get("pstate") or {}).items():
+            if techs is not None:
+                tr.finished(t, int(idx), techs)
+    return tr.result()
+
+
 def _pack(tag, payload):
     data = zlib.compress(pickle.dumps(payload, protocol=4), 6)
     return tag + struct.pack("<I", len(data)) + data
@@ -121,6 +171,7 @@ class RawWriter:
         self.prev_statics = None     # mảng vật thể tĩnh đã ghi (để chỉ ghi phần đổi)
         self.static_full_at = 0.0
         self.pstat_log = []          # [(t, index, trạng thái, đầu hàng)] — ghi vào 'E'
+        self.ages = AgeTracker()     # kích / lên đời -> 'E'["ages"] (bảng trận mở rộng)
         self.raw_bytes = 0           # cỡ pickle trước khi nén (thống kê)
 
     def _def_id(self, d: UnitDefInfo, new_defs):
@@ -280,6 +331,8 @@ class RawWriter:
             if self.prev_pstate.get(p.index) != cur:
                 pstate[p.index] = cur
                 self.prev_pstate[p.index] = cur
+                if p.techs is not None:
+                    self.ages.finished(snap.time_ms, p.index, p.techs)
         rec = {"t": snap.time_ms, "at": snap.taken_at, "full_vis": full_vis, "vis": vis_delta,
                "full_units": full_units, "units": changed, "removed": removed}
         if pstate:
@@ -290,6 +343,7 @@ class RawWriter:
             if self.prev_prs.get(p.index, {}) != cur:
                 prs[p.index] = cur
                 self.prev_prs[p.index] = cur
+                self.ages.researching(snap.time_ms, p.index, cur)
         if prs:
             rec["prs"] = prs                           # công nghệ đang nghiên cứu -> giây đã chạy
         # bảng lệnh công trình (2026-10-13): công nghệ có thể nghiên cứu + unit đã mở, chỉ khi đổi
@@ -340,7 +394,8 @@ class RawWriter:
                 pos = self.bytes
                 self._write(b"E", {"t": self.last_t, "at": self.last_at, "frames": self.frames,
                                    "status": dict(self.prev_pstat), "game_over": self.prev_go, "reason": reason,
-                                   "closed": time.time(), "pstat_log": list(self.pstat_log)})
+                                   "closed": time.time(), "pstat_log": list(self.pstat_log),
+                                   "ages": self.ages.result()})
                 self.f.write(END_MAGIC + struct.pack("<Q", pos))
                 self.bytes += 16
         except Exception:  # noqa: BLE001
@@ -580,6 +635,11 @@ def recompress(src, dst, progress=None):
                     if prev_ps.get(idx) != tuple(v):
                         prev_ps[idx] = tuple(v)
                         w.pstat_log.append((p.get("t", 0), idx) + tuple(v))
+                for idx, cur in (p.get("prs") or {}).items():
+                    w.ages.researching(p.get("t", 0), int(idx), cur)
+                for idx, (_attrs, techs) in (p.get("pstate") or {}).items():
+                    if techs is not None:
+                        w.ages.finished(p.get("t", 0), int(idx), techs)
                 w._write(b"F", p)
                 w.frames += 1
                 n += 1
@@ -592,6 +652,7 @@ def recompress(src, dst, progress=None):
         w._flush_block()
         if end is not None:
             end.setdefault("pstat_log", list(w.pstat_log))
+            end.setdefault("ages", w.ages.result())
             pos = w.bytes
             w._write(b"E", end)
             w.f.write(END_MAGIC + struct.pack("<Q", pos))

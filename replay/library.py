@@ -9,7 +9,7 @@ import os
 import struct
 import time
 
-from mapcap.rawrec import FORMAT_VERSION, MAGIC, file_version, read_end, read_header
+from mapcap.rawrec import FORMAT_VERSION, MAGIC, file_version, read_end, read_header, scan_ages
 from mapcap import safeload
 
 CACHE_NAME = "_matches.json"
@@ -315,6 +315,20 @@ class Library:
         except OSError:
             pass
         return info
+
+    def ages(self, path):
+        """Kích / lên đời từng người chơi (rawrec.AgeTracker.result): file mới lấy ngay ở 'E', file cũ quét một lần
+        (~5 s) rồi đệm cạnh thông tin trận. Gọi ở luồng nền."""
+        name = os.path.basename(path)
+        e = self.cache.get(name)
+        if e is not None and self.cached(path) is not None and "ages" in e:
+            return e["ages"]
+        end = read_end(path)
+        ages = end["ages"] if end is not None and "ages" in end else scan_ages(path)
+        if e is not None and self.cached(path) is not None:
+            e["ages"] = ages
+            self._dirty = True
+        return ages
 
     def save(self):
         if not self._dirty:

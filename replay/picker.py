@@ -24,6 +24,14 @@ COLUMNS = (
     ("dur", "Thời lượng", 80, "e"),
 )
 RESULT_TAG = {"Thắng": "win", "Thua": "lose", "Đầu hàng": "lose", "Cần bản mới": "muted"}
+SPACER = "::sp"                  # iid dòng trống giữ chỗ cho khung mở rộng: "<đường dẫn>::sp<k>"
+
+
+def fmt_clock(ms):
+    if ms is None:
+        return "—"
+    s = max(0, int(ms) // 1000)
+    return f"{s // 60}:{s % 60:02d}"
 
 
 class MatchTable(ttk.Frame):
@@ -37,6 +45,10 @@ class MatchTable(ttk.Frame):
         self.infos = {}
         self.sort_key = ("date", True)
         self._gen = 0
+        self.expanded = {}           # đường dẫn trận đang mở rộng (chuột phải) -> {spacers, box, inner, rowh}
+        self._head_h = None
+        self._ages = {}              # đường dẫn -> kích / lên đời (đọc ở luồng nền, đệm trong _matches.json)
+        self._ages_busy = set()
         self.folder = folder
         self._build(show_dir_button)
         self.set_folder(folder)
@@ -70,7 +82,10 @@ class MatchTable(ttk.Frame):
         if dark:
             self.tree.tag_configure("odd", background=theme.C["bg2"])    # dòng xen kẽ
         sb = ttk.Scrollbar(mid, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.configure(yscrollcommand=lambda a, b: (sb.set(a, b), self._place_expand()))
+        self.tree.tag_configure("spacer", background=theme.C["panel"] if dark else "#f4f4f4")
+        self.tree.bind("<Button-3>", self._on_right_click)
+        self.tree.bind("<Configure>", lambda e: self.after_idle(self._place_expand), add="+")
         self.tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
         self.tree.bind("<Double-1>", lambda e: self.open_selected())
@@ -133,8 +148,15 @@ class MatchTable(ttk.Frame):
                 self.infos[p] = info
                 changed = True
                 self.var_status.set(f"Đang đọc {k}/{n} trận…")
+            elif msg[0] == "ages":
+                _, _, p, ages = msg
+                self._ages[p] = ages
+                self._ages_busy.discard(p)
+                if p in self.expanded:
+                    self._expand(p)
             elif msg[0] == "done":
-                self.var_status.set(f"{msg[2]} trận. Bấm đúp hoặc Enter để xem; bấm tiêu đề cột để sắp xếp."
+                self.var_status.set(f"{msg[2]} trận. Bấm đúp hoặc Enter để xem; chuột phải để xem 2 đội; "
+                                    "bấm tiêu đề cột để sắp xếp."
                                     if msg[2] else "Chưa có trận nào được ghi.")
         if changed:
             self._refill()
@@ -154,8 +176,9 @@ class MatchTable(ttk.Frame):
         return vals, RESULT_TAG.get(info["result"], "")
 
     def _refill(self):
-        sel = self.tree.selection()
-        sel_path = sel[0] if sel else None
+        sel_path = self.selected_path()
+        keep = list(self.expanded)
+        self._collapse()
         self.tree.delete(*self.tree.get_children())
         find = self.var_find.get().strip().lower()
         key, desc = self.sort_key
@@ -185,6 +208,9 @@ class MatchTable(ttk.Frame):
             first = self.tree.get_children()[0]
             self.tree.selection_set(first)
             self.tree.focus(first)
+        for k in keep:
+            if self.tree.exists(k):
+                self._expand(k, scroll=False)
         self._show_detail()
 
     def _sort(self, key):
@@ -207,7 +233,173 @@ class MatchTable(ttk.Frame):
 
     def selected_path(self):
         sel = self.tree.selection()
-        return sel[0] if sel else None
+        if not sel:
+            return None
+        return sel[0].split(SPACER)[0]
+
+    # ---- mở rộng (chuột phải): 2 đội, quân, lúc kích đời; mở được nhiều trận cùng lúc ----------
+    def _on_right_click(self, e):
+        row = self.tree.identify_row(e.y)
+        if not row:
+            return
+        path = row.split(SPACER)[0]
+        self.tree.selection_set(path)
+        self.tree.focus(path)
+        self.toggle_expand(path)
+
+    def toggle_expand(self, path=None):
+        path = path or self.selected_path()
+        if path:
+            self._collapse(path) if path in self.expanded else self._expand(path)
+
+    def _collapse(self, path=None):
+        """Thu gọn một trận (path) hoặc tất cả (None)."""
+        for p in ([path] if path else list(self.expanded)):
+            st = self.expanded.pop(p, None)
+            if st is None:
+                continue
+            for sp in st["spacers"]:
+                if self.tree.exists(sp):
+                    self.tree.delete(sp)
+            st["box"].destroy()
+
+    def _load_ages(self, path):
+        if path in self._ages or path in self._ages_busy:
+            return
+        self._ages_busy.add(path)
+        gen = self._gen
+
+        def job():
+            try:
+                lib = Library(os.path.dirname(path))
+                ages = lib.ages(path)
+                lib.save()
+            except Exception:  # noqa: BLE001  - file hỏng / đang ghi: chỉ không có giờ lên đời
+                ages = {}
+            self.q.put(("ages", gen, path, ages))
+        threading.Thread(target=job, daemon=True).start()
+
+    def _expand(self, path, scroll=True):
+        """Mở rộng ngay dưới dòng: chèn dòng trống giữ chỗ rồi đặt khung nội dung đè lên đúng chỗ đó."""
+        info = self.infos.get(path)
+        if not info or "error" in info or not self.tree.exists(path):
+            return
+        self._collapse(path)
+        ages = self._ages.get(path)
+        if ages is None:
+            self._load_ages(path)
+        box = tk.Frame(self.tree, bg=self._C("line"), highlightthickness=0)
+        inner = tk.Frame(box, bg=self._C("panel"))
+        self._build_expand(inner, info, ages)
+        inner.update_idletasks()
+        bb = self.tree.bbox(path)
+        rowh = bb[3] if bb else 30
+        n = max(1, -(-(inner.winfo_reqheight() + 1) // rowh))
+        spacers = []
+        for k in range(n):
+            iid = f"{path}{SPACER}{k}"
+            self.tree.insert(path, "end", iid=iid, values=("",) * len(COLUMNS), tags=("spacer",))
+            spacers.append(iid)
+        self.tree.item(path, open=True)
+        self.expanded[path] = {"spacers": spacers, "box": box, "inner": inner, "rowh": rowh}
+        for w in [inner] + self._descendants(inner):
+            w.bind("<Button-3>", lambda e, p=path: self.toggle_expand(p))
+            w.bind("<Double-1>", lambda e, p=path: self.on_open and self.on_open(p))
+        if scroll:
+            self.tree.see(spacers[-1])
+            self.tree.see(path)
+        self.after_idle(self._place_expand)
+
+    @staticmethod
+    def _descendants(w):
+        out = []
+        for c in w.winfo_children():
+            out.append(c)
+            out.extend(MatchTable._descendants(c))
+        return out
+
+    @staticmethod
+    def _C(key):
+        from mapcap import theme
+        return theme.C[key]
+
+    def _heading_height(self):
+        """Đáy hàng tiêu đề cột: bỏ qua viền trên rồi đi hết vùng "heading" (đo một lần)."""
+        if self._head_h is None:
+            y = 0
+            while y < 40 and self.tree.identify_region(30, y) != "heading":
+                y += 1
+            while y < 120 and self.tree.identify_region(30, y) == "heading":
+                y += 1
+            if y >= 120 or y < 5:
+                return 30
+            self._head_h = y
+        return self._head_h
+
+    def _place_expand(self):
+        """Đặt từng khung đè lên các dòng giữ chỗ của nó (gọi lại khi cuộn / đổi cỡ); phần lấn lên tiêu đề cột thì
+        cắt đi."""
+        for st in list(self.expanded.values()):
+            box, inner, spacers, rowh = st["box"], st["inner"], st["spacers"], st["rowh"]
+            try:
+                top = None
+                for k, sp in enumerate(spacers):
+                    bb = self.tree.bbox(sp)
+                    if bb:
+                        top = bb[1] - k * rowh
+                        break
+                if top is None:
+                    box.place_forget()
+                    continue
+                total = len(spacers) * rowh
+                y0 = max(top, self._heading_height())
+                y1 = min(top + total, self.tree.winfo_height())
+                if y1 <= y0:
+                    box.place_forget()
+                    continue
+                box.place(x=0, y=y0, relwidth=1, height=y1 - y0)
+                inner.place(x=0, y=top - y0, relwidth=1, height=total - 1)
+            except tk.TclError:
+                pass
+
+    def _build_expand(self, inner, info, ages):
+        """Hai đội cạnh nhau (2 đội một hàng): Người chơi / Quân / Kích đời 2 / 3 / 4; khung giãn đều theo số dòng."""
+        from mapcap import theme
+        C = theme.C
+        F = theme.F
+        bg2 = C["bg2"]
+        grid = tk.Frame(inner, bg=C["panel"])
+        grid.pack(fill="both", expand=True, padx=4, pady=1)
+        teams = {}
+        for pl in info.get("players", []):
+            teams.setdefault(pl.get("team", 0), []).append(pl)
+        rec_name = info.get("recorder")
+        for k, (_team, pls) in enumerate(sorted(teams.items())):
+            box = tk.Frame(grid, bg=bg2, highlightthickness=1, highlightbackground=C["line2"])
+            box.grid(row=k // 2, column=k % 2, sticky="nsew", padx=2, pady=1)
+            grid.columnconfigure(k % 2, weight=1, uniform="team")
+            grid.rowconfigure(k // 2, weight=1)
+            tb = tk.Frame(box, bg=bg2)
+            tb.pack(fill="x", expand=True, padx=8, pady=1)
+            heads = ("Người chơi", "Quân", "Kích 2", "Kích 3", "Kích 4")
+            for c, h in enumerate(heads):
+                tk.Label(tb, text=h, bg=bg2, fg=C["gold"] if c == 3 else C["dim"], font=F(8, "bold"), bd=0, pady=0,
+                         anchor="w" if c < 2 else "e").grid(row=0, column=c, sticky="we", padx=(0, 10))
+            tb.columnconfigure(0, weight=1)
+            for r, pl in enumerate(pls, start=1):
+                a = (ages or {}).get(str(pl.get("index")), {})
+                me = pl.get("name") == rec_name
+                tk.Label(tb, text=pl.get("name", "?"), bg=bg2, fg=C["gold_hi"] if me else C["text"], bd=0, pady=0,
+                         font=F(9, "bold" if me else "normal"), anchor="w").grid(row=r, column=0, sticky="we",
+                                                                                 padx=(0, 10))
+                tk.Label(tb, text=pl.get("civ", ""), bg=bg2, fg=C["muted"], font=F(9), bd=0, pady=0, anchor="w").grid(
+                    row=r, column=1, sticky="we", padx=(0, 10))
+                for c, age in ((2, "2"), (3, "3"), (4, "4")):
+                    t = (a.get(age) or {}).get("click")
+                    txt = "…" if ages is None else fmt_clock(t)
+                    tk.Label(tb, text=txt, bg=bg2, fg=C["gold_hi"] if c == 3 and t is not None else
+                             (C["text"] if t is not None else C["dim"]), font=F(9, "bold" if c == 3 else "normal"),
+                             bd=0, pady=0, anchor="e").grid(row=r, column=c, sticky="we", padx=(0, 10))
 
     def open_selected(self):
         p = self.selected_path()
