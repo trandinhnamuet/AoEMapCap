@@ -19,6 +19,7 @@ from mapcap.rawrec import FORMAT_VERSION, MAGIC, NEWER_FORMAT_MSG, UNIT_DT, deco
 from mapcap import safeload
 
 KEY_EVERY = 125          # điểm mốc mỗi 125 mẫu (~5 s ở 25 mẫu/giây): tua tới bất kì đâu áp tối đa 124 mẫu
+SEEN_EVERY = 5                    # mẫu: đánh dấu công trình đội đã thấy (5 mẫu = 0,2 s)
 PAUSE_GAP = 1.0          # đồng hồ game đứng yên quá 1 s (game tạm dừng) thì không tính vào thời gian phát
 MAX_STEP = 0.5           # một bước giữa hai mẫu tính tối đa 0,5 s (bộ ghi có lúc khựng)
 
@@ -214,6 +215,17 @@ class ReplayData:
         self.players = self._make_players()
         from .library import teams_from_header
         self.teams = teams_from_header(self.header)
+        # công trình (type 80) mỗi đội đã thấy: uid -> mẫu đầu tiên thấy (dựng khi lập chỉ mục). Game không phải lúc
+        # nào cũng có doppelganger cho công trình đã thấy (ruộng: không bao giờ; nhà khác: khoảng một nửa, đo trận
+        # 23/10) -> trình xem vẽ công trình thật mờ trong sương mù nếu đội đã thấy nó.
+        self.seen = [dict() for _ in self.teams]
+        self._team_vm = []
+        for t in self.teams:
+            vm = 0
+            for i in t:
+                if 0 <= i < len(self.players):
+                    vm |= int(self.players[i].visible_mask)
+            self._team_vm.append(vm)
 
     # ---- đọc bản ghi -------------------------------------------------------------------
     def _record_at(self, pos):
@@ -286,6 +298,8 @@ class ReplayData:
                 st.apply(p, fi)
                 if fi % KEY_EVERY == 0:
                     self.keys[fi] = st.snapshot()
+                if fi % SEEN_EVERY == 0:
+                    self._mark_seen(st, fi)
                 if fi:
                     dr = min(max(p["at"] - self.f_at[-1], 0.0), MAX_STEP)
                     if p["t"] == self.f_t[-1]:
@@ -322,6 +336,31 @@ class ReplayData:
                 time.sleep(0)                        # nhường GIL cho luồng vẽ
         self.final_tech_times = {k: dict(v) for k, v in st.tech_times.items()}
         self.index_seconds = time.time() - t0
+
+    def _mark_seen(self, st, fi):
+        """Công trình nằm trên ô đang nhìn thấy của từng đội: ghi mẫu đầu tiên thấy."""
+        if st.vis is None or not any(self._team_vm):
+            return
+        U = st.arr[st.valid]
+        if not len(U):
+            return
+        _v, defs = self.def_arrays()
+        n = defs["n"]
+        d = U["def"]
+        ut = np.where((d >= 0) & (d < n), defs["utype"][np.clip(d, 0, n - 1)], -1)
+        B = U[(ut == 80) & (U["owner"] > 0) & (U["kind"] != 25)]
+        if not len(B):
+            return
+        tx = np.clip(np.floor(B["x"]).astype(np.int32), 0, self.map_w - 1)
+        ty = np.clip(np.floor(B["y"]).astype(np.int32), 0, self.map_h - 1)
+        bits = st.vis[ty, tx]
+        for k, vm in enumerate(self._team_vm):
+            hit = (bits & np.uint32(vm)) != 0
+            if hit.any():
+                seen = self.seen[k]
+                for uid in B["uid"][hit].tolist():
+                    if uid not in seen:
+                        seen[uid] = fi
 
     def _block(self, bi):
         """Nội dung khối 'B' thứ bi (giữ 6 khối gần nhất đã giải nén)."""

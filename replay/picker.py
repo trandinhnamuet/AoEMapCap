@@ -24,6 +24,7 @@ COLUMNS = (
     ("dur", "Thời lượng", 80, "e"),
 )
 RESULT_TAG = {"Thắng": "win", "Thua": "lose", "Đầu hàng": "lose", "Cần bản mới": "muted"}
+PREFETCH_AGES = 40               # số trận mới nhất được tính sẵn giờ kích đời ở nền (mở rộng hiện ngay)
 SPACER = "::sp"                  # iid dòng trống giữ chỗ cho khung mở rộng: "<đường dẫn>::sp<k>"
 
 
@@ -49,6 +50,8 @@ class MatchTable(ttk.Frame):
         self._head_h = None
         self._ages = {}              # đường dẫn -> kích / lên đời (đọc ở luồng nền, đệm trong _matches.json)
         self._ages_busy = set()
+        self.prefetch_ok = lambda: True  # giao diện chính: False khi đang ghi trận (không quét file nặng lúc chơi)
+        self._pfonts = None
         self.folder = folder
         self._build(show_dir_button)
         self.set_folder(folder)
@@ -88,7 +91,9 @@ class MatchTable(ttk.Frame):
         self.tree.bind("<Configure>", lambda e: self.after_idle(self._place_expand), add="+")
         self.tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
-        self.tree.bind("<Double-1>", lambda e: self.open_selected())
+        self.tree.bind("<Double-1>", self._on_double)
+        for ev in ("<<TreeviewOpen>>", "<<TreeviewClose>>"):    # mở / đóng dòng chỉ theo chuột phải
+            self.tree.bind(ev, lambda e: self.after_idle(self._sync_open))
         self.tree.bind("<Return>", lambda e: self.open_selected())
         self.tree.bind("<<TreeviewSelect>>", lambda e: self._show_detail())
         self.tree.bind("<Delete>", lambda e: self.delete_selected())
@@ -126,6 +131,29 @@ class MatchTable(ttk.Frame):
             self.q.put(("info", gen, os.path.normpath(p), lib.info(p), i + 1, len(files)))
         lib.save()
         self.q.put(("done", gen, len(files)))
+        # tính sẵn giờ kích đời các trận mới nhất (file cũ chưa có trong 'E' phải quét cả file, 2-6 s mỗi trận):
+        # đệm vào _matches.json nên chỉ quét một lần; tạm dừng khi đang ghi trận
+        for p in files[:PREFETCH_AGES]:
+            np_ = os.path.normpath(p)
+            if np_ in self._ages or np_ in self._ages_busy:
+                continue
+            try:
+                if time.time() - os.path.getmtime(p) < 60:
+                    continue                          # trận đang ghi / vừa ghi xong
+            except OSError:
+                continue
+            while not self.prefetch_ok():
+                if gen != self._gen:
+                    return
+                time.sleep(2)
+            if gen != self._gen:
+                return
+            try:
+                ages = lib.ages(p)
+                lib.save()
+            except Exception:  # noqa: BLE001
+                continue
+            self.q.put(("ages", gen, np_, ages))
 
     def _poll(self):
         changed = False
@@ -153,7 +181,7 @@ class MatchTable(ttk.Frame):
                 self._ages[p] = ages
                 self._ages_busy.discard(p)
                 if p in self.expanded:
-                    self._expand(p)
+                    self._draw_panel(p)
             elif msg[0] == "done":
                 self.var_status.set(f"{msg[2]} trận. Bấm đúp hoặc Enter để xem; chuột phải để xem 2 đội; "
                                     "bấm tiêu đề cột để sắp xếp."
@@ -280,7 +308,7 @@ class MatchTable(ttk.Frame):
         threading.Thread(target=job, daemon=True).start()
 
     def _expand(self, path, scroll=True):
-        """Mở rộng ngay dưới dòng: chèn dòng trống giữ chỗ rồi đặt khung nội dung đè lên đúng chỗ đó."""
+        """Mở rộng ngay dưới dòng: chèn dòng trống giữ chỗ rồi đặt khung (một Canvas) đè lên đúng chỗ đó."""
         info = self.infos.get(path)
         if not info or "error" in info or not self.tree.exists(path):
             return
@@ -288,27 +316,50 @@ class MatchTable(ttk.Frame):
         ages = self._ages.get(path)
         if ages is None:
             self._load_ages(path)
-        box = tk.Frame(self.tree, bg=self._C("line"), highlightthickness=0)
-        inner = tk.Frame(box, bg=self._C("panel"))
-        self._build_expand(inner, info, ages)
-        inner.update_idletasks()
+        teams, row_h = self._panel_layout(info)
+        box = tk.Frame(self.tree, bg=self._C("line"), highlightthickness=0, bd=0)
+        cv = tk.Canvas(box, bg=self._C("panel"), highlightthickness=0, bd=0)
         bb = self.tree.bbox(path)
         rowh = bb[3] if bb else 30
-        n = max(1, -(-(inner.winfo_reqheight() + 1) // rowh))
+        n = max(1, -(-(sum(row_h) + 3) // rowh))
         spacers = []
         for k in range(n):
             iid = f"{path}{SPACER}{k}"
             self.tree.insert(path, "end", iid=iid, values=("",) * len(COLUMNS), tags=("spacer",))
             spacers.append(iid)
         self.tree.item(path, open=True)
-        self.expanded[path] = {"spacers": spacers, "box": box, "inner": inner, "rowh": rowh}
-        for w in [inner] + self._descendants(inner):
+        self.expanded[path] = {"spacers": spacers, "box": box, "inner": cv, "rowh": rowh, "info": info,
+                               "teams": teams, "row_h": row_h, "geom": None, "drawn": None}
+        cv.bind("<Configure>", lambda e, p=path: self._draw_panel(p))
+        for w in (box, cv):
             w.bind("<Button-3>", lambda e, p=path: self.toggle_expand(p))
-            w.bind("<Double-1>", lambda e, p=path: self.on_open and self.on_open(p))
+            w.bind("<Double-1>", lambda e, p=path: (self.on_open and self.on_open(p), "break")[1])
+            w.bind("<MouseWheel>", self._wheel)      # chuột trên khung mở rộng: vẫn cuộn bảng (như Treeview)
         if scroll:
             self.tree.see(spacers[-1])
             self.tree.see(path)
         self.after_idle(self._place_expand)
+
+    def _on_double(self, e):
+        """Bấm đúp: chỉ mở replay. "break" chặn hành vi sẵn của Treeview (bấm đúp = mở / đóng dòng con), trước đây
+        làm dòng vừa mở replay vừa bung / gập."""
+        if self.tree.identify_region(e.x, e.y) in ("cell", "tree"):
+            self.open_selected()
+        return "break"
+
+    def _sync_open(self):
+        """Trạng thái mở của dòng luôn theo khung mở rộng (phím mũi tên / bấm đúp không được bung / gập riêng)."""
+        for p in self.tree.get_children():
+            want = p in self.expanded
+            if bool(self.tree.item(p, "open")) != want:
+                self.tree.item(p, open=want)
+        self.after_idle(self._place_expand)
+
+    def _wheel(self, e):
+        """Bánh xe chuột trên khung mở rộng (widget con riêng, Treeview không nhận): cuộn bảng đúng như Treeview."""
+        if e.delta:
+            self.tree.yview_scroll(int(-e.delta / 120) or (-1 if e.delta > 0 else 1), "units")
+        return "break"
 
     @staticmethod
     def _descendants(w):
@@ -338,7 +389,7 @@ class MatchTable(ttk.Frame):
 
     def _place_expand(self):
         """Đặt từng khung đè lên các dòng giữ chỗ của nó (gọi lại khi cuộn / đổi cỡ); phần lấn lên tiêu đề cột thì
-        cắt đi."""
+        cắt đi. Chỉ gọi place khi vị trí đổi."""
         for st in list(self.expanded.values()):
             box, inner, spacers, rowh = st["box"], st["inner"], st["spacers"], st["rowh"]
             try:
@@ -348,58 +399,106 @@ class MatchTable(ttk.Frame):
                     if bb:
                         top = bb[1] - k * rowh
                         break
-                if top is None:
+                geom = None
+                if top is not None:
+                    total = len(spacers) * rowh
+                    y0 = max(top, self._heading_height())
+                    y1 = min(top + total, self.tree.winfo_height())
+                    if y1 > y0:
+                        geom = (y0, y1 - y0, top - y0, total - 1)
+                if geom == st["geom"]:
+                    continue
+                st["geom"] = geom
+                if geom is None:
                     box.place_forget()
                     continue
-                total = len(spacers) * rowh
-                y0 = max(top, self._heading_height())
-                y1 = min(top + total, self.tree.winfo_height())
-                if y1 <= y0:
-                    box.place_forget()
-                    continue
-                box.place(x=0, y=y0, relwidth=1, height=y1 - y0)
-                inner.place(x=0, y=top - y0, relwidth=1, height=total - 1)
+                box.place(x=0, y=geom[0], relwidth=1, height=geom[1])
+                inner.place(x=0, y=geom[2], relwidth=1, height=geom[3])
             except tk.TclError:
                 pass
 
-    def _build_expand(self, inner, info, ages):
-        """Hai đội cạnh nhau (2 đội một hàng): Người chơi / Quân / Kích đời 2 / 3 / 4; khung giãn đều theo số dòng."""
-        from mapcap import theme
-        C = theme.C
-        F = theme.F
-        bg2 = C["bg2"]
-        grid = tk.Frame(inner, bg=C["panel"])
-        grid.pack(fill="both", expand=True, padx=4, pady=1)
+    def _fonts(self):
+        if self._pfonts is None:
+            from tkinter import font as tkfont
+
+            from mapcap import theme
+            F = theme.F
+            self._pfonts = {"head": tkfont.Font(font=F(8, "bold")), "txt": tkfont.Font(font=F(9)),
+                            "bold": tkfont.Font(font=F(9, "bold"))}
+        return self._pfonts
+
+    def _panel_layout(self, info):
+        """Đội (đã sắp) và chiều cao từng hàng ô đội (2 đội một hàng)."""
         teams = {}
         for pl in info.get("players", []):
             teams.setdefault(pl.get("team", 0), []).append(pl)
-        rec_name = info.get("recorder")
-        for k, (_team, pls) in enumerate(sorted(teams.items())):
-            box = tk.Frame(grid, bg=bg2, highlightthickness=1, highlightbackground=C["line2"])
-            box.grid(row=k // 2, column=k % 2, sticky="nsew", padx=2, pady=1)
-            grid.columnconfigure(k % 2, weight=1, uniform="team")
-            grid.rowconfigure(k // 2, weight=1)
-            tb = tk.Frame(box, bg=bg2)
-            tb.pack(fill="x", expand=True, padx=8, pady=1)
-            heads = ("Người chơi", "Quân", "Kích 2", "Kích 3", "Kích 4")
-            for c, h in enumerate(heads):
-                tk.Label(tb, text=h, bg=bg2, fg=C["gold"] if c == 3 else C["dim"], font=F(8, "bold"), bd=0, pady=0,
-                         anchor="w" if c < 2 else "e").grid(row=0, column=c, sticky="we", padx=(0, 10))
-            tb.columnconfigure(0, weight=1)
-            for r, pl in enumerate(pls, start=1):
-                a = (ages or {}).get(str(pl.get("index")), {})
-                me = pl.get("name") == rec_name
-                tk.Label(tb, text=pl.get("name", "?"), bg=bg2, fg=C["gold_hi"] if me else C["text"], bd=0, pady=0,
-                         font=F(9, "bold" if me else "normal"), anchor="w").grid(row=r, column=0, sticky="we",
-                                                                                 padx=(0, 10))
-                tk.Label(tb, text=pl.get("civ", ""), bg=bg2, fg=C["muted"], font=F(9), bd=0, pady=0, anchor="w").grid(
-                    row=r, column=1, sticky="we", padx=(0, 10))
-                for c, age in ((2, "2"), (3, "3"), (4, "4")):
-                    t = (a.get(age) or {}).get("click")
-                    txt = "…" if ages is None else fmt_clock(t)
-                    tk.Label(tb, text=txt, bg=bg2, fg=C["gold_hi"] if c == 3 and t is not None else
-                             (C["text"] if t is not None else C["dim"]), font=F(9, "bold" if c == 3 else "normal"),
-                             bd=0, pady=0, anchor="e").grid(row=r, column=c, sticky="we", padx=(0, 10))
+        teams = [pls for _t, pls in sorted(teams.items())]
+        f = self._fonts()
+        head, lh = f["head"].metrics("linespace"), f["txt"].metrics("linespace")
+        row_h = []
+        for r in range(0, len(teams), 2):
+            n = max(len(p) for p in teams[r:r + 2])
+            row_h.append(head + n * lh + 6)
+        return teams, row_h or [head + 6]
+
+    def _draw_panel(self, path):
+        """Vẽ khung mở rộng lên Canvas: mỗi đội một ô (2 ô một hàng), cột Người chơi / Quân / Kích 2 / 3 / 4."""
+        st = self.expanded.get(path)
+        if st is None:
+            return
+        cv = st["inner"]
+        W, H = cv.winfo_width(), cv.winfo_height()
+        ages = self._ages.get(path)
+        key = (W, H, id(ages))
+        if W < 50 or H < 10 or st["drawn"] == key:
+            return
+        st["drawn"] = key
+        from mapcap import theme
+        C = theme.C
+        f = self._fonts()
+        head_h, lh = f["head"].metrics("linespace"), f["txt"].metrics("linespace")
+        teams, row_h = st["teams"], st["row_h"]
+        extra = max(0, H - 2 - sum(row_h)) / max(len(row_h), 1)      # giãn đều cho kín các dòng giữ chỗ
+        ncol = 2 if len(teams) > 1 else 1
+        colw = (W - 8) / ncol
+        rec_name = st["info"].get("recorder")
+        tw = max(f["head"].measure("Kích 4"), f["bold"].measure("00:00")) + 12
+        cv.delete("all")
+        y_row = 1
+        for r, rh in enumerate(row_h):
+            h = rh + extra
+            for c in range(ncol):
+                k = r * 2 + c
+                if k >= len(teams):
+                    break
+                pls = teams[k]
+                x0, x1 = 4 + c * colw + 2, 4 + (c + 1) * colw - 2
+                y0, y1 = y_row + 1, y_row + h - 1
+                cv.create_rectangle(x0, y0, x1, y1, fill=C["bg2"], outline=C["line2"])
+                ty = y0 + (y1 - y0 - (head_h + len(pls) * lh)) / 2
+                rx = [x1 - 10 - 2 * tw, x1 - 10 - tw, x1 - 10]            # mép phải cột Kích 2 / 3 / 4
+                nx = x0 + 9
+                namew = max([f["head"].measure("Người chơi")] +
+                            [f["bold" if p.get("name") == rec_name else "txt"].measure(p.get("name", "?")) for p in pls])
+                cx = min(nx + namew + 14, rx[0] - tw - 60)
+                cv.create_text(nx, ty, text="Người chơi", anchor="nw", fill=C["dim"], font=f["head"])
+                cv.create_text(cx, ty, text="Quân", anchor="nw", fill=C["dim"], font=f["head"])
+                for j, h_ in enumerate(("Kích 2", "Kích 3", "Kích 4")):
+                    cv.create_text(rx[j], ty, text=h_, anchor="ne", fill=C["gold"] if j == 1 else C["dim"],
+                                   font=f["head"])
+                for i, pl in enumerate(pls):
+                    y = ty + head_h + i * lh
+                    me = pl.get("name") == rec_name
+                    cv.create_text(nx, y, text=pl.get("name", "?"), anchor="nw", fill=C["gold_hi"] if me else C["text"],
+                                   font=f["bold" if me else "txt"])
+                    cv.create_text(cx, y, text=pl.get("civ", ""), anchor="nw", fill=C["muted"], font=f["txt"])
+                    a = (ages or {}).get(str(pl.get("index")), {})
+                    for j, age in enumerate(("2", "3", "4")):
+                        t = (a.get(age) or {}).get("click")
+                        txt = "…" if ages is None else fmt_clock(t)
+                        col = C["gold_hi"] if j == 1 and t is not None else (C["text"] if t is not None else C["dim"])
+                        cv.create_text(rx[j], y, text=txt, anchor="ne", fill=col, font=f["bold" if j == 1 else "txt"])
+            y_row += h
 
     def open_selected(self):
         p = self.selected_path()

@@ -494,18 +494,21 @@ class Viewer:
             else:
                 vT = vis[ty, tx]
                 eT = exp[ty, tx]
+                seen = self._seen_mask(U, ut, self.persp, st.frame)
                 if self.persp == self.rec_team:
-                    # bản ghi nhớ sương mù của game (doppelganger): vẽ thay vật thể thật ở ô đó
+                    # bản ghi nhớ sương mù của game (doppelganger): vẽ thay vật thể thật ở ô đó; công trình đội đã
+                    # thấy mà game không có doppel (ruộng, khoảng nửa số nhà) thì vẽ công trình thật mờ
                     dop = k25 & (ut != 25) & ~vT & inside
                     D = np.zeros(V.shape, bool)
                     D[ty[dop], tx[dop]] = True
-                    normal = ~k25 & (vT | (eT & fogvis & ~D[ty, tx]))
+                    normal = ~k25 & (vT | (eT & (fogvis | seen) & ~D[ty, tx]))
                     keep &= dop | normal
                 else:
-                    # không có bản ghi nhớ của đội này: công trình trong vùng đã khám phá vẽ mờ (gần đúng)
-                    keep &= ~k25 & (vT | (eT & (fogvis | (ut == 80))))
+                    # đội khác không có bản ghi nhớ của game: công trình đội đó đã thấy, trong vùng đã khám phá
+                    keep &= ~k25 & (vT | (eT & (fogvis | seen)))
                 bright = np.where(vT & ~k25, 1.0, FOG_DIM).astype(np.float32)
             U, bright, ut = U[keep], bright[keep], ut[keep]
+            U = self._doppel_sprites(U, st.units())
             order = w.depth_order(U)
             U, bright, ut = U[order], bright[order], ut[order]
         else:
@@ -530,6 +533,46 @@ class Viewer:
             self.gpu.set_dots(np.stack([ax, ay], 1), half, c)
         else:
             self.gpu.set_dots(np.zeros((0, 2), np.float32), np.zeros(0, np.float32), np.zeros((0, 4), np.float32))
+
+    def _seen_mask(self, U, ut, k, frame):
+        """Công trình đội k đã thấy tới mẫu frame (ReplayData.seen, dựng khi lập chỉ mục)."""
+        out = np.zeros(len(U), bool)
+        seen = self.data.seen[k] if 0 <= k < len(self.data.seen) else None
+        if not seen:
+            return out
+        idx = np.nonzero(ut == 80)[0]
+        if len(idx):
+            far = 1 << 60
+            out[idx] = [seen.get(u, far) <= frame for u in U["uid"][idx].tolist()]
+        return out
+
+    def _doppel_sprites(self, U, Uall):
+        """Doppelganger không có sprite trong bản ghi (gid -1) -> sprite của công trình thật cùng def ở cùng ô, không
+        có thì của công trình cùng def gần nhất đã thấy. Def là của từng người chơi nên kiến trúc đúng nền văn minh
+        (bảng unit trong empires.dat giống nhau mọi civ: game tự đổi kiến trúc, trước đây vẽ theo một civ cố định)."""
+        need = (U["kind"] == 25) & (U["gid"] < 0)
+        if not need.any():
+            return U
+        mem = self.__dict__.setdefault("_dop_gid", {})          # def -> (gid, frame) gần nhất
+        R = Uall[(Uall["kind"] != 25) & (Uall["gid"] >= 0)]
+        at = {}
+        if len(R):
+            _, defs = self.data.def_arrays()
+            d = R["def"]
+            ok = (d >= 0) & (d < defs["n"])
+            bld = ok & (defs["utype"][np.clip(d, 0, defs["n"] - 1)] == 80)
+            R = R[bld]
+            for dd, x, y, g, f in zip(R["def"].tolist(), R["x"].tolist(), R["y"].tolist(), R["gid"].tolist(),
+                                      R["frame"].tolist()):
+                at[(dd, int(x), int(y))] = (g, f)
+                mem[dd] = (g, f)
+        U = U.copy()
+        for i in np.nonzero(need)[0].tolist():
+            dd = int(U["def"][i])
+            gf = at.get((dd, int(U["x"][i]), int(U["y"][i]))) or mem.get(dd)
+            if gf is not None:
+                U["gid"][i], U["frame"][i] = gf
+        return U
 
     # ---- chọn unit ---------------------------------------------------------------------
     def _pick_in(self, inst, rows, wx, wy):

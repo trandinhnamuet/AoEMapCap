@@ -317,6 +317,7 @@ class App:
                           ("Nén trận cũ", self._compact_old)):
             ttk.Button(bot, text=text, command=cmd).pack(side="left", padx=(8, 0))
         self.table.is_busy = self._is_recording_path
+        self.table.prefetch_ok = lambda: self._mode_now() != "rec"   # không quét trận cũ ở nền khi đang ghi
         ttk.Label(bot, textvariable=self.table.var_status, style="Muted.TLabel").pack(side="right")
 
     def _build_settings(self):

@@ -44,11 +44,12 @@ assert fog_real == fog_empty, "công trình thật (fog_visible=0) không đư�
 assert fog_dop > fog_empty and fog_dop == fog_both, "doppel phải vẽ mờ trong sương mù, và chỉ vẽ một lần khi có cả vật thể thật"
 assert vis_dop == vis_empty, "doppel ở ô nhìn thấy không được vẽ"
 assert vis_real > vis_empty
-# dự phòng mô phỏng: tắt mặc định -> công trình biến mất khi ta không có doppel; bật -> giữ lại
+# không có doppel (game không phải lúc nào cũng tạo, ruộng thì không bao giờ): từ 23/10 mặc định giữ lại công trình
+# đã thấy (trước đây biến mất, người dùng báo lỗi); emulate_ghosts (file cũ) giữ như cũ
 vr2 = new_vr(); vr2.render(mk(True, True, False), overlay=False); a = px(vr2, vr2.render(mk(False, False, False), overlay=False))
 vr3 = new_vr(); vr3.emulate_ghosts = True; vr3.render(mk(True, True, False), overlay=False); b = px(vr3, vr3.render(mk(False, False, False), overlay=False))
-print(f"không doppel, nhà mất trong mù: mặc định {a} (đất mù {fog_empty}), mô phỏng {b}")
-assert a == fog_empty and b == fog_dop
+print(f"không doppel, nhà đã thấy trong mù: mặc định {a} (đất mù {fog_empty}, doppel {fog_dop}), mô phỏng {b}")
+assert a == b == fog_dop, "công trình đã thấy không được biến mất khi game không có doppel"
 s = vr.scale; X = int((enemy.x + enemy.y) * 32 * s); Y = int(((enemy.y - enemy.x) * 16 + vr.Y0_full) * s)
 img_dop.crop((X - 120, Y - 70, X + 120, Y + 50)).resize((1200, 600), Image.NEAREST).save(fr"{sp}\doppel_tc.png")
 print("OK")

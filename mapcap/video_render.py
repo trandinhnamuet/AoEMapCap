@@ -522,10 +522,19 @@ class VideoRenderer:
                     tx, ty = int(u.x), int(u.y)
                     if 0 <= tx < w and 0 <= ty < h and not visible[ty, tx]:
                         doppel_tiles.add((tx, ty))
-            if self.emulate_ghosts and not doppel_tiles:
-                for b in self._remember_buildings(snap, units, visible):
-                    ghost_uids.add(b.uid)
-                    items.append((b.y - b.x, b.x + b.y, b, True))
+            # công trình đã thấy mà game không có doppel ở ô đó (ruộng, khoảng nửa số nhà): vẽ bản đã nhớ
+            # (file cũ không có doppel nào thì đây là cách duy nhất, như emulate_ghosts trước đây)
+            for b in self._remember_buildings(snap, units, visible):
+                if (int(b.x), int(b.y)) in doppel_tiles:
+                    continue
+                ghost_uids.add(b.uid)
+                items.append((b.y - b.x, b.x + b.y, b, True))
+            # doppel không có sprite (gid -1): lấy sprite của công trình thật cùng def (đúng kiến trúc nền văn minh)
+            self._dop_gid = getattr(self, "_dop_gid", {})
+            for u in units:
+                if u.kind != 25 and u.udef.utype == 80 and getattr(u, "gid", -1) >= 0:
+                    self._dop_gid[(id(u.udef), int(u.x), int(u.y))] = (u.gid, getattr(u, "frame", -1))
+                    self._dop_gid[id(u.udef)] = (u.gid, getattr(u, "frame", -1))
         for u in units:
             d = u.udef
             tx, ty = int(u.x), int(u.y)
@@ -539,6 +548,12 @@ class VideoRenderer:
             if u.kind == 25:
                 if vis or not fog_aware or d.utype == 25:
                     continue                      # chỉ vẽ trong sương mù; def chưa gắn được gốc thì bỏ
+                if getattr(u, "gid", -1) < 0:
+                    gf = self._dop_gid.get((id(d), tx, ty)) or self._dop_gid.get(id(d))
+                    if gf is not None:
+                        import copy
+                        u = copy.copy(u)
+                        u.gid, u.frame = gf
                 items.append((u.y - u.x, u.x + u.y, u, True))
                 continue
             if not vis:
