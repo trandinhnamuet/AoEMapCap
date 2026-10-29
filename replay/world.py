@@ -351,15 +351,7 @@ class World:
             return sp
         cmds = self._key_cmds.get(key)
         if cmds is None:
-            if key & (1 << 62):
-                f = _unpack(_D_FIELDS, key & ((1 << 62) - 1))
-                cmds = self.resolver.commands(f["dat"], -1, -1, f["angle"], -1, -1, f["color"], -1, bool(f["dead"]),
-                                              0, 2, 1.0, 0)
-            else:
-                f = _unpack(_G_FIELDS, key)
-                cmds = self.resolver.commands(-1, f["gid"], f["frame"], f["angle"], f["gid2"], f["frame2"], f["color"],
-                                              f["stage"], False, 0, 2, 1.0, 0)
-            self._key_cmds[key] = cmds
+            cmds = self._key_cmds[key] = self.key_commands(key)
         slots = [self._slot(skey) for skey, _X, _Y in cmds]
         if any(sl is None for sl in slots):
             return None
@@ -385,20 +377,18 @@ class World:
                               np.array(P["dy"], np.float32))
         return self._piece_np
 
-    def anchors(self, U):
-        x, y, z = U["x"].astype(np.float32), U["y"].astype(np.float32), U["z"].astype(np.float32)
-        return (x + y) * (TILE_W // 2), (y - x) * (TILE_H // 2) - z * ELEV_H + self.Y0
+    def key_commands(self, key):
+        """Lệnh vẽ ((slp, khung, màu, lật), X, Y) của một khoá hình, tương đối so với điểm neo của unit."""
+        if key & (1 << 62):
+            f = _unpack(_D_FIELDS, key & ((1 << 62) - 1))
+            return self.resolver.commands(f["dat"], -1, -1, f["angle"], -1, -1, f["color"], -1, bool(f["dead"]),
+                                          0, 2, 1.0, 0)
+        f = _unpack(_G_FIELDS, key)
+        return self.resolver.commands(-1, f["gid"], f["frame"], f["angle"], f["gid2"], f["frame2"], f["color"],
+                                      f["stage"], False, 0, 2, 1.0, 0)
 
-    def instances(self, U, defs, bright, budget=None):
-        """U: mảng unit (đã lọc, đã sắp theo chiều sâu); bright: độ sáng từng unit (-1 = sương mù theo pixel).
-        budget: số giây tối đa giải mã sprite mới (None = không giới hạn). Khoá hình chưa kịp giải mã thì unit dùng
-        hình của lần dựng trước (theo uid), chưa từng vẽ thì tạm chưa hiện.
-        Trả về (slot, x0, y0, bright, unit_idx) cho từng mảnh sprite theo đúng thứ tự vẽ."""
-        self.deadline = None if budget is None else time.perf_counter() + budget
-        n = len(U)
-        if n == 0:
-            e = np.zeros(0, np.float32)
-            return np.zeros(0, np.int32), e, e, e, np.zeros(0, np.int64)
+    def unit_keys(self, U, defs):
+        """Khoá hình int64 của từng unit: đồ hoạ, khung, hướng, màu, giai đoạn xây hoặc đồ hoạ chết."""
         di = np.clip(U["def"], 0, defs["n"] - 1)
         utype = np.where(U["def"] < defs["n"], defs["utype"][di], -1)
         dat_id = defs["dat_id"][di]
@@ -416,7 +406,23 @@ class World:
         key = _pack(_G_FIELDS, {"gid": gid, "frame": U["frame"], "angle": U["angle"], "gid2": U["gid2"],
                                 "frame2": U["frame2"], "color": color, "stage": stage})
         key_d = _pack(_D_FIELDS, {"dat": dat_id, "angle": U["angle"], "color": color, "dead": dead}) | _NOG
-        key = np.where(has_g, key, key_d)
+        return np.where(has_g, key, key_d)
+
+    def anchors(self, U):
+        x, y, z = U["x"].astype(np.float32), U["y"].astype(np.float32), U["z"].astype(np.float32)
+        return (x + y) * (TILE_W // 2), (y - x) * (TILE_H // 2) - z * ELEV_H + self.Y0
+
+    def instances(self, U, defs, bright, budget=None):
+        """U: mảng unit (đã lọc, đã sắp theo chiều sâu); bright: độ sáng từng unit (-1 = sương mù theo pixel).
+        budget: số giây tối đa giải mã sprite mới (None = không giới hạn). Khoá hình chưa kịp giải mã thì unit dùng
+        hình của lần dựng trước (theo uid), chưa từng vẽ thì tạm chưa hiện.
+        Trả về (slot, x0, y0, bright, unit_idx) cho từng mảnh sprite theo đúng thứ tự vẽ."""
+        self.deadline = None if budget is None else time.perf_counter() + budget
+        n = len(U)
+        if n == 0:
+            e = np.zeros(0, np.float32)
+            return np.zeros(0, np.int32), e, e, e, np.zeros(0, np.int64)
+        key = self.unit_keys(U, defs)
         uk, inv = np.unique(key, return_inverse=True)
         starts = np.zeros(len(uk), np.int64)
         counts = np.zeros(len(uk), np.int64)

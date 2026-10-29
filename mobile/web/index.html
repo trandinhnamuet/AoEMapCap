@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0f1114">
+<title>AoE-MapCap</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<section id="setup" class="screen" hidden>
+  <header class="bar"><h1>AoE-MapCap</h1><span class="sub">Kết nối máy tính</span></header>
+  <form id="setup-form" class="setup">
+    <p>Trên máy tính chơi AoE, chạy máy chủ điện thoại rồi nhập địa chỉ nó in ra. Điện thoại và máy tính phải cùng Wi-Fi.</p>
+    <input id="pc-addr" placeholder="192.168.1.5:8765/abc123" autocapitalize="none" autocomplete="off"
+           autocorrect="off" spellcheck="false" inputmode="url">
+    <button type="submit" class="primary">Kết nối</button>
+    <div id="setup-msg" class="msg"></div>
+    <button type="button" id="setup-offline" class="link" hidden>Xem trận đã lưu trên điện thoại</button>
+  </form>
+</section>
+<section id="list" class="screen" hidden>
+  <header class="bar"><h1>AoE-MapCap</h1><span class="sub">Xem lại trận</span>
+    <button id="pc-btn" class="pc" aria-label="Máy tính" hidden>Máy tính</button></header>
+  <div id="list-note" class="note" hidden></div>
+  <div id="matches"></div>
+</section>
+<section id="viewer" class="screen" hidden>
+  <canvas></canvas>
+  <div class="v-top">
+    <button id="back" aria-label="Quay lại">‹</button>
+    <span class="v-time">00:00</span>
+    <div class="v-persp"></div>
+  </div>
+  <div class="v-bottom">
+    <button class="v-play">▶</button>
+    <div class="v-track"><div class="v-ages"></div><input class="v-seek" type="range" min="0" max="1000" value="0"></div>
+    <button class="v-speed">1x</button>
+  </div>
+  <div id="v-status" class="v-status" hidden></div>
+</section>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

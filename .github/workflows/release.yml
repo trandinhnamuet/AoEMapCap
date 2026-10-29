@@ -19,6 +19,8 @@ on:
     tags: ['v*']
     paths-ignore:
       - '**.md'
+      - 'mobile/**'                 # app Android: .github/workflows/mobile.yml
+      - '.github/workflows/mobile.yml'
   workflow_dispatch:
 
 concurrency:
