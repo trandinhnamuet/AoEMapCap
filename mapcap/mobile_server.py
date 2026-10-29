@@ -1,6 +1,7 @@
-"""Máy chủ tạm trong mạng nhà cho bản thử trình xem trên điện thoại: phục vụ trang mobile/web, danh sách trận,
+"""Máy chủ trong mạng nhà cho app / trình xem trên điện thoại: phục vụ trang mobile/web, danh sách trận,
 trận đã chuyển sang .aoeweb (chuyển lần đầu khi điện thoại mở) và gói hình game.
 
+App Windows bật / tắt bằng trang "Điện thoại" (PhoneServer, từ v14); chạy riêng để thử:
     python -m mapcap.mobile_server [--folder=Video\\Raw] [--game-dir=...] [--port=8765]
 
 Địa chỉ có một mã ngẫu nhiên (http://<ip máy>:8765/<mã>/) để máy khác trong mạng không đoán được. Gói hình là đồ hoạ
@@ -43,8 +44,10 @@ def lan_ip():
 class Exporter:
     """Hàng đợi chuyển trận (một luồng: chuyển tốn CPU, không chạy song song với nhau)."""
 
-    def __init__(self, folder, cache, game_dir, log):
+    def __init__(self, folder, cache, game_dir, log, busy=None):
         self.folder, self.cache, self.game_dir, self.log = folder, cache, game_dir, log
+        self.busy = busy or (lambda: False)      # đang ghi trận: hoãn chuyển (tốn CPU) tới khi hết trận
+        self.stopped = False
         os.makedirs(cache, exist_ok=True)
         self.q = queue.Queue()
         self.state = {}               # tên file -> {"progress", "error"}
@@ -66,15 +69,28 @@ class Exporter:
         with self.lock:
             st = self.state.get(name)
             if st is None or st.get("error"):
-                st = self.state[name] = {"progress": 0.0, "error": None}
+                st = self.state[name] = {"progress": 0.0, "error": None, "waiting": False}
                 self.q.put(name)
             return dict(st)
 
+    def stop(self):
+        self.stopped = True
+        self.q.put(None)
+
     def _run(self):
+        import time
         while True:
             name = self.q.get()
+            if name is None:
+                return
             st = self.state[name]
             try:
+                while self.busy() and not self.stopped:
+                    st["waiting"] = True
+                    time.sleep(3)
+                st["waiting"] = False
+                if self.stopped:
+                    return
                 if not self.ready(name):
                     export_match(os.path.join(self.folder, name), self.out_path(name), self.game_dir, log=self.log,
                                  progress=lambda f: st.__setitem__("progress", 0.1 + 0.85 * f))
@@ -159,7 +175,8 @@ def make_handler(token, folder, exporter, log):
                             return self._send(200, {"ready": True})
                         return self._file(exporter.out_path(name), "application/octet-stream")
                     st = exporter.request(name)
-                    return self._send(200, {"ready": False, "progress": st["progress"], "error": st["error"]})
+                    return self._send(200, {"ready": False, "progress": st["progress"], "error": st["error"],
+                                            "waiting": st.get("waiting", False)})
                 if rel == "api/sprites":
                     return self._file(exporter.sprites(), "application/octet-stream", cache=True)
                 rel = rel or "index.html"
@@ -220,14 +237,105 @@ def stable_token(cache):
     return t
 
 
-def serve(folder, game_dir, port=8765, token=None, log=print, cache=None, host="0.0.0.0"):
+class _Server(ThreadingHTTPServer):
+    """Cổng độc quyền: trên Windows SO_REUSEADDR (mặc định của HTTPServer) cho hai máy chủ cùng nghe một cổng."""
+    allow_reuse_address = False
+    daemon_threads = True
+
+    def server_bind(self):
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+def serve(folder, game_dir, port=8765, token=None, log=print, cache=None, host="0.0.0.0", busy=None):
     cache = cache or os.path.join(os.path.dirname(os.path.abspath(folder)), "Web")
     token = token or stable_token(cache)
-    exporter = Exporter(folder, cache, game_dir, log)
-    srv = ThreadingHTTPServer((host, port), make_handler(token, folder, exporter, log))
-    srv.daemon_threads = True
+    exporter = Exporter(folder, cache, game_dir, log, busy)
+    try:
+        srv = _Server((host, port), make_handler(token, folder, exporter, log))
+    except OSError:
+        exporter.stop()
+        raise
+    srv.exporter = exporter
     url = f"http://{lan_ip() if host == '0.0.0.0' else host}:{srv.server_address[1]}/{token}/"
     return srv, url
+
+
+FIREWALL_RULE = "AoE-MapCap (điện thoại, mạng nhà)"
+
+
+def allow_firewall(log=print):
+    """Exe (chạy quyền Admin) tự thêm luật tường lửa: chỉ máy cùng mạng (LocalSubnet) được vào, mọi loại mạng (Wi-Fi nhà
+    hay bị Windows đặt là "Công cộng"). Không có luật thì Windows chặn điện thoại hoặc hiện hộp hỏi. Chạy từ mã nguồn:
+    bỏ qua (python.exe dùng hộp hỏi của Windows)."""
+    if not getattr(sys, "frozen", False) or os.name != "nt":
+        return False
+    import subprocess
+    exe = sys.executable
+    nw = 0x08000000                                     # CREATE_NO_WINDOW
+    try:
+        cur = subprocess.run(["netsh", "advfirewall", "firewall", "show", "rule", f"name={FIREWALL_RULE}", "verbose"],
+                             capture_output=True, text=True, errors="replace", creationflags=nw, timeout=15).stdout
+        if exe.lower() in cur.lower():
+            return True
+        subprocess.run(["netsh", "advfirewall", "firewall", "delete", "rule", f"name={FIREWALL_RULE}"],
+                       capture_output=True, creationflags=nw, timeout=15)
+        r = subprocess.run(["netsh", "advfirewall", "firewall", "add", "rule", f"name={FIREWALL_RULE}", "dir=in",
+                            "action=allow", f"program={exe}", "protocol=TCP", "remoteip=localsubnet", "profile=any",
+                            "enable=yes"], capture_output=True, text=True, errors="replace", creationflags=nw, timeout=15)
+        if r.returncode != 0:
+            log("tường lửa: không thêm được luật cho điện thoại: " + (r.stdout or r.stderr).strip()[:200])
+            return False
+        log("tường lửa: đã cho phép điện thoại cùng mạng kết nối")
+        return True
+    except (OSError, subprocess.SubprocessError) as e:
+        log(f"tường lửa: {e}")
+        return False
+
+
+class PhoneServer:
+    """Máy chủ cho điện thoại do app Windows bật / tắt. Cổng 8765 (bận thì 8766..8774); mã cố định trong
+    <thư mục Web>\\token.txt nên địa chỉ không đổi giữa các lần bật (trừ khi IP máy đổi)."""
+
+    PORTS = range(8765, 8775)
+
+    def __init__(self, log=print):
+        self.log = log
+        self.srv = None
+        self.url = None
+        self.folder = None
+
+    @property
+    def running(self):
+        return self.srv is not None
+
+    def start(self, folder, game_dir, busy=None, cache=None):
+        self.stop()
+        last = None
+        for port in self.PORTS:
+            try:
+                srv, url = serve(folder, game_dir, port, log=self.log, cache=cache, busy=busy)
+                break
+            except OSError as e:
+                last = e
+        else:
+            raise OSError(f"không mở được cổng {self.PORTS.start}-{self.PORTS.stop - 1}: {last}")
+        threading.Thread(target=srv.serve_forever, daemon=True, name="phone-server").start()
+        threading.Thread(target=allow_firewall, args=(self.log,), daemon=True).start()
+        self.srv, self.url, self.folder = srv, url, folder
+        return url
+
+    def stop(self):
+        srv, self.srv, self.url = self.srv, None, None
+        if srv is not None:
+            srv.shutdown()
+            srv.server_close()
+            srv.exporter.stop()
+
+    def address(self):
+        """Địa chỉ ngắn để nhập tay trong app: 192.168.1.5:8765/abc123."""
+        return self.url.split("//", 1)[1].rstrip("/") if self.url else ""
 
 
 def main(argv=None):

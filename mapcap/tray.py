@@ -2,7 +2,7 @@
 
 Bấm X trên cửa sổ AoE-MapCap -> ẩn cửa sổ, app vẫn chạy và ghi trận; biểu tượng có chấm màu theo trạng thái (đỏ = đang
 ghi, vàng = sẵn sàng), rê chuột thấy trạng thái + đồng hồ. Bấm trái: mở lại cửa sổ; bấm phải: menu Mở / Bắt đầu-Dừng ghi
-/ Thoát. Cửa sổ ẩn + vòng nhận tin nhắn chạy ở luồng riêng; lệnh từ menu đưa về luồng Tk qua hàm on_action (hàng đợi).
+/ Bật-Tắt cho điện thoại / Thoát. Cửa sổ ẩn + vòng nhận tin nhắn chạy ở luồng riêng; lệnh từ menu đưa về luồng Tk qua hàm on_action (hàng đợi).
 """
 import ctypes
 import ctypes.wintypes as wt
@@ -27,7 +27,7 @@ NIIF_INFO = 0x1
 MF_STRING, MF_SEPARATOR, MF_GRAYED = 0x0, 0x800, 0x1
 TPM_RIGHTBUTTON, TPM_RETURNCMD, TPM_NONOTIFY = 0x2, 0x100, 0x80
 SM_CXSMICON = 49
-ID_OPEN, ID_TOGGLE, ID_QUIT = 1, 2, 3
+ID_OPEN, ID_TOGGLE, ID_QUIT, ID_PHONE = 1, 2, 3, 4
 
 
 class WNDCLASSEXW(ctypes.Structure):
@@ -113,6 +113,7 @@ class Tray:
         self.on_action = on_action
         self.tip = tooltip
         self.toggle_label = "Bắt đầu ghi"
+        self.phone_label = "Bật cho điện thoại"
         self.hwnd = None
         self.icons = {}
         self.kind = None
@@ -242,6 +243,7 @@ class Tray:
         m = user32.CreatePopupMenu()
         user32.AppendMenuW(m, MF_STRING, ID_OPEN, "Mở AoE-MapCap")
         user32.AppendMenuW(m, MF_STRING, ID_TOGGLE, self.toggle_label)
+        user32.AppendMenuW(m, MF_STRING, ID_PHONE, self.phone_label)
         user32.AppendMenuW(m, MF_SEPARATOR, 0, None)
         user32.AppendMenuW(m, MF_STRING, ID_QUIT, "Thoát")
         user32.SetMenuDefaultItem(m, ID_OPEN, 0)
@@ -251,6 +253,6 @@ class Tray:
         cmd = user32.TrackPopupMenu(m, TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, self.hwnd, None)
         user32.PostMessageW(self.hwnd, WM_NULL, 0, 0)
         user32.DestroyMenu(m)
-        act = {ID_OPEN: "open", ID_TOGGLE: "toggle", ID_QUIT: "quit"}.get(cmd)
+        act = {ID_OPEN: "open", ID_TOGGLE: "toggle", ID_PHONE: "phone", ID_QUIT: "quit"}.get(cmd)
         if act:
             self.on_action(act)

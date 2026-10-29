@@ -11,10 +11,13 @@
 <section id="setup" class="screen" hidden>
   <header class="bar"><h1>AoE-MapCap</h1><span class="sub">Kết nối máy tính</span></header>
   <form id="setup-form" class="setup">
-    <p>Trên máy tính chơi AoE, chạy máy chủ điện thoại rồi nhập địa chỉ nó in ra. Điện thoại và máy tính phải cùng Wi-Fi.</p>
+    <p>Trên máy tính: mở AoE-MapCap, vào mục <b>Điện thoại</b>, bật "Cho điện thoại xem trận" rồi quét mã QR hiện ra.
+      Điện thoại và máy tính phải cùng Wi-Fi.</p>
+    <button type="button" id="scan-qr" class="primary" hidden>Quét mã QR</button>
+    <p class="or">hoặc nhập địa chỉ hiện dưới mã QR</p>
     <input id="pc-addr" placeholder="192.168.1.5:8765/abc123" autocapitalize="none" autocomplete="off"
            autocorrect="off" spellcheck="false" inputmode="url">
-    <button type="submit" class="primary">Kết nối</button>
+    <button type="submit" class="second">Kết nối</button>
     <div id="setup-msg" class="msg"></div>
     <button type="button" id="setup-offline" class="link" hidden>Xem trận đã lưu trên điện thoại</button>
   </form>
@@ -22,6 +25,9 @@
 <section id="list" class="screen" hidden>
   <header class="bar"><h1>AoE-MapCap</h1><span class="sub">Xem lại trận</span>
     <button id="pc-btn" class="pc" aria-label="Máy tính" hidden>Máy tính</button></header>
+  <div id="app-banner" class="note" hidden>Xem mượt hơn và lưu trận trên điện thoại bằng app AoE-MapCap:
+    <a id="app-dl" href="#">Tải app</a> · <a id="app-open" href="#">Mở trong app</a></div>
+  <div id="update-note" class="note" hidden></div>
   <div id="list-note" class="note" hidden></div>
   <div id="matches"></div>
 </section>

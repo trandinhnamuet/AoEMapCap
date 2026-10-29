@@ -100,6 +100,7 @@ class ExportDialog:
 
 class App:
     PAGES = (("matches", "", "Trận đã ghi", "Xem lại trận: tua, đổi góc nhìn, xuất video khi cần"),
+             ("phone", "", "Điện thoại", "Xem lại trận trên điện thoại Android cùng Wi-Fi: quét mã QR để kết nối"),
              ("settings", "", "Cài đặt", "Ghi trận, thư mục lưu, xuất video, thống kê sử dụng"),
              ("log", "", "Nhật ký", "Hoạt động của bộ ghi, xuất video và cập nhật"))
 
@@ -126,6 +127,8 @@ class App:
         self.engine = None
         self.thread = None
         self.stop_event = None
+        self.phone = None            # máy chủ cho app điện thoại (mobile_server.PhoneServer), tạo khi bật lần đầu
+        self._recording = False      # đang ghi trận: máy chủ điện thoại hoãn chuyển trận (tốn CPU)
         self._build()
         self.root.after(200, self._poll)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -142,6 +145,8 @@ class App:
         root.bind("<Destroy>", lambda e: self._stop_tray() if e.widget is root else None, add="+")
         from . import telemetry                         # thống kê sử dụng: một lượt mỗi lần mở app (có mạng)
         telemetry.send("mapcap", "open", self.cfg.telemetry, raw_dir=self.cfg.raw_dir())
+        if self.cfg.phone_server:
+            self.root.after(1500, lambda: self._phone_start(quiet=True))
 
     # ---- giao diện: thanh bên trái + đầu trang + các trang (kiểu XArena) ------------------
     def _build(self):
@@ -233,6 +238,7 @@ class App:
         self.content.pack(fill="both", expand=True, padx=24, pady=(16, 18))
         self.pages = {}
         self._build_matches()
+        self._build_phone()
         self._build_settings()
         self._build_log()
         self.show_page("matches")
@@ -319,6 +325,149 @@ class App:
         self.table.is_busy = self._is_recording_path
         self.table.prefetch_ok = lambda: self._mode_now() != "rec"   # không quét trận cũ ở nền khi đang ghi
         ttk.Label(bot, textvariable=self.table.var_status, style="Muted.TLabel").pack(side="right")
+
+    # ---- điện thoại: máy chủ trong mạng nhà cho app Android (docs/13) ----------------------
+    def _build_phone(self):
+        C = theme.C
+        tab = tk.Frame(self.content, bg=C["bg"])
+        self.pages["phone"] = tab
+        self.var_phone_auto = tk.BooleanVar(value=self.cfg.phone_server)
+        self.var_phone_addr = tk.StringVar(value="")
+        body = self._card(tab, "Cho điện thoại xem trận")
+        self.phone_qr = tk.Label(body, bg=C["panel"])
+        self.phone_qr.pack(side="left", anchor="n", padx=(0, 22))
+        right = tk.Frame(body, bg=C["panel"])
+        right.pack(side="left", fill="both", expand=True, anchor="n")
+        self.phone_state = tk.Label(right, text="", bg=C["panel"], fg="#ffffff", font=theme.F(12, "bold"), anchor="w")
+        self.phone_state.pack(fill="x")
+        row = tk.Frame(right, bg=C["panel"])
+        row.pack(fill="x", pady=(10, 6))
+        self.btn_phone = ttk.Button(row, text="", command=self._phone_toggle, width=24)
+        self.btn_phone.pack(side="left")
+        ttk.Checkbutton(row, text="Tự bật khi mở AoE-MapCap", variable=self.var_phone_auto, style="Card.TCheckbutton",
+                        command=self._phone_auto_changed).pack(side="left", padx=(16, 0))
+        row = tk.Frame(right, bg=C["panel"])
+        row.pack(fill="x", pady=(4, 10))
+        ttk.Label(row, text="Địa chỉ (nhập tay nếu không quét được)", style="Card.TLabel").pack(side="left")
+        self.phone_entry = ttk.Entry(row, textvariable=self.var_phone_addr, width=30, state="readonly")
+        self.phone_entry.pack(side="left", padx=(10, 6))
+        ttk.Button(row, text="Sao chép", command=self._phone_copy).pack(side="left")
+        steps = ("1. Điện thoại Android và máy tính dùng chung Wi-Fi.\n"
+                 "2. Chưa có app: quét mã bằng camera điện thoại. Trang mở ra xem trận được ngay và có nút Tải app "
+                 "(Android 8 trở lên).\n"
+                 "3. Đã có app: mở app AoE-MapCap, bấm Quét mã QR. Trận đã mở được lưu trên điện thoại, xem được cả khi "
+                 "máy tính tắt.")
+        ttk.Label(right, text=steps, style="Card.TLabel", justify="left", wraplength=600).pack(fill="x", anchor="w")
+        ttk.Label(right, text="Hình game lấy từ bộ cài game trên máy này và chỉ gửi sang điện thoại trong cùng mạng. "
+                              "Lần đầu mở một trận, máy tính cần khoảng một phút để chuẩn bị; khi đang ghi trận, việc "
+                              "chuẩn bị đợi tới hết trận để không làm game giật.",
+                  style="CardMuted.TLabel", justify="left", wraplength=600).pack(fill="x", anchor="w", pady=(10, 0))
+        self._phone_refresh()
+
+    def _phone_running(self):
+        return self.phone is not None and self.phone.running
+
+    def _phone_toggle(self):
+        if self._phone_running():
+            self._phone_stop()
+        else:
+            self._phone_start()
+
+    def _ask_game_dir(self):
+        """Hỏi thư mục game (khi không tự tìm được); lưu vào cấu hình. None nếu bỏ qua / sai."""
+        from .engine import valid_game_dir
+        d = filedialog.askdirectory(title="Chọn thư mục game AoE-HD / AOE1R (có thư mục data bên trong)")
+        if not d or not valid_game_dir(d):
+            if d:
+                messagebox.showerror(APP_TITLE, "Thư mục này không có dữ liệu game AoE-HD / AOE1R "
+                                     "(empires.dat, graphic.drs hoặc graphics.drs trong data / data2).")
+            return None
+        self.cfg.game_dir = os.path.normpath(d)
+        self._save_cfg()
+        return d
+
+    def _phone_start(self, quiet=False):
+        """quiet: tự bật lúc mở app, không hỏi / không hiện hộp lỗi (ghi vào Nhật ký)."""
+        from .engine import resolve_game_dir
+        gd = resolve_game_dir(self.cfg.game_dir)
+        if gd is None:
+            if quiet:
+                self._append("điện thoại: chưa biết thư mục game, chưa bật (bật trong mục Điện thoại)")
+                return
+            gd = self._ask_game_dir()
+            if gd is None:
+                return
+        raw = self.cfg.raw_dir()
+        os.makedirs(raw, exist_ok=True)
+        try:
+            if self.phone is None:
+                from .mobile_server import PhoneServer
+                self.phone = PhoneServer(log=lambda m: self.q.put("điện thoại: " + m))
+            url = self.phone.start(raw, gd, busy=lambda: self._recording)
+        except Exception as e:  # noqa: BLE001
+            self._append(f"điện thoại: không bật được: {e}")
+            if not quiet:
+                messagebox.showerror(APP_TITLE, f"Không bật được máy chủ cho điện thoại: {e}")
+            return
+        self._append(f"=== điện thoại: đã bật, địa chỉ {url}")
+        self._phone_refresh()
+
+    def _phone_stop(self):
+        if self.phone is not None:
+            self.phone.stop()
+            self._append("=== điện thoại: đã tắt")
+        self._phone_refresh()
+
+    def _phone_auto_changed(self):
+        self.cfg.phone_server = bool(self.var_phone_auto.get())
+        self._save_cfg()
+
+    def _phone_copy(self):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.var_phone_addr.get())
+
+    @staticmethod
+    def qr_image(text, size=232):
+        """Mã QR (thư viện qrcode chỉ để lấy ma trận; vẽ bằng PIL, phóng to số nguyên lần cho sắc nét)."""
+        import qrcode
+        from PIL import Image
+        q = qrcode.QRCode(border=3, error_correction=qrcode.constants.ERROR_CORRECT_M)
+        q.add_data(text)
+        q.make(fit=True)
+        m = q.get_matrix()
+        n = len(m)
+        img = Image.new("L", (n, n), 255)
+        img.putdata([0 if v else 255 for r in m for v in r])
+        k = max(1, size // n)
+        return img.resize((n * k, n * k), Image.NEAREST)
+
+    def _qr_photo(self, text):
+        from PIL import ImageTk
+        return ImageTk.PhotoImage(self.qr_image(text))
+
+    def _phone_refresh(self):
+        C = theme.C
+        on = self._phone_running()
+        if on:
+            self.phone_state.configure(text="ĐANG BẬT — quét mã bên trái bằng điện thoại", fg=C["gold_hi"])
+            self.btn_phone.configure(text="Tắt", style="TButton")
+            self.var_phone_addr.set(self.phone.address())
+            try:
+                self._phone_img = self._qr_photo(self.phone.url)
+            except Exception as e:  # noqa: BLE001  - thiếu thư viện qrcode: vẫn nhập tay được
+                self._phone_img = None
+                self._append(f"điện thoại: không tạo được mã QR: {e}")
+        else:
+            self.phone_state.configure(text="Đang tắt", fg=C["muted"])
+            self.btn_phone.configure(text="Bật cho điện thoại xem trận", style="Accent.TButton")
+            self.var_phone_addr.set("")
+            self._phone_img = None
+        if self._phone_img is None:
+            from PIL import Image, ImageTk
+            self._phone_img = ImageTk.PhotoImage(Image.new("RGB", (232, 232), C["panel2"]))
+        self.phone_qr.configure(image=self._phone_img)
+        if self.tray is not None:
+            self.tray.phone_label = "Tắt cho điện thoại" if on else "Bật cho điện thoại"
 
     def _build_settings(self):
         tab = tk.Frame(self.content, bg=theme.C["bg"])
@@ -441,6 +590,8 @@ class App:
         if os.path.normcase(new_raw) != os.path.normcase(self.table.folder):
             os.makedirs(new_raw, exist_ok=True)
             self.table.set_folder(new_raw)
+        if self._phone_running() and os.path.normcase(new_raw) != os.path.normcase(self.phone.folder):
+            self._phone_start()                         # máy chủ điện thoại theo thư mục lưu mới
         self._append("đã lưu cài đặt")
 
     def _choose_dir(self):
@@ -514,15 +665,7 @@ class App:
             pass
         d = resolve_game_dir(self.cfg.game_dir, meta_dir)
         if d is None:
-            d = filedialog.askdirectory(title="Chọn thư mục game AoE-HD / AOE1R (có thư mục data bên trong)")
-            from .engine import valid_game_dir
-            if not d or not valid_game_dir(d):
-                if d:
-                    messagebox.showerror(APP_TITLE, "Thư mục này không có dữ liệu game AoE-HD / AOE1R "
-                                         "(empires.dat, graphic.drs hoặc graphics.drs trong data / data2).")
-                return None
-            self.cfg.game_dir = os.path.normpath(d)
-            self._save_cfg()
+            d = self._ask_game_dir()
         return d
 
     def _launch_replay(self, path):
@@ -711,6 +854,7 @@ class App:
         import time
         C = theme.C
         mode = self._mode_now()
+        self._recording = mode == "rec"
         st = (self.state_text or "").strip()
         title, color, btn_text, btn_style = self.MODE_LOOK[mode]
         if mode == "rec":
@@ -799,6 +943,11 @@ class App:
             self._show_window()
         elif act == "toggle":
             self._toggle()
+        elif act == "phone":
+            self._phone_toggle()
+            if self._phone_running():                  # bật từ khay: mở trang có mã QR
+                self.show_page("phone")
+                self._show_window()
         elif act == "quit":
             self._quit()
 
@@ -857,6 +1006,8 @@ class App:
         if running:
             self.stop_event.set()
             self.thread.join(timeout=30 if recording else 5)
+        if self._phone_running():
+            self.phone.stop()
         self.root.destroy()
 
 

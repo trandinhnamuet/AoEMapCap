@@ -1,14 +1,33 @@
 // Màn hình danh sách trận + mở trình xem. Hai cách chạy:
 // - trình duyệt mở thẳng máy chủ AoE-MapCap trên máy tính (http://<ip>:8765/<mã>/): nguồn là chính máy chủ đó;
-// - app Android: trang nằm trong app (https://appassets.androidplatform.net/app/), địa chỉ máy tính do người dùng
-//   nhập; app chuyển tiếp /pc/<ip:cổng>/<mã>/... sang http://<ip:cổng>/<mã>/... (cùng nguồn, không vướng CORS /
-//   mixed content). Gói hình và trận đã mở được lưu trên điện thoại (Cache Storage) để xem khi máy tính tắt.
+// - app Android: trang nằm trong app (https://appassets.androidplatform.net/app/), địa chỉ máy tính lấy bằng quét mã
+//   QR trên app Windows (AoEApp.scanQr), mở app từ trình duyệt (aoemapcap://pair -> ?pair=) hoặc nhập tay; app chuyển
+//   tiếp /pc/<ip:cổng>/<mã>/... sang http://<ip:cổng>/<mã>/... (cùng nguồn, không vướng CORS / mixed content).
+//   Gói hình và trận đã mở được lưu trên điện thoại (Cache Storage) để xem khi máy tính tắt.
 import { SpritePack } from "./sprites.js";
 import { fmtClock, Viewer } from "./viewer.js";
 
 const IN_APP = location.hostname === "appassets.androidplatform.net";
 const PC_KEY = "aoe.pc";
 const MAX_SAVED = 40;           // số trận giữ trên điện thoại, bỏ trận mở lâu nhất
+const REPO = "trandinhnamuet/AoEMapCap";
+const APP_PKG = "io.github.trandinhnamuet.aoemapcap";
+const RELEASES = `https://github.com/${REPO}/releases`;
+
+// bản app Android mới nhất (Release tag mobile-v<N>, không phải "latest" của bản Windows); null nếu không hỏi được
+async function latestApp() {
+  try {
+    const r = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=30`);
+    if (!r.ok) return null;
+    let best = null;
+    for (const rel of await r.json()) {
+      const m = /^mobile-v(\d+)$/.exec(rel.tag_name || "");
+      const apk = m && !rel.draft && (rel.assets || []).find(a => a.name === "AoE-MapCap.apk");
+      if (apk && (!best || +m[1] > best.code)) best = { code: +m[1], url: apk.browser_download_url, tag: rel.tag_name };
+    }
+    return best;
+  } catch { return null; }
+}
 
 // trận + gói hình lưu trên máy (Cache Storage chỉ có ở trang https, tức là trong app)
 class Store {
@@ -85,7 +104,8 @@ class Source {
       const j = await r.json();
       if (j.error) throw new Error(j.error);
       if (j.ready) break;
-      onStatus && onStatus("Máy tính đang chuẩn bị trận… " + Math.round((j.progress || 0) * 100) + "%");
+      onStatus && onStatus(j.waiting ? "Máy tính đang ghi trận: sẽ chuẩn bị trận này khi hết trận…"
+        : "Máy tính đang chuẩn bị trận… " + Math.round((j.progress || 0) * 100) + "%");
       await new Promise(res => setTimeout(res, 1000));
     }
     return this._download(url, f => onStatus && onStatus("Đang tải trận… " + Math.round(f * 100) + "%"));
@@ -130,6 +150,22 @@ function parseAddr(t) {
   return m ? `${m[1]}:${m[2] || 8765}/${m[3].toLowerCase()}` : null;
 }
 
+// thử kết nối rồi lưu địa chỉ; tải lại trang để mọi phần dùng nguồn mới
+async function connect(addr, store) {
+  const msg = $("#setup-msg");
+  msg.textContent = "Đang kết nối " + addr + "…"; msg.className = "msg";
+  try { await new Source("/pc/" + addr + "/", store).list(); }
+  catch (err) {
+    msg.textContent = "Không kết nối được " + addr + " (" + err.message + "). Kiểm tra: AoE-MapCap trên máy tính đã " +
+      "bật mục Điện thoại, điện thoại và máy tính cùng Wi-Fi.";
+    msg.className = "msg err";
+    return false;
+  }
+  localStorage.setItem(PC_KEY, addr);
+  location.replace(location.pathname);
+  return true;
+}
+
 function showSetup(store) {
   show("setup");
   const inp = $("#pc-addr"), msg = $("#setup-msg");
@@ -137,22 +173,53 @@ function showSetup(store) {
   msg.textContent = ""; msg.className = "msg";
   $("#setup-offline").hidden = !store;
   $("#setup-offline").onclick = () => showList(new Source(null, store));
-  $("#setup-form").onsubmit = async e => {
+  const app = window.AoEApp;
+  $("#scan-qr").hidden = !(app && app.scanQr);
+  $("#scan-qr").onclick = () => {
+    msg.textContent = "Đang mở máy quét…"; msg.className = "msg";
+    // app gọi lại: (nội dung mã, null) | (null, lỗi) | (null, null) = huỷ
+    window.onQrResult = (text, err) => {
+      if (err) { msg.textContent = "Không quét được: " + err + ". Có thể nhập tay bên dưới."; msg.className = "msg err"; return; }
+      if (text == null) { msg.textContent = ""; return; }
+      const addr = parseAddr(text);
+      if (!addr) { msg.textContent = "Mã QR này không phải của AoE-MapCap."; msg.className = "msg err"; return; }
+      inp.value = addr;
+      connect(addr, store);
+    };
+    app.scanQr();
+  };
+  $("#setup-form").onsubmit = e => {
     e.preventDefault();
     const addr = parseAddr(inp.value);
     if (!addr) { msg.textContent = "Địa chỉ dạng 192.168.1.5:8765/abc123"; msg.className = "msg err"; return; }
-    msg.textContent = "Đang kết nối…"; msg.className = "msg";
-    const src = new Source("/pc/" + addr + "/", store);
-    try { await src.list(); }
-    catch (err) {
-      msg.textContent = "Không kết nối được (" + err.message + "). Kiểm tra: máy tính đang chạy máy chủ, cùng Wi-Fi, " +
-        "tường lửa Windows đã cho phép Python ở mạng riêng.";
-      msg.className = "msg err";
-      return;
-    }
-    localStorage.setItem(PC_KEY, addr);
-    showList(src);
+    connect(addr, store);
   };
+}
+
+// trình duyệt trên Android (quét QR bằng camera thường): mời tải / mở app
+async function appBanner(home) {
+  if (!/Android/i.test(navigator.userAgent)) return;
+  const addr = location.host + home.replace(/[^/]*$/, "").replace(/\/$/, "");
+  const ban = $("#app-banner");
+  const dl = $("#app-dl");
+  dl.href = RELEASES;
+  $("#app-open").href = `intent://pair?a=${encodeURIComponent(addr)}#Intent;scheme=aoemapcap;package=${APP_PKG};` +
+    `S.browser_fallback_url=${encodeURIComponent(RELEASES)};end`;
+  ban.hidden = false;
+  const last = await latestApp();
+  if (last) dl.href = last.url;
+}
+
+// trong app: có bản mới hơn thì báo (hỏi GitHub tối đa một lần mỗi lần mở app)
+async function checkUpdate() {
+  const app = window.AoEApp;
+  if (!app || !app.versionCode || sessionStorage.getItem("aoe.upd")) return;
+  sessionStorage.setItem("aoe.upd", "1");
+  const last = await latestApp();
+  if (!last || last.code <= +app.versionCode()) return;
+  const n = $("#update-note");
+  n.innerHTML = `Có bản app mới (${esc(last.tag)}). <a href="${esc(last.url)}">Tải về</a>`;
+  n.hidden = false;
 }
 
 async function showList(src) {
@@ -235,7 +302,7 @@ async function main() {
   if (!IN_APP) {
     const src = new Source(home.replace(/[^/]*$/, ""), null);
     if (q.get("m")) openMatch(src, q.get("m"), null, q.get("selftest"));
-    else showList(src);
+    else { showList(src); appBanner(home); }
     return;
   }
   const store = await Store.open();
@@ -251,8 +318,12 @@ async function main() {
       if (it.file === q.get("m")) info = it.info || null;
     } catch { /* không có */ }
     openMatch(src, q.get("m"), info);
+  } else if (q.get("pair")) {            // mở từ trình duyệt: aoemapcap://pair?a=<địa chỉ>
+    const a = parseAddr(q.get("pair"));
+    showSetup(store);
+    if (a) { $("#pc-addr").value = a; connect(a, store); }
   } else if (!addr) showSetup(store);
-  else showList(src);
+  else { showList(src); checkUpdate(); }
   // Back từ trang trận có thể khôi phục nguyên trang cũ (bfcache): vẽ lại danh sách cho nhãn "đã lưu" mới
   window.addEventListener("pageshow", e => {
     if (e.persisted && !q.get("m") && !$("#list").hidden) showList(src);

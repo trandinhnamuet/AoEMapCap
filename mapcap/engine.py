@@ -83,6 +83,7 @@ class Config:
     auto_start: bool = True                  # mở AoE-MapCap là tự bắt đầu ghi (chờ game), không cần bấm (2026-10-13)
     telemetry: bool = True                   # gửi thống kê sử dụng: mã máy ngẫu nhiên, phiên bản, IP (2026-10-15)
     close_to_tray: bool = True               # bấm X: ẩn xuống khay hệ thống, vẫn ghi trận; Thoát ở menu khay (2026-10-16)
+    phone_server: bool = False               # mở app là bật máy chủ cho app điện thoại (trang Điện thoại, v14)
     config_version: int = 3                  # tăng khi đổi mặc định quan trọng (v2: nhịp đọc = FPS;
                                              # v3: chỉ ghi dữ liệu trận, không tự dựng video / ảnh tĩnh)
 

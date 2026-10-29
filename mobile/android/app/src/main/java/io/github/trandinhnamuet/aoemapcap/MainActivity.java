@@ -3,9 +3,13 @@ package io.github.trandinhnamuet.aoemapcap;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.WindowManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
@@ -13,6 +17,12 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
 import androidx.webkit.WebViewAssetLoader;
+
+import com.google.mlkit.vision.barcode.common.Barcode;
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions;
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning;
+
+import org.json.JSONObject;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -76,7 +86,66 @@ public class MainActivity extends Activity {
             }
         });
 
-        if (state == null || web.restoreState(state) == null) web.loadUrl(START);
+        web.addJavascriptInterface(new Bridge(), "AoEApp");
+
+        String pair = pairUrl(getIntent());
+        if (pair != null || state == null || web.restoreState(state) == null) web.loadUrl(pair != null ? pair : START);
+    }
+
+    /** aoemapcap://pair?a=192.168.1.5:8765/abc123 (nút "Mở trong app" trên trang của máy tính) -> trang ?pair=... */
+    private static String pairUrl(Intent intent) {
+        Uri d = intent == null ? null : intent.getData();
+        if (d == null || !"aoemapcap".equals(d.getScheme()) || !"pair".equals(d.getHost())) return null;
+        String a = d.getQueryParameter("a");
+        return a == null ? null : START + "?pair=" + Uri.encode(a);
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        String pair = pairUrl(intent);
+        if (pair != null) web.loadUrl(pair);
+    }
+
+    /** Hàm cho trang web gọi: window.AoEApp.scanQr() / versionCode(). */
+    private class Bridge {
+        @JavascriptInterface
+        public void scanQr() {
+            runOnUiThread(MainActivity.this::scanQr);
+        }
+
+        @JavascriptInterface
+        public int versionCode() {
+            try {
+                PackageInfo pi = getPackageManager().getPackageInfo(getPackageName(), 0);
+                return Build.VERSION.SDK_INT >= 28 ? (int) pi.getLongVersionCode() : pi.versionCode;
+            } catch (PackageManager.NameNotFoundException e) {
+                return 0;
+            }
+        }
+    }
+
+    private void scanQr() {
+        try {
+            GmsBarcodeScannerOptions opts = new GmsBarcodeScannerOptions.Builder()
+                    .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                    .build();
+            GmsBarcodeScanning.getClient(this, opts).startScan()
+                    .addOnSuccessListener(b -> qrResult(b.getRawValue(), null))
+                    .addOnCanceledListener(() -> qrResult(null, null))
+                    .addOnFailureListener(e -> qrResult(null, e.getMessage() != null ? e.getMessage() : e.toString()));
+        } catch (RuntimeException e) {
+            qrResult(null, e.toString());          // máy không có Google Play Services
+        }
+    }
+
+    private void qrResult(String text, String error) {
+        web.evaluateJavascript("window.onQrResult && onQrResult(" + js(text) + ", " + js(error) + ")", null);
+    }
+
+    private static String js(String s) {
+        return s == null ? "null" : JSONObject.quote(s);
     }
 
     private static WebResourceResponse proxy(Uri u, String method) {
