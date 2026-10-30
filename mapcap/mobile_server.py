@@ -12,11 +12,11 @@ máy chủ nào.
 import json
 import mimetypes
 import os
-import queue
 import secrets
 import socket
 import sys
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -43,17 +43,31 @@ def lan_ip():
         s.close()
 
 
-class Exporter:
-    """Hàng đợi chuyển trận (một luồng: chuyển tốn CPU, không chạy song song với nhau)."""
+class _Cancel(Exception):
+    pass
 
-    def __init__(self, folder, cache, game_dir, log, busy=None):
+
+class Exporter:
+    """Hàng đợi chuyển trận (một luồng: chuyển tốn CPU, không chạy song song với nhau).
+
+    Điện thoại hỏi lại mỗi giây khi chờ một trận. Trận được hỏi gần nhất làm trước; trận không ai hỏi quá STALE giây
+    (người dùng đã quay ra chọn trận khác) bị bỏ nếu có trận khác đang chờ, kể cả khi đang chuyển dở (trước v18 chúng
+    xếp hàng: trận chọn sau đứng ở 0% tới khi các trận chọn trước chuyển xong). prefetch: lúc rảnh (không ghi trận)
+    chuyển sẵn trận mới nhất để mở trên điện thoại là có ngay; dừng ngay khi có trận được hỏi hoặc bắt đầu ghi."""
+
+    STALE = 10                       # giây không ai hỏi (điện thoại hỏi mỗi giây khi chờ)
+    PREFETCH_EVERY = 15
+
+    def __init__(self, folder, cache, game_dir, log, busy=None, prefetch=False):
         self.folder, self.cache, self.game_dir, self.log = folder, cache, game_dir, log
         self.busy = busy or (lambda: False)      # đang ghi trận: hoãn chuyển (tốn CPU) tới khi hết trận
+        self.prefetch = prefetch
         self.stopped = False
         os.makedirs(cache, exist_ok=True)
-        self.q = queue.Queue()
-        self.state = {}               # tên file -> {"progress", "error"}
-        self.lock = threading.Lock()
+        self.state = {}               # tên file -> {"progress", "error", "waiting", "seen", "bg"}
+        self.cur = None               # trận đang chuyển
+        self.cv = threading.Condition()
+        self.sprite_lock = threading.Lock()
         threading.Thread(target=self._run, daemon=True, name="web-export").start()
 
     def out_path(self, name):
@@ -68,46 +82,113 @@ class Exporter:
             return False
 
     def request(self, name):
-        with self.lock:
+        """Điện thoại hỏi trận name (mỗi giây khi chờ). Trả về bản sao trạng thái + "ahead": trận khác đang chuyển."""
+        with self.cv:
             st = self.state.get(name)
             if st is None or st.get("error"):
-                st = self.state[name] = {"progress": 0.0, "error": None, "waiting": False}
-                self.q.put(name)
-            return dict(st)
+                st = self.state[name] = {"progress": 0.0, "error": None, "waiting": False, "seen": 0.0, "bg": False}
+            st["seen"], st["bg"] = time.time(), False
+            self.cv.notify()
+            out = dict(st)
+            out["waiting"] = st["waiting"] or self.busy()
+            out["ahead"] = self.cur is not None and self.cur != name
+            return out
 
     def stop(self):
-        self.stopped = True
-        self.q.put(None)
+        with self.cv:
+            self.stopped = True
+            self.cv.notify()
+
+    def _stale(self, st, now):
+        return not st["bg"] and now - st["seen"] > self.STALE
+
+    def _others_waiting(self, name):
+        now = time.time()
+        return any(n != name and not s["error"] and not s["bg"] and not self._stale(s, now)
+                   for n, s in self.state.items())
+
+    def _next(self):
+        """Trận cần chuyển tiếp theo (gọi khi giữ self.cv), hoặc None."""
+        now = time.time()
+        for n in [n for n, s in self.state.items() if not s["error"] and self._stale(s, now)]:
+            self.state.pop(n)                        # không ai chờ nữa: hỏi lại thì chuyển lại
+        todo = [(not s["bg"], s["seen"], n) for n, s in self.state.items() if not s["error"]]
+        return max(todo)[2] if todo else None
+
+    def _newest(self):
+        """Trận mới nhất đã ghi xong (không đổi trong 60 s) chưa chuyển, hoặc None."""
+        best = None
+        try:
+            for e in os.scandir(self.folder):
+                if e.name.lower().endswith(".aoerec") and e.is_file():
+                    m = e.stat().st_mtime
+                    if best is None or m > best[0]:
+                        best = (m, e.name)
+        except OSError:
+            return None
+        if best is None or time.time() - best[0] < 60 or best[1] in self.state or self.ready(best[1]):
+            return None
+        return best[1]
+
+    def _tick(self, name, st, f):
+        """Tiến độ chuyển; dừng giữa chừng (_Cancel) khi tắt máy chủ, khi không ai chờ trận này mà có trận khác đang
+        chờ, hoặc (chuyển sẵn) khi có trận được hỏi / bắt đầu ghi trận. Trận đang được hỏi mà bắt đầu ghi: tạm dừng
+        tới khi hết trận (không tốn CPU lúc đang chơi)."""
+        st["progress"] = f
+        while True:
+            if self.stopped:
+                raise _Cancel
+            with self.cv:
+                if st["bg"]:
+                    if self.busy() or self._others_waiting(name):
+                        raise _Cancel
+                elif self._stale(st, time.time()) and self._others_waiting(name):
+                    raise _Cancel
+                if st["bg"] or not self.busy():
+                    st["waiting"] = False
+                    return
+                st["waiting"] = True
+            time.sleep(1)
 
     def _run(self):
-        import time
         while True:
-            name = self.q.get()
-            if name is None:
-                return
-            st = self.state[name]
-            try:
-                while self.busy() and not self.stopped:
-                    st["waiting"] = True
-                    time.sleep(3)
-                st["waiting"] = False
+            with self.cv:
+                name = None
+                while not self.stopped:
+                    name = self._next()
+                    if name is not None:
+                        break
+                    if not self.cv.wait(self.PREFETCH_EVERY) and self.prefetch and not self.busy():
+                        bg = self._newest()
+                        if bg is not None:
+                            self.state[bg] = {"progress": 0.0, "error": None, "waiting": False, "seen": 0.0,
+                                              "bg": True}
                 if self.stopped:
                     return
+                st = self.state[name]
+                self.cur = name
+            try:
+                self._tick(name, st, 0.0)             # đang ghi trận: chờ (chuyển sẵn: bỏ)
                 if not self.ready(name):
+                    if st["bg"]:
+                        self.log(f"chuyển sẵn trận mới nhất cho điện thoại: {name}")
                     export_match(os.path.join(self.folder, name), self.out_path(name), self.game_dir, log=self.log,
-                                 progress=lambda f: st.__setitem__("progress", 0.1 + 0.85 * f))
+                                 progress=lambda f: self._tick(name, st, f))
                 st["progress"] = 1.0
+            except _Cancel:
+                pass
             except Exception as e:  # noqa: BLE001
                 self.log(f"lỗi chuyển {name}: {e!r}")
                 st["error"] = str(e) or repr(e)
             finally:
-                with self.lock:
-                    if not st.get("error"):
+                with self.cv:
+                    self.cur = None
+                    if not st.get("error") and self.state.get(name) is st:
                         self.state.pop(name, None)
 
     def sprites(self):
         p = os.path.join(self.cache, "sprites.pack")
-        with self.lock:
+        with self.sprite_lock:
             if not os.path.exists(p):
                 export_sprites(self.game_dir, p)
         return p
@@ -178,7 +259,7 @@ def make_handler(token, folder, exporter, log):
                         return self._file(exporter.out_path(name), "application/octet-stream")
                     st = exporter.request(name)
                     return self._send(200, {"ready": False, "progress": st["progress"], "error": st["error"],
-                                            "waiting": st.get("waiting", False)})
+                                            "waiting": st.get("waiting", False), "ahead": st["ahead"]})
                 if rel == "api/sprites":
                     return self._file(exporter.sprites(), "application/octet-stream", cache=True)
                 rel = rel or "index.html"
@@ -201,8 +282,6 @@ def make_handler(token, folder, exporter, log):
 
 
 def list_matches(folder):
-    import time
-
     from replay.library import Library
     lib = Library(folder)
     out = []
@@ -250,10 +329,10 @@ class _Server(ThreadingHTTPServer):
         super().server_bind()
 
 
-def serve(folder, game_dir, port=8765, token=None, log=print, cache=None, host="0.0.0.0", busy=None):
+def serve(folder, game_dir, port=8765, token=None, log=print, cache=None, host="0.0.0.0", busy=None, prefetch=False):
     cache = cache or os.path.join(os.path.dirname(os.path.abspath(folder)), "Web")
     token = token or stable_token(cache)
-    exporter = Exporter(folder, cache, game_dir, log, busy)
+    exporter = Exporter(folder, cache, game_dir, log, busy, prefetch)
     try:
         srv = _Server((host, port), make_handler(token, folder, exporter, log))
     except OSError:
@@ -321,7 +400,7 @@ class PhoneServer:
         last = None
         for port in self.PORTS:
             try:
-                srv, url = serve(folder, game_dir, port, log=self.log, cache=cache, busy=busy)
+                srv, url = serve(folder, game_dir, port, log=self.log, cache=cache, busy=busy, prefetch=True)
                 break
             except OSError as e:
                 last = e

@@ -89,10 +89,34 @@ class HudExport:
     # ---- mẫu ---------------------------------------------------------------------------
     @staticmethod
     def _detail(U):
-        return {int(u): [int(u), int(df), _num(round(float(hp), 1)), int(s), int(rt), _num(round(float(ra), 1)), int(k)]
-                for u, df, hp, s, rt, ra, k in zip(U["uid"].tolist(), U["def"].tolist(), U["hp"].tolist(),
-                                                   U["status"].tolist(), U["rtype"].tolist(), U["ramount"].tolist(),
-                                                   U["kind"].tolist())}
+        """Bảng chi tiết [n, 7] (float64, sắp theo uid, mỗi uid một hàng): uid, def, máu, trạng thái, loại tài nguyên,
+        lượng, kind; máu / lượng làm tròn 0,1. So sánh bằng numpy: vật thể tĩnh có hàng chục nghìn hàng mỗi bản ghi
+        (cây, mỏ), so từng hàng bằng Python mất vài phút một trận (v17)."""
+        M = np.empty((len(U), 7), np.float64)
+        for c, name in enumerate(("uid", "def", "hp", "status", "rtype", "ramount", "kind")):
+            M[:, c] = U[name]
+        M[:, 2] = np.round(M[:, 2], 1)
+        M[:, 5] = np.round(M[:, 5], 1)
+        M = M[np.argsort(M[:, 0], kind="stable")]
+        if len(M) > 1:                             # uid trùng: giữ hàng sau cùng (như dict)
+            M = M[np.append(M[1:, 0] != M[:-1, 0], True)]
+        return M
+
+    @staticmethod
+    def _diff(prev, M):
+        """(hàng của M mới / đổi so với prev, uid của prev không còn trong M)."""
+        if prev is None or not len(prev):
+            return M, np.empty(0)
+        pu, mu = prev[:, 0], M[:, 0]
+        k = np.minimum(np.searchsorted(pu, mu), len(pu) - 1)
+        P = prev[k]
+        same = (pu[k] == mu) & np.all((P == M) | (np.isnan(P) & np.isnan(M)), axis=1)
+        return M[~same], pu[~np.isin(pu, mu)]
+
+    @staticmethod
+    def _rows(M):
+        return [[int(u), int(df), _num(hp), int(s), int(rt), _num(ra), int(k)]
+                for u, df, hp, s, rt, ra, k in M.tolist()]
 
     def frame(self, fi, st):
         """Gọi sau st.apply(p, fi) cho mọi mẫu; lấy mẫu HUD mỗi HSTEP mẫu."""
@@ -101,15 +125,12 @@ class HudExport:
         start = fi % self.chunk == 0
         if start:
             self.chunks.append([])
-            self.prev_u, self.prev_a, self.prev_t = {}, {}, {}
+            self.prev_u, self.prev_a, self.prev_t = None, {}, {}
         d = self.d
         U = st.units()
         rows = self._detail(U)
-        if start:
-            u_out, gone = list(rows.values()), []
-        else:
-            u_out = [r for k, r in rows.items() if self.prev_u.get(k) != r]
-            gone = [k for k in self.prev_u if k not in rows]
+        ch, gone = self._diff(self.prev_u, rows)
+        u_out, gone = self._rows(ch), [int(u) for u in gone.tolist()]
         self.prev_u = rows
         players = d.players_at(st)
         vill = {}
@@ -171,15 +192,12 @@ class HudExport:
     # ---- kết thúc ----------------------------------------------------------------------
     def statics_detail(self):
         out = []
-        prev = {}
+        prev = None
         for si in range(len(self.d.s_first)):
             _ver, S = self.d.load_statics(si)
             rows = self._detail(S)
-            if si == 0:
-                out.append([int(self.d.s_first[si]), 1, list(rows.values()), []])
-            else:
-                out.append([int(self.d.s_first[si]), 0, [r for k, r in rows.items() if prev.get(k) != r],
-                            [k for k in prev if k not in rows]])
+            ch, gone = self._diff(prev, rows)
+            out.append([int(self.d.s_first[si]), 1 if si == 0 else 0, self._rows(ch), [int(u) for u in gone.tolist()]])
             prev = rows
         return out
 

@@ -23,6 +23,11 @@ const RELEASES = `https://github.com/${REPO}/releases`;
 const RELAY = CLOUD ? location.origin : "https://aoe-mapcap-relay.aoemapcap.workers.dev";
 const CREDIT = 16;              // số khung 64 KB máy tính được gửi trước khi điện thoại nhận (trạm chỉ giữ tạm ~1 MB)
 const OFFLINE = "Máy tính chưa sẵn sàng: mở AoE-MapCap trên máy tính, bật mục Điện thoại và kiểm tra Internet.";
+const PC_BACK_MS = 10000;       // máy tính vừa rớt khỏi trạm (mạng chập chờn) thường nối lại sau 2-3 s: chờ rồi mới báo lỗi
+const HEAD_MS = 90000;          // yêu cầu qua trạm không có khung nào: coi như mất (máy tính rớt giữa chừng), hỏi lại
+const RETRY_MS = 120000;        // chờ máy tính chuẩn bị / tải trận: lỗi kết nối liên tiếp quá lâu mới báo lỗi
+const fatal = e => { e.fatal = true; return e; };     // lỗi không thử lại (máy tính trả lỗi rõ ràng)
+const sleep = ms => new Promise(res => setTimeout(res, ms));
 
 // bản app Android mới nhất (Release tag mobile-v<N>, không phải "latest" của bản Windows); null nếu không hỏi được
 async function latestApp() {
@@ -84,7 +89,16 @@ class Store {
 // Kết nối qua trạm chuyển tiếp (khung tin xem relay/src/index.js và mapcap/relay_client.py).
 // fetch(path) trả Response như fetch thường; thân đọc dần, mỗi 4 khung nhận được cấp thêm 4 tín dụng cho máy tính.
 class Relay {
-  constructor(room) { this.room = room; this.ws = null; this.ready = null; this.n = 0; this.pending = new Map(); this.pcOn = false; }
+  constructor(room) {
+    this.room = room; this.ws = null; this.ready = null; this.n = 0; this.pending = new Map(); this.pcOn = false;
+    this.pcWait = [];             // hàm gọi khi máy tính kết nối lại
+    this.pcSeen = false;          // máy tính đã online trong phiên này (rớt thì chờ nối lại; tắt hẳn từ đầu thì báo ngay)
+  }
+  _pcBack() { this.pcSeen = true; const w = this.pcWait; this.pcWait = []; for (const f of w) f(); }
+  async _waitPc(ms) {
+    if (this.pcOn) return;
+    await new Promise(res => { const t = setTimeout(res, ms); this.pcWait.push(() => { clearTimeout(t); res(); }); });
+  }
   _connect() {
     if (this.ready) return this.ready;
     this.ready = new Promise((resolve, reject) => {
@@ -100,9 +114,10 @@ class Relay {
         if (j.hello) {
           clearTimeout(timer);
           this.ws = ws; this.pcOn = !!j.pc;
+          if (this.pcOn) this._pcBack();
           ping = setInterval(() => { try { ws.send("ping"); } catch { /* đang đóng */ } }, 25000);
           resolve(ws);
-        } else if (j.pc === "on") this.pcOn = true;
+        } else if (j.pc === "on") { this.pcOn = true; this._pcBack(); }
         else if (j.pc === "off") { this.pcOn = false; this._failAll(new Error(OFFLINE)); }
         else if (j.err) this._fail(j.r, new Error(j.err === "pc-offline" ? OFFLINE : j.err));
       };
@@ -131,11 +146,20 @@ class Relay {
   }
   async fetch(path) {
     await this._connect();
+    if (!this.pcOn && this.pcSeen) await this._waitPc(PC_BACK_MS);
     if (!this.pcOn) throw new Error(OFFLINE);
     const r = ++this.n;
     return new Promise((resolve, reject) => {
-      let ctl = null, got = 0, started = false;
-      const done = () => this.pending.delete(r);
+      let ctl = null, got = 0, started = false, lost = 0;
+      const arm = () => {           // không có khung nào quá HEAD_MS: máy tính rớt mà trạm chưa biết
+        clearTimeout(lost);
+        lost = setTimeout(() => {
+          this._send({ r, x: 1 });
+          this._fail(r, new Error("máy tính không trả lời qua trạm chuyển tiếp"));
+        }, HEAD_MS);
+      };
+      arm();
+      const done = () => { clearTimeout(lost); this.pending.delete(r); };
       const stream = new ReadableStream({
         start(c) { ctl = c; },
         cancel: () => { done(); this._send({ r, x: 1 }); },
@@ -143,11 +167,13 @@ class Relay {
       this.pending.set(r, {
         head: h => {
           started = true;
+          arm();
           const headers = { "Content-Type": h.type || "application/octet-stream" };
           if (h.size >= 0) headers["Content-Length"] = String(h.size);
           resolve(new Response(stream, { status: h.status || 200, headers }));
         },
         data: b => {
+          arm();
           ctl.enqueue(new Uint8Array(b));
           if (++got % 4 === 0) this._send({ r, k: 4 });
         },
@@ -216,9 +242,25 @@ class Source {
     if (!r.ok) throw new Error("máy tính trả lỗi " + r.status);
     return r.json();
   }
+  // lỗi kết nối (máy tính rớt khỏi trạm, điện thoại đổi mạng): thử lại tới RETRY_MS rồi mới báo. Trước mobile-v5 lỗi
+  // giữa chừng làm trang đứng mãi ở thông báo cuối ("đang chuẩn bị trận… 0%") hoặc báo lỗi phải mở lại trận.
+  async _retry(fn, onStatus, on = true) {
+    if (!on) return fn();
+    let since = 0;
+    for (;;) {
+      try { return await fn(); }
+      catch (e) {
+        if (e.fatal) throw e;
+        since = since || Date.now();
+        if (Date.now() - since > RETRY_MS) throw e;
+        onStatus && onStatus("Mất kết nối máy tính, đang thử lại… (" + e.message + ")");
+        await sleep(2000);
+      }
+    }
+  }
   async _download(path, onProgress) {
     const r = await this.fetch(path);
-    if (!r.ok) throw new Error("tải lỗi " + r.status);
+    if (!r.ok) { const e = new Error("tải lỗi " + r.status); throw r.status >= 502 ? e : fatal(e); }
     const total = +r.headers.get("Content-Length") || 0;
     const reader = r.body.getReader();
     const parts = [];
@@ -232,19 +274,26 @@ class Source {
     return await new Blob(parts).arrayBuffer();
   }
   // máy tính chuyển trận sang .aoeweb lần đầu (vài chục giây): hỏi lại tới khi xong
-  async _fetchMatch(file, onStatus) {
+  async _fetchMatch(file, onStatus, retry = true) {
     const url = "api/match?f=" + encodeURIComponent(file);
     for (;;) {
-      const r = await this.fetch(url + "&check=1");
-      if (!r.ok) throw new Error("không kết nối được máy tính (" + r.status + ")");
-      const j = await r.json();
+      const j = await this._retry(async () => {
+        const r = await this.fetch(url + "&check=1");
+        if (!r.ok) {
+          const e = new Error("không kết nối được máy tính (" + r.status + ")");
+          throw r.status >= 502 ? e : fatal(e);       // 502..504: đường chuyển tiếp lỗi, thử lại
+        }
+        return r.json();
+      }, onStatus, retry);
       if (j.error) throw new Error(j.error);
       if (j.ready) break;
       onStatus && onStatus(j.waiting ? "Máy tính đang ghi trận: sẽ chuẩn bị trận này khi hết trận…"
+        : j.ahead ? "Máy tính đang chuẩn bị một trận khác, xong sẽ tới trận này…"
         : "Máy tính đang chuẩn bị trận… " + Math.round((j.progress || 0) * 100) + "%");
-      await new Promise(res => setTimeout(res, 1000));
+      await sleep(1000);
     }
-    return this._download(url, f => onStatus && onStatus("Đang tải trận… " + Math.round(f * 100) + "%"));
+    return this._retry(() => this._download(url, f => onStatus && onStatus("Đang tải trận… " + Math.round(f * 100) + "%")),
+      onStatus, retry);
   }
   async match(file, info, onStatus) {
     let old = null;
@@ -254,7 +303,7 @@ class Source {
       old = b;                    // bản lưu cũ (chưa có bảng thông số): lấy lại từ máy tính nếu được
     }
     let buf;
-    try { buf = await this._fetchMatch(file, onStatus); }
+    try { buf = await this._fetchMatch(file, onStatus, !old); }     // có bản lưu cũ: lỗi thì mở bản cũ ngay
     catch (e) { if (old) { this.store.touch(file); return old; } throw e; }
     if (old && webVersion(buf) < WEB_VERSION) { this.store.touch(file); return old; }   // máy tính chưa cập nhật
     if (this.store) await this.store.saveMatch(file, buf, info);
@@ -265,8 +314,8 @@ class Source {
       const b = await this.store.get("/s/sprites");
       if (b) return b;
     }
-    const buf = await this._download("api/sprites",
-      f => onStatus && onStatus("Đang tải hình game từ máy tính (một lần)… " + Math.round(f * 100) + "%"));
+    const buf = await this._retry(() => this._download("api/sprites",
+      f => onStatus && onStatus("Đang tải hình game từ máy tính (một lần)… " + Math.round(f * 100) + "%")), onStatus);
     if (this.store) await this.store.put("/s/sprites", buf);
     return buf;
   }

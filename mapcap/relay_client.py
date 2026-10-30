@@ -14,6 +14,7 @@ import http.client
 import json
 import os
 import secrets
+import select
 import struct
 import threading
 import time
@@ -25,6 +26,7 @@ RELAY = "https://aoe-mapcap-relay.aoemapcap.workers.dev"
 ROOM_CHARS = "abcdefghjkmnpqrstuvwxyz23456789"
 CHUNK = 64 << 10
 PING_EVERY = 25                 # giây: giữ kết nối (trạm trả "pong" mà không thức dậy)
+IO_TIMEOUT = 60                 # giây: một lần gửi / đọc trên socket không xong thì coi như mất kết nối
 CREDIT_WAIT = 120               # giây: điện thoại không cấp thêm tín dụng -> bỏ luồng
 
 HEAD, DATA, END, ERR = 1, 2, 3, 4
@@ -69,6 +71,10 @@ class RelayClient:
         self.state = "connecting"
         self.stopped = False
         self.ws = None
+        # mọi thao tác TLS trên socket (gửi của các luồng yêu cầu, đọc của vòng chính) đi qua khoá này: OpenSSL không
+        # cho đọc và ghi cùng lúc trên một kết nối từ hai luồng. Trước v18 vòng chính đọc không khoá trong lúc các
+        # luồng gửi khung dữ liệu: bản ghi TLS hỏng, Cloudflare cắt kết nối sau vài chục MB ("Connection to remote
+        # host was lost"), yêu cầu đang chạy của điện thoại mất.
         self.send_lock = threading.Lock()
         self.cond = threading.Condition()
         self.streams = {}                                 # (c, r) -> {"credit", "cancel"}
@@ -84,7 +90,7 @@ class RelayClient:
         ws = self.ws
         if ws is not None:
             try:
-                ws.close()
+                ws.abort()                               # đóng socket, không ghi TLS (vòng chính có thể đang đọc)
             except Exception:  # noqa: BLE001
                 pass
         self._cancel_all()
@@ -133,13 +139,22 @@ class RelayClient:
 
     def _loop(self, ws):
         import websocket
-        ws.settimeout(PING_EVERY)
+        ws.settimeout(IO_TIMEOUT)
+        sock = ws.sock
+        pending = getattr(sock, "pending", lambda: 0)          # TLS: byte đã giải mã còn trong bộ đệm
         last = time.time()
         while not self.stopped:
-            try:
-                op, data = ws.recv_data()
-            except websocket.WebSocketTimeoutException:
-                op, data = None, None
+            # chờ có dữ liệu mà không giữ khoá (các luồng vẫn gửi được), rồi đọc trong khoá
+            ready = bool(getattr(ws.frame_buffer, "recv_buffer", None)) or pending() > 0
+            if not ready:
+                ready = bool(select.select([sock], [], [], 1.0)[0])
+            op = data = None
+            if ready:
+                try:
+                    with self.send_lock:
+                        op, data = ws.recv_data()
+                except websocket.WebSocketTimeoutException:
+                    pass
             if time.time() - last >= PING_EVERY:
                 with self.send_lock:
                     ws.send("ping")

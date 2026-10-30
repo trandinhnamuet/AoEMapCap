@@ -172,11 +172,15 @@ def main():
         b.goto(origin + "/app/index.html")
         b.wait("!document.querySelector('#list').hidden && document.querySelectorAll('.match').length", timeout=60)
         b.eval("document.querySelector('.match').click(); 1")
+        # máy tính rớt khỏi trạm giữa lúc tải (mạng chập chờn): nối lại sau 2 s, điện thoại tự thử lại (mobile-v5)
+        b.wait("(document.querySelector('#v-status').textContent || '').includes('Đang tải trận')", timeout=120)
+        relay.ws.abort()
+        b.wait("(document.querySelector('#v-status').textContent || '').includes('thử lại')", timeout=30)
         b.wait("location.search.startsWith('?m=') && window.aoeViewer && document.querySelector('#v-status').hidden",
                timeout=300)
         assert b.eval("(async () => !!(await (await caches.open('aoe-web-1')).match('/m/" + enc + "')))()")
-        print(f"khác mạng: mạng nhà không vào được -> danh sách + trận qua trạm Cloudflare "
-              f"({__import__('time').time() - t0:.0f} s): OK")
+        print(f"khác mạng: mạng nhà không vào được -> danh sách + trận qua trạm Cloudflare, máy tính rớt khỏi trạm "
+              f"giữa lúc tải thì tự thử lại ({__import__('time').time() - t0:.0f} s): OK")
         b.eval(f"localStorage.setItem('aoe.pc', '127.0.0.1:{port}/t'); 1")
 
         # quét QR bằng camera thường -> trang của máy tính trong Chrome Android: mời tải / mở app

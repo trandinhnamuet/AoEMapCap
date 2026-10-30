@@ -271,9 +271,9 @@ class ReplayData:
         finally:
             self.done = True
 
-    def _index(self):
+    def _index(self, progress=None):
         """Đọc tuần tự cả file: vị trí từng mẫu (bản ghi ngoài (off, n) hoặc trong khối ('B', khối, thứ tự)),
-        điểm mốc, bản ghi vật thể tĩnh ('S' toàn bộ / 'Q' phần đổi), chỉ số def."""
+        điểm mốc, bản ghi vật thể tĩnh ('S' toàn bộ / 'Q' phần đổi), chỉ số def. progress(tỉ lệ byte đã đọc)."""
         t0 = time.time()
         st = FrameState(self.map_w, self.map_h)
         pos = self._pos
@@ -334,6 +334,8 @@ class ReplayData:
             self._idx_pos = pos
             if (len(self.f_off) & 63) == 0:
                 time.sleep(0)                        # nhường GIL cho luồng vẽ
+                if progress:
+                    progress(pos / self.size)
         self.final_tech_times = {k: dict(v) for k, v in st.tech_times.items()}
         self.index_seconds = time.time() - t0
 

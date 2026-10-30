@@ -40,6 +40,7 @@ INDEX_SCALE_DIV = 2             # bản đồ chỉ số ô: nhỏ hơn ảnh đ
 F_DOP, F_BLD, F_FOGVIS, F_HIDE, F_DOPOK = 1, 2, 4, 8, 16
 ROW_DT = np.dtype([("uid", "<i4"), ("key", "<u4"), ("x", "<f4"), ("y", "<f4"), ("z", "<f4"), ("owner", "u1"),
                    ("flags", "u1")])
+_ROW_V = np.dtype((np.void, ROW_DT.itemsize))   # một hàng ROW_DT như một khối byte (so sánh cả hàng)
 
 SPR_MAGIC = b"AOESPR01"
 FOG_DIM = 0.43                  # như replay.viewer.FOG_DIM (không import viewer: kéo theo pygame / moderngl)
@@ -91,7 +92,12 @@ class _Keys:
         return i
 
     def ids_of(self, keys):
-        return np.array([self.id_of(k) for k in keys.tolist()], np.uint32)
+        # vật thể tĩnh: hàng chục nghìn hàng, vài trăm khoá; cấp số theo thứ tự gặp đầu như trước
+        u, first, inv = np.unique(keys, return_index=True, return_inverse=True)
+        ids = np.empty(len(u), np.uint32)
+        for j in np.argsort(first, kind="stable").tolist():
+            ids[j] = self.id_of(u[j].item())
+        return ids[inv.ravel()]
 
     def to_bytes(self):
         n = len(self.spans)
@@ -189,15 +195,17 @@ def _palette_rgb(world, owner):
 
 
 def export_match(path, out_path, game_dir, log=None, progress=None):
-    """Chuyển một trận .aoerec -> .aoeweb. Trả về dict thống kê (cỡ, thời gian)."""
+    """Chuyển một trận .aoerec -> .aoeweb. Trả về dict thống kê (cỡ, thời gian). progress(0..1): theo các bước
+    (đọc file 0-20%, các mẫu 20-90%, vật thể tĩnh và bảng HUD 90-100%) để điện thoại không đứng ở 0%."""
     from replay.data import ReplayData, normalize_units
     from replay.library import match_info
     from replay.world import World, load_graphics
     log = log or (lambda m: None)
+    prog = progress or (lambda f: None)
     t0 = time.time()
     d = ReplayData(path)
     try:
-        d._index()
+        d._index(progress=lambda f: prog(0.2 * f))
         if d.n_frames == 0:
             raise ValueError("trận không có mẫu nào")
         dat, store, pal = load_graphics(game_dir)
@@ -278,8 +286,8 @@ def export_match(path, out_path, game_dir, log=None, progress=None):
                           V.ravel()[ch_idx].astype("<u4").tobytes()]
             prev_vis = V.copy()
             buf.append(b"".join(parts))
-            if progress and (fi & 255) == 0:
-                progress(fi / n)
+            if (fi & 255) == 0:
+                prog(0.2 + 0.7 * fi / n)
         chunks.append(buf)
         for k, c in enumerate(chunks):
             add(f"c{k}", _z(b"".join(c)))
@@ -288,22 +296,28 @@ def export_match(path, out_path, game_dir, log=None, progress=None):
         t_frames = time.time() - t0 - t_terrain
 
         # vật thể tĩnh: bản ghi đầu toàn bộ, sau đó chỉ phần đổi (kể cả các bản 'S' toàn bộ của file gốc)
+        prog(0.9)
         srecs = []
-        scur = {}
+        scur = None                                # hàng bản ghi trước, sắp theo uid (so bằng numpy: hàng chục nghìn hàng)
         for si in range(len(d.s_first)):
             _ver, S = d.load_statics(si)
             R = maker.rows(S)
-            new = {int(r["uid"]): r.tobytes() for r in R}
-            if si == 0:
+            if scur is None:
                 out, rem = R, []
             else:
-                keep = [i for i, r in enumerate(R) if scur.get(int(r["uid"])) != new[int(r["uid"])]]
-                out = R[keep]
-                rem = [u for u in scur if u not in new]
-            scur = new
+                pu = scur["uid"]
+                if len(pu):
+                    k = np.minimum(np.searchsorted(pu, R["uid"]), len(pu) - 1)
+                    same = (pu[k] == R["uid"]) & (scur.view(_ROW_V)[k] == R.view(_ROW_V))
+                else:
+                    same = np.zeros(len(R), bool)
+                out = R[~same]                     # giữ thứ tự hàng (điện thoại vẽ theo thứ tự khi trùng chỗ)
+                rem = pu[~np.isin(pu, R["uid"])].tolist()
+            scur = R[np.argsort(R["uid"], kind="stable")]
             srecs.append(struct.pack("<iBI", d.s_first[si], 1 if si == 0 else 0, len(out)) + _rows_bytes(out) +
                          struct.pack("<I", len(rem)) + np.array(rem, "<i4").tobytes())
         add("statics", _z(struct.pack("<I", len(srecs)) + b"".join(srecs)))
+        prog(0.94)
 
         add("times", _z(np.array(d.f_t, "<i4").tobytes() + np.array(d.f_r, "<f4").tobytes()))
         sb = b""
@@ -314,6 +328,7 @@ def export_match(path, out_path, game_dir, log=None, progress=None):
         add("seen", _z(sb))
         add("keys", _z(keys.to_bytes()))
         add("sd", _z(json.dumps(hud.statics_detail(), separators=(",", ":"), allow_nan=False).encode("utf-8")))
+        prog(0.97)
         hud_meta = hud.tables()
         hud_meta["icons"] = {}
         for sid, b in hud.icon_slps(game_dir).items():

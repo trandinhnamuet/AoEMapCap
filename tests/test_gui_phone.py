@@ -77,7 +77,9 @@ def main():
     app.show_page("phone")
     pump(root, 0.2)
 
-    # bật: địa chỉ + mã QR đọc ngược ra đúng địa chỉ
+    # bật: địa chỉ + mã QR đọc ngược ra đúng địa chỉ. Coi như đang ghi trận để máy chủ không chuyển sẵn trận mới nhất
+    # trong lúc chờ trạm (phần "đang ghi trận" bên dưới cần trận chưa chuyển chút nào)
+    app._recording = True
     app._phone_start()
     pump(root, 0.2)
     assert app._phone_running(), "không bật được"
@@ -116,7 +118,6 @@ def main():
     print("máy chủ: danh sách trận đúng thư mục Raw của cấu hình, trang web: OK")
 
     # đang ghi trận: hoãn chuyển trận (không tốn CPU khi đang chơi)
-    app._recording = True
     name = urllib.request.quote(os.path.basename(src))
     st = json.loads(get(url + f"api/match?f={name}&check=1"))
     assert st["ready"] is False
