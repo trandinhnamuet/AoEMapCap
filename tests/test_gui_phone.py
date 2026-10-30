@@ -3,7 +3,7 @@
     python tests/test_gui_phone.py [file.aoerec]
 
 Cấu hình + thư mục riêng trong Video\\_test\\gui_phone; mutex riêng của test; không gửi thống kê, không hỏi cập nhật.
-Máy chủ nghe mọi card mạng như bản thật nhưng test chỉ gọi 127.0.0.1. Chạy từ mã nguồn nên không thêm luật tường lửa.
+Máy chủ nghe mọi card mạng như bản thật nhưng test chỉ gọi 127.0.0.1; kết nối trạm chuyển tiếp thật (cần Internet). Chạy từ mã nguồn nên không thêm luật tường lửa.
 """
 import os
 import re
@@ -49,6 +49,7 @@ def main():
 
     from mapcap import engine as E
     from mapcap import gui
+    from mapcap import relay_client as RC
     out = os.path.join(ROOT, "Video", "_test", "gui_phone")
     shutil.rmtree(out, ignore_errors=True)
     raw = os.path.join(out, "Raw")
@@ -85,10 +86,28 @@ def main():
     assert re.fullmatch(r"\d+\.\d+\.\d+\.\d+:87\d\d/[a-z2-9]{6}", addr), addr
     assert url == f"http://{addr}/"
     assert app.btn_phone.cget("text") == "Tắt" and app.tray.phone_label == "Tắt cho điện thoại"
-    img = np.asarray(gui.App.qr_image(url).convert("L"))
+    pair = app.phone.pair_url()
+    assert pair == f"{RC.RELAY}/#r={app.phone.room}&l={addr}", pair
+    img = np.asarray(gui.App.qr_image(pair).convert("L"))
     text, _pts, _ = cv2.QRCodeDetector().detectAndDecode(img)
-    assert text == url, (text, url)
-    print(f"bật máy chủ: {url}, mã QR đọc ngược đúng địa chỉ: OK")
+    assert text == pair, (text, pair)
+    t0 = time.time()
+    while app.phone.relay_state() != "online" and time.time() - t0 < 40:
+        pump(root, 0.2)
+    pump(root, 1.2)
+    assert app.phone.relay_state() == "online", app.phone.relay_state()
+    assert "sẵn sàng" in app.phone_net.cget("text"), app.phone_net.cget("text")
+    try:                                                   # ảnh trang để xem bằng mắt
+        from PIL import ImageGrab
+        root.lift()
+        root.attributes("-topmost", True)
+        pump(root, 0.5)
+        x, y = root.winfo_rootx(), root.winfo_rooty()
+        ImageGrab.grab((x, y, x + root.winfo_width(), y + root.winfo_height())).save(os.path.join(out, "phone_page.png"))
+        root.attributes("-topmost", False)
+    except Exception as e:  # noqa: BLE001
+        print("không chụp được trang:", e)
+    print(f"bật máy chủ: {url}, mã QR đọc ngược đúng liên kết trạm (phòng + mạng nhà), trạm online: OK")
 
     # máy chủ trả danh sách trận + trang web (bản có nút Quét mã QR)
     items = json.loads(get(url + "api/matches"))
@@ -122,6 +141,7 @@ def main():
     pump(root, 0.5)
     assert app._phone_running() and app.page == "phone"
     assert app.phone.url == url, "bật lại phải giữ nguyên địa chỉ (mã trong token.txt)"
+    assert app.phone.pair_url() == pair, "bật lại phải giữ nguyên phòng (relay.txt): điện thoại không phải quét lại"
     print("menu khay: tắt / bật cho điện thoại, giữ nguyên địa chỉ: OK")
 
     # tự bật khi mở app

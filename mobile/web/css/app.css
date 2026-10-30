@@ -45,6 +45,8 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .setup .primary { padding: 12px; border-radius: 10px; background: var(--gold); color: #1a1408; font-weight: 600; }
 .setup .second { padding: 12px; border-radius: 10px; border: 1px solid var(--gold); color: var(--gold); font-weight: 600; }
 .setup .or { text-align: center; font-size: 13px; }
+.setup-manual { display: flex; flex-direction: column; gap: 12px; }
+.setup-manual[hidden] { display: none; }
 .setup .msg { padding: 0; text-align: left; }
 .note a { color: var(--text); font-weight: 600; }
 .setup .link { color: var(--gold); padding: 8px 0; }

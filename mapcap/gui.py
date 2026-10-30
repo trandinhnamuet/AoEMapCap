@@ -100,7 +100,7 @@ class ExportDialog:
 
 class App:
     PAGES = (("matches", "", "Trận đã ghi", "Xem lại trận: tua, đổi góc nhìn, xuất video khi cần"),
-             ("phone", "", "Điện thoại", "Xem lại trận trên điện thoại Android cùng Wi-Fi: quét mã QR để kết nối"),
+             ("phone", "", "Điện thoại", "Xem lại trận trên điện thoại Android ở bất kỳ mạng nào: quét mã QR để kết nối"),
              ("settings", "", "Cài đặt", "Ghi trận, thư mục lưu, xuất video, thống kê sử dụng"),
              ("log", "", "Nhật ký", "Hoạt động của bộ ghi, xuất video và cập nhật"))
 
@@ -340,6 +340,9 @@ class App:
         right.pack(side="left", fill="both", expand=True, anchor="n")
         self.phone_state = tk.Label(right, text="", bg=C["panel"], fg="#ffffff", font=theme.F(12, "bold"), anchor="w")
         self.phone_state.pack(fill="x")
+        self.phone_net = tk.Label(right, text="", bg=C["panel"], fg=C["muted"], font=theme.F(10), anchor="w",
+                                  justify="left", wraplength=600)
+        self.phone_net.pack(fill="x", pady=(4, 0))
         row = tk.Frame(right, bg=C["panel"])
         row.pack(fill="x", pady=(10, 6))
         self.btn_phone = ttk.Button(row, text="", command=self._phone_toggle, width=24)
@@ -348,18 +351,19 @@ class App:
                         command=self._phone_auto_changed).pack(side="left", padx=(16, 0))
         row = tk.Frame(right, bg=C["panel"])
         row.pack(fill="x", pady=(4, 10))
-        ttk.Label(row, text="Địa chỉ (nhập tay nếu không quét được)", style="Card.TLabel").pack(side="left")
+        ttk.Label(row, text="Địa chỉ trong mạng nhà (nhập tay)", style="Card.TLabel").pack(side="left")
         self.phone_entry = ttk.Entry(row, textvariable=self.var_phone_addr, width=30, state="readonly")
         self.phone_entry.pack(side="left", padx=(10, 6))
         ttk.Button(row, text="Sao chép", command=self._phone_copy).pack(side="left")
-        steps = ("1. Điện thoại Android và máy tính dùng chung Wi-Fi.\n"
+        steps = ("1. Điện thoại dùng 4G hay Wi-Fi nào cũng được; máy tính cần có Internet và để AoE-MapCap mở.\n"
                  "2. Chưa có app: quét mã bằng camera điện thoại. Trang mở ra xem trận được ngay và có nút Tải app "
                  "(Android 8 trở lên).\n"
-                 "3. Đã có app: mở app AoE-MapCap, bấm Quét mã QR. Trận đã mở được lưu trên điện thoại, xem được cả khi "
-                 "máy tính tắt.")
+                 "3. Đã có app: mở app AoE-MapCap, bấm Quét mã QR (chỉ cần quét một lần). Trận đã mở được lưu trên "
+                 "điện thoại, xem được cả khi máy tính tắt.")
         ttk.Label(right, text=steps, style="Card.TLabel", justify="left", wraplength=600).pack(fill="x", anchor="w")
-        ttk.Label(right, text="Hình game lấy từ bộ cài game trên máy này và chỉ gửi sang điện thoại trong cùng mạng. "
-                              "Lần đầu mở một trận, máy tính cần khoảng một phút để chuẩn bị; khi đang ghi trận, việc "
+        ttk.Label(right, text="Hình game lấy từ bộ cài game trên máy này và chỉ gửi sang điện thoại của bạn: cùng "
+                              "mạng thì gửi thẳng, khác mạng thì đi qua trạm chuyển tiếp của AoE-MapCap (không lưu lại). "
+                              "Mã QR là chìa khoá vào máy này, đừng chia sẻ. Lần đầu mở một trận, máy tính cần khoảng một phút để chuẩn bị; khi đang ghi trận, việc "
                               "chuẩn bị đợi tới hết trận để không làm game giật.",
                   style="CardMuted.TLabel", justify="left", wraplength=600).pack(fill="x", anchor="w", pady=(10, 0))
         self._phone_refresh()
@@ -403,6 +407,7 @@ class App:
             if self.phone is None:
                 from .mobile_server import PhoneServer
                 self.phone = PhoneServer(log=lambda m: self.q.put("điện thoại: " + m))
+                self.root.after(1000, self._phone_tick)
             url = self.phone.start(raw, gd, busy=lambda: self._recording)
         except Exception as e:  # noqa: BLE001
             self._append(f"điện thoại: không bật được: {e}")
@@ -453,7 +458,7 @@ class App:
             self.btn_phone.configure(text="Tắt", style="TButton")
             self.var_phone_addr.set(self.phone.address())
             try:
-                self._phone_img = self._qr_photo(self.phone.url)
+                self._phone_img = self._qr_photo(self.phone.pair_url())
             except Exception as e:  # noqa: BLE001  - thiếu thư viện qrcode: vẫn nhập tay được
                 self._phone_img = None
                 self._append(f"điện thoại: không tạo được mã QR: {e}")
@@ -462,12 +467,39 @@ class App:
             self.btn_phone.configure(text="Bật cho điện thoại xem trận", style="Accent.TButton")
             self.var_phone_addr.set("")
             self._phone_img = None
+        self._phone_net_refresh()
         if self._phone_img is None:
             from PIL import Image, ImageTk
             self._phone_img = ImageTk.PhotoImage(Image.new("RGB", (232, 232), C["panel2"]))
         self.phone_qr.configure(image=self._phone_img)
         if self.tray is not None:
             self.tray.phone_label = "Tắt cho điện thoại" if on else "Bật cho điện thoại"
+
+    def _phone_net_refresh(self):
+        """Dòng trạng thái kết nối qua Internet (trạm chuyển tiếp, mapcap/relay_client.py)."""
+        C = theme.C
+        if not self._phone_running():
+            self.phone_net.configure(text="")
+            return
+        st = self.phone.relay_state()
+        if st == "online":
+            text, fg = "Qua Internet: sẵn sàng. Điện thoại dùng 4G hay Wi-Fi khác đều xem được.", C["green"]
+        elif st == "connecting":
+            text, fg = "Qua Internet: đang kết nối…", C["muted"]
+        else:
+            why = st.split(":", 1)[1].strip() if ":" in st else ""
+            text = ("Qua Internet: chưa kết nối được" + (f" ({why[:80]})" if why else "") +
+                    ". Đang thử lại; trong lúc đó điện thoại cùng Wi-Fi vẫn xem được.")
+            fg = C["lose"]
+        if self.phone_net.cget("text") != text:
+            self.phone_net.configure(text=text, fg=fg)
+
+    def _phone_tick(self):
+        try:
+            self._phone_net_refresh()
+        except tk.TclError:
+            return                                        # cửa sổ đã đóng
+        self.root.after(1000, self._phone_tick)
 
     def _build_settings(self):
         tab = tk.Frame(self.content, bg=theme.C["bg"])

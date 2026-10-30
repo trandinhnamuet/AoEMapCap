@@ -92,11 +92,14 @@ public class MainActivity extends Activity {
         if (pair != null || state == null || web.restoreState(state) == null) web.loadUrl(pair != null ? pair : START);
     }
 
-    /** aoemapcap://pair?a=192.168.1.5:8765/abc123 (nút "Mở trong app" trên trang của máy tính) -> trang ?pair=... */
+    /** Nút "Mở trong app" trên trình duyệt -> trang ?pair=...:
+     *  aoemapcap://pair?r=<phòng trên trạm chuyển tiếp>&l=<ip:cổng/mã> (từ mobile-v3) -> ?pair=r=...&l=...;
+     *  aoemapcap://pair?a=192.168.1.5:8765/abc123 (trang của máy tính, v14) -> ?pair=192.168.1.5:8765/abc123. */
     private static String pairUrl(Intent intent) {
         Uri d = intent == null ? null : intent.getData();
         if (d == null || !"aoemapcap".equals(d.getScheme()) || !"pair".equals(d.getHost())) return null;
         String a = d.getQueryParameter("a");
+        if (a == null && d.getQueryParameter("r") != null) a = d.getEncodedQuery();
         return a == null ? null : START + "?pair=" + Uri.encode(a);
     }
 

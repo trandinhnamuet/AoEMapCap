@@ -1,18 +1,27 @@
-// Màn hình danh sách trận + mở trình xem. Hai cách chạy:
+// Màn hình danh sách trận + mở trình xem. Ba cách chạy:
 // - trình duyệt mở thẳng máy chủ AoE-MapCap trên máy tính (http://<ip>:8765/<mã>/): nguồn là chính máy chủ đó;
-// - app Android: trang nằm trong app (https://appassets.androidplatform.net/app/), địa chỉ máy tính lấy bằng quét mã
-//   QR trên app Windows (AoEApp.scanQr), mở app từ trình duyệt (aoemapcap://pair -> ?pair=) hoặc nhập tay; app chuyển
-//   tiếp /pc/<ip:cổng>/<mã>/... sang http://<ip:cổng>/<mã>/... (cùng nguồn, không vướng CORS / mixed content).
-//   Gói hình và trận đã mở được lưu trên điện thoại (Cache Storage) để xem khi máy tính tắt.
+// - app Android: trang nằm trong app (https://appassets.androidplatform.net/app/). Ghép đôi bằng quét mã QR trên app
+//   Windows (AoEApp.scanQr), mở app từ trình duyệt (aoemapcap://pair -> ?pair=) hoặc nhập tay địa chỉ mạng nhà. Mã QR
+//   có r = phòng trên trạm chuyển tiếp và l = địa chỉ mạng nhà. Lấy dữ liệu: thử mạng nhà trước (app chuyển tiếp
+//   /pc/<ip:cổng>/<mã>/... sang http://<ip:cổng>/<mã>/...), không được thì qua trạm (Relay, relay/src/index.js);
+// - trình duyệt mở trang trên trạm (quét mã QR bằng camera thường, https://<trạm>/#r=...): chỉ qua trạm (trang https
+//   không gọi được http trong mạng nhà).
+// Trong app và trên trạm, gói hình và trận đã mở được lưu trên điện thoại (Cache Storage) để xem khi máy tính tắt.
 import { SpritePack } from "./sprites.js";
 import { fmtClock, Viewer } from "./viewer.js";
 
 const IN_APP = location.hostname === "appassets.androidplatform.net";
+const CLOUD = !IN_APP && location.protocol === "https:";      // trang trên trạm chuyển tiếp
+const PAIRED = IN_APP || CLOUD;                                // ghép đôi + lưu trận trên điện thoại
 const PC_KEY = "aoe.pc";
+const ROOM_KEY = "aoe.room";
 const MAX_SAVED = 40;           // số trận giữ trên điện thoại, bỏ trận mở lâu nhất
 const REPO = "trandinhnamuet/AoEMapCap";
 const APP_PKG = "io.github.trandinhnamuet.aoemapcap";
 const RELEASES = `https://github.com/${REPO}/releases`;
+const RELAY = CLOUD ? location.origin : "https://aoe-mapcap-relay.aoemapcap.workers.dev";
+const CREDIT = 16;              // số khung 64 KB máy tính được gửi trước khi điện thoại nhận (trạm chỉ giữ tạm ~1 MB)
+const OFFLINE = "Máy tính chưa sẵn sàng: mở AoE-MapCap trên máy tính, bật mục Điện thoại và kiểm tra Internet.";
 
 // bản app Android mới nhất (Release tag mobile-v<N>, không phải "latest" của bản Windows); null nếu không hỏi được
 async function latestApp() {
@@ -71,16 +80,133 @@ class Store {
   }
 }
 
+// Kết nối qua trạm chuyển tiếp (khung tin xem relay/src/index.js và mapcap/relay_client.py).
+// fetch(path) trả Response như fetch thường; thân đọc dần, mỗi 4 khung nhận được cấp thêm 4 tín dụng cho máy tính.
+class Relay {
+  constructor(room) { this.room = room; this.ws = null; this.ready = null; this.n = 0; this.pending = new Map(); this.pcOn = false; }
+  _connect() {
+    if (this.ready) return this.ready;
+    this.ready = new Promise((resolve, reject) => {
+      const ws = new WebSocket(RELAY.replace(/^http/, "ws") + "/r/" + this.room + "?role=phone");
+      ws.binaryType = "arraybuffer";
+      let ping = 0;
+      const timer = setTimeout(() => { reject(new Error("không kết nối được trạm chuyển tiếp (Internet?)")); ws.close(); }, 15000);
+      ws.onmessage = ev => {
+        if (typeof ev.data !== "string") return this._frame(ev.data);
+        if (ev.data === "pong") return;
+        let j;
+        try { j = JSON.parse(ev.data); } catch { return; }
+        if (j.hello) {
+          clearTimeout(timer);
+          this.ws = ws; this.pcOn = !!j.pc;
+          ping = setInterval(() => { try { ws.send("ping"); } catch { /* đang đóng */ } }, 25000);
+          resolve(ws);
+        } else if (j.pc === "on") this.pcOn = true;
+        else if (j.pc === "off") { this.pcOn = false; this._failAll(new Error(OFFLINE)); }
+        else if (j.err) this._fail(j.r, new Error(j.err === "pc-offline" ? OFFLINE : j.err));
+      };
+      ws.onclose = () => {
+        clearTimeout(timer); clearInterval(ping);
+        this.ws = null; this.ready = null;
+        this._failAll(new Error("mất kết nối trạm chuyển tiếp"));
+        reject(new Error("không kết nối được trạm chuyển tiếp (Internet?)"));
+      };
+    });
+    return this.ready;
+  }
+  _send(o) { try { this.ws && this.ws.send(JSON.stringify(o)); } catch { /* đang đóng */ } }
+  _fail(r, e) { const p = this.pending.get(r); if (p) p.fail(e); }
+  _failAll(e) { for (const p of [...this.pending.values()]) p.fail(e); }
+  _frame(buf) {
+    if (buf.byteLength < 5) return;
+    const dv = new DataView(buf);
+    const p = this.pending.get(dv.getUint32(0, true));
+    if (!p) return;
+    const kind = dv.getUint8(4), body = buf.slice(5);
+    if (kind === 1) p.head(JSON.parse(new TextDecoder().decode(body)));
+    else if (kind === 2) p.data(body);
+    else if (kind === 3) p.end();
+    else p.fail(new Error(JSON.parse(new TextDecoder().decode(body)).error || "máy tính báo lỗi"));
+  }
+  async fetch(path) {
+    await this._connect();
+    if (!this.pcOn) throw new Error(OFFLINE);
+    const r = ++this.n;
+    return new Promise((resolve, reject) => {
+      let ctl = null, got = 0, started = false;
+      const done = () => this.pending.delete(r);
+      const stream = new ReadableStream({
+        start(c) { ctl = c; },
+        cancel: () => { done(); this._send({ r, x: 1 }); },
+      });
+      this.pending.set(r, {
+        head: h => {
+          started = true;
+          const headers = { "Content-Type": h.type || "application/octet-stream" };
+          if (h.size >= 0) headers["Content-Length"] = String(h.size);
+          resolve(new Response(stream, { status: h.status || 200, headers }));
+        },
+        data: b => {
+          ctl.enqueue(new Uint8Array(b));
+          if (++got % 4 === 0) this._send({ r, k: 4 });
+        },
+        end: () => { done(); ctl.close(); },
+        fail: e => { done(); if (started) { try { ctl.error(e); } catch { /* đã đóng */ } } else reject(e); },
+      });
+      this._send({ r, p: path, k: CREDIT });
+    });
+  }
+}
+
+function fetchTimeout(url, ms) {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), ms);
+  return fetch(url, { cache: "no-store", signal: ac.signal }).finally(() => clearTimeout(t));
+}
+
+// Nguồn trận. link: {base} (trang mở thẳng từ máy tính) | {lan, room} (app / trang trên trạm).
 class Source {
-  constructor(base, store) { this.base = base; this.store = store; }
+  constructor(link, store) {
+    this.link = link || {};
+    this.store = store;
+    this.relay = this.link.room ? new Relay(this.link.room) : null;
+    this.via = null;            // "lan" | "relay": chọn ở lần gọi đầu
+  }
+  get linked() { return !!(this.link.base || this.link.lan || this.link.room); }
+  async _pick() {
+    if (this.link.lan && IN_APP) {
+      try {
+        const r = await fetchTimeout("/pc/" + this.link.lan + "/api/matches", this.relay ? 3000 : 15000);
+        if (r.ok) return "lan";
+        if (!this.relay) throw new Error("máy tính trả lỗi " + r.status);
+      } catch (e) {
+        if (!this.relay) throw new Error("không kết nối được " + this.link.lan + " (" + e.message + ")");
+      }
+    }
+    if (this.relay) return "relay";
+    throw new Error("chưa kết nối máy tính");
+  }
+  async fetch(path) {
+    if (this.link.base) return fetch(this.link.base + path, { cache: "no-store" });
+    if (!this.linked) throw new Error("chưa kết nối máy tính");
+    if (!this.via) this.via = this._pick().catch(e => { this.via = null; throw e; });
+    if ((await this.via) === "lan") {
+      // app trả 502 khi không nối được máy tính: rời Wi-Fi nhà giữa chừng thì chuyển sang trạm
+      let r = null;
+      try { r = await fetch("/pc/" + this.link.lan + "/" + path, { cache: "no-store" }); }
+      catch (e) { if (!this.relay) throw e; }
+      if (r && (r.status !== 502 || !this.relay)) return r;
+      this.via = Promise.resolve("relay");
+    }
+    return this.relay.fetch(path);
+  }
   async list() {
-    if (!this.base) throw new Error("chưa nhập địa chỉ máy tính");
-    const r = await fetch(this.base + "api/matches", { cache: "no-store" });
+    const r = await this.fetch("api/matches");
     if (!r.ok) throw new Error("máy tính trả lỗi " + r.status);
     return r.json();
   }
-  async _download(url, onProgress) {
-    const r = await fetch(url, { cache: "no-store" });
+  async _download(path, onProgress) {
+    const r = await this.fetch(path);
     if (!r.ok) throw new Error("tải lỗi " + r.status);
     const total = +r.headers.get("Content-Length") || 0;
     const reader = r.body.getReader();
@@ -96,10 +222,9 @@ class Source {
   }
   // máy tính chuyển trận sang .aoeweb lần đầu (vài chục giây): hỏi lại tới khi xong
   async _fetchMatch(file, onStatus) {
-    if (!this.base) throw new Error("chưa nhập địa chỉ máy tính");
-    const url = this.base + "api/match?f=" + encodeURIComponent(file);
+    const url = "api/match?f=" + encodeURIComponent(file);
     for (;;) {
-      const r = await fetch(url + "&check=1", { cache: "no-store" });
+      const r = await this.fetch(url + "&check=1");
       if (!r.ok) throw new Error("không kết nối được máy tính (" + r.status + ")");
       const j = await r.json();
       if (j.error) throw new Error(j.error);
@@ -124,8 +249,7 @@ class Source {
       const b = await this.store.get("/s/sprites");
       if (b) return b;
     }
-    if (!this.base) throw new Error("chưa nhập địa chỉ máy tính");
-    const buf = await this._download(this.base + "api/sprites",
+    const buf = await this._download("api/sprites",
       f => onStatus && onStatus("Đang tải hình game từ máy tính (một lần)… " + Math.round(f * 100) + "%"));
     if (this.store) await this.store.put("/s/sprites", buf);
     return buf;
@@ -150,18 +274,44 @@ function parseAddr(t) {
   return m ? `${m[1]}:${m[2] || 8765}/${m[3].toLowerCase()}` : null;
 }
 
-// thử kết nối rồi lưu địa chỉ; tải lại trang để mọi phần dùng nguồn mới
-async function connect(addr, store) {
+// Nội dung mã QR / liên kết ghép đôi -> {room, lan} hoặc null. Nhận:
+//   https://<trạm>/#r=<phòng>&l=<ip:cổng/mã>, aoemapcap://pair?r=...&l=..., "r=...&l=..." (từ ?pair=),
+//   mã QR cũ (v14) http://<ip:cổng>/<mã>/, địa chỉ mạng nhà nhập tay.
+function parsePair(t) {
+  t = String(t || "").trim();
+  const r = /(?:^|[#?&])r=([a-z2-9]{20,40})(?:&|$)/i.exec(t);
+  if (r) {
+    const l = /(?:^|[#?&])l=([^&#]+)/.exec(t);
+    let lan = null;
+    try { lan = l ? parseAddr(decodeURIComponent(l[1])) : null; } catch { /* bỏ */ }
+    return { room: r[1].toLowerCase(), lan };
+  }
+  const lan = parseAddr(t);
+  return lan ? { room: null, lan } : null;
+}
+
+function savedLink() {
+  return { lan: localStorage.getItem(PC_KEY), room: localStorage.getItem(ROOM_KEY) };
+}
+
+function saveLink(link) {
+  for (const [k, v] of [[PC_KEY, link.lan], [ROOM_KEY, link.room]]) {
+    if (v) localStorage.setItem(k, v); else localStorage.removeItem(k);
+  }
+}
+
+// thử kết nối rồi lưu; tải lại trang để mọi phần dùng nguồn mới
+async function connect(link, store) {
   const msg = $("#setup-msg");
-  msg.textContent = "Đang kết nối " + addr + "…"; msg.className = "msg";
-  try { await new Source("/pc/" + addr + "/", store).list(); }
+  msg.textContent = "Đang kết nối máy tính…"; msg.className = "msg";
+  try { await new Source(link, store).list(); }
   catch (err) {
-    msg.textContent = "Không kết nối được " + addr + " (" + err.message + "). Kiểm tra: AoE-MapCap trên máy tính đã " +
-      "bật mục Điện thoại, điện thoại và máy tính cùng Wi-Fi.";
+    msg.textContent = "Không kết nối được máy tính (" + err.message + "). Kiểm tra: AoE-MapCap trên máy tính đang mở, " +
+      "đã bật mục Điện thoại" + (link.room ? " và máy tính có Internet." : "; nhập tay địa chỉ thì phải cùng Wi-Fi.");
     msg.className = "msg err";
     return false;
   }
-  localStorage.setItem(PC_KEY, addr);
+  saveLink(link);
   location.replace(location.pathname);
   return true;
 }
@@ -175,35 +325,39 @@ function showSetup(store) {
   $("#setup-offline").onclick = () => showList(new Source(null, store));
   const app = window.AoEApp;
   $("#scan-qr").hidden = !(app && app.scanQr);
+  $("#setup-camera").hidden = !CLOUD;
+  $("#setup-manual").hidden = CLOUD;          // trang https trên trạm không gọi được địa chỉ http trong mạng nhà
   $("#scan-qr").onclick = () => {
     msg.textContent = "Đang mở máy quét…"; msg.className = "msg";
     // app gọi lại: (nội dung mã, null) | (null, lỗi) | (null, null) = huỷ
     window.onQrResult = (text, err) => {
       if (err) { msg.textContent = "Không quét được: " + err + ". Có thể nhập tay bên dưới."; msg.className = "msg err"; return; }
       if (text == null) { msg.textContent = ""; return; }
-      const addr = parseAddr(text);
-      if (!addr) { msg.textContent = "Mã QR này không phải của AoE-MapCap."; msg.className = "msg err"; return; }
-      inp.value = addr;
-      connect(addr, store);
+      const link = parsePair(text);
+      if (!link) { msg.textContent = "Mã QR này không phải của AoE-MapCap."; msg.className = "msg err"; return; }
+      if (link.lan) inp.value = link.lan;
+      connect(link, store);
     };
     app.scanQr();
   };
   $("#setup-form").onsubmit = e => {
     e.preventDefault();
-    const addr = parseAddr(inp.value);
-    if (!addr) { msg.textContent = "Địa chỉ dạng 192.168.1.5:8765/abc123"; msg.className = "msg err"; return; }
-    connect(addr, store);
+    const link = parsePair(inp.value);
+    if (!link) { msg.textContent = "Địa chỉ dạng 192.168.1.5:8765/abc123"; msg.className = "msg err"; return; }
+    if (!link.room) link.room = localStorage.getItem(ROOM_KEY);   // giữ phòng đã ghép (đổi địa chỉ mạng nhà)
+    connect(link, store);
   };
 }
 
-// trình duyệt trên Android (quét QR bằng camera thường): mời tải / mở app
-async function appBanner(home) {
+// trình duyệt trên Android (quét QR bằng camera thường): mời tải / mở app (mở app thì app ghép đôi luôn)
+async function appBanner(link) {
   if (!/Android/i.test(navigator.userAgent)) return;
-  const addr = location.host + home.replace(/[^/]*$/, "").replace(/\/$/, "");
+  const q = link.room ? "r=" + link.room + (link.lan ? "&l=" + encodeURIComponent(link.lan) : "")
+    : "a=" + encodeURIComponent(link.lan);
   const ban = $("#app-banner");
   const dl = $("#app-dl");
   dl.href = RELEASES;
-  $("#app-open").href = `intent://pair?a=${encodeURIComponent(addr)}#Intent;scheme=aoemapcap;package=${APP_PKG};` +
+  $("#app-open").href = `intent://pair?${q}#Intent;scheme=aoemapcap;package=${APP_PKG};` +
     `S.browser_fallback_url=${encodeURIComponent(RELEASES)};end`;
   ban.hidden = false;
   const last = await latestApp();
@@ -255,8 +409,8 @@ async function showList(src) {
       <span>${esc(i.format)} · ${esc(i.map)}</span><span class="dur">${fmtClock(i.duration_ms || 0)}</span></div>
       <div class="row2">${tl}</div><div class="row3">${date}${have.has(it.file) ? `<span class="saved">đã lưu</span>` : ""}</div>`;
     el.onclick = () => {
-      if (!IN_APP) return openMatch(src, it.file, it.info);
-      // trong app: sang trang trận để nút Back của Android quay về danh sách
+      if (!PAIRED) return openMatch(src, it.file, it.info);
+      // trong app / trang trên trạm: sang trang trận để nút Back quay về danh sách
       sessionStorage.setItem("aoe.open", JSON.stringify(it));
       location.href = "?m=" + encodeURIComponent(it.file);
     };
@@ -298,17 +452,22 @@ async function main() {
   window.addEventListener("error", e => { document.title = "ERROR " + e.message; });
   const q = new URLSearchParams(location.search);
   const home = location.pathname;
-  $("#back").onclick = () => { if (IN_APP && history.length > 1) history.back(); else location.href = home; };
-  if (!IN_APP) {
-    const src = new Source(home.replace(/[^/]*$/, ""), null);
+  $("#back").onclick = () => { if (PAIRED && history.length > 1) history.back(); else location.href = home; };
+  if (!PAIRED) {
+    const src = new Source({ base: home.replace(/[^/]*$/, "") }, null);
     if (q.get("m")) openMatch(src, q.get("m"), null, q.get("selftest"));
-    else { showList(src); appBanner(home); }
+    else { showList(src); appBanner({ lan: location.host + home.replace(/[^/]*$/, "").replace(/\/$/, "") }); }
     return;
+  }
+  if (CLOUD && location.hash) {          // quét mã QR bằng camera: https://<trạm>/#r=<phòng>&l=<địa chỉ mạng nhà>
+    const link = parsePair(location.hash);
+    if (link && link.room) saveLink(link);
+    history.replaceState(null, "", location.pathname + location.search);   // mã phòng không nằm lại trên thanh địa chỉ
   }
   const store = await Store.open();
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-  const addr = localStorage.getItem(PC_KEY);
-  const src = new Source(addr ? "/pc/" + addr + "/" : null, store);
+  const link = savedLink();
+  const src = new Source(link, store);
   $("#pc-btn").hidden = false;
   $("#pc-btn").onclick = () => showSetup(store);
   if (q.get("m")) {
@@ -317,13 +476,16 @@ async function main() {
       const it = JSON.parse(sessionStorage.getItem("aoe.open")) || {};
       if (it.file === q.get("m")) info = it.info || null;
     } catch { /* không có */ }
-    openMatch(src, q.get("m"), info);
-  } else if (q.get("pair")) {            // mở từ trình duyệt: aoemapcap://pair?a=<địa chỉ>
-    const a = parseAddr(q.get("pair"));
+    openMatch(src, q.get("m"), info, q.get("selftest"));
+  } else if (q.get("pair")) {            // mở từ trình duyệt: aoemapcap://pair?r=<phòng>&l=<địa chỉ> (v14: ?a=<địa chỉ>)
+    const p = parsePair(q.get("pair"));
     showSetup(store);
-    if (a) { $("#pc-addr").value = a; connect(a, store); }
-  } else if (!addr) showSetup(store);
-  else { showList(src); checkUpdate(); }
+    if (p) { if (p.lan) $("#pc-addr").value = p.lan; connect(p, store); }
+  } else if (!src.linked) showSetup(store);
+  else {
+    showList(src);
+    if (IN_APP) checkUpdate(); else appBanner(link);
+  }
   // Back từ trang trận có thể khôi phục nguyên trang cũ (bfcache): vẽ lại danh sách cho nhãn "đã lưu" mới
   window.addEventListener("pageshow", e => {
     if (e.persisted && !q.get("m") && !$("#list").hidden) showList(src);

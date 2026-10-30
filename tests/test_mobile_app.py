@@ -2,15 +2,17 @@
 một máy chủ Python đóng vai vỏ Android (MainActivity: /app/ = mobile/web, /pc/<ip:cổng>/<mã>/... chuyển tiếp sang
 http://<ip:cổng>/<mã>/...), Edge chạy ẩn coi nó là appassets.androidplatform.net (trang an toàn để có Cache Storage).
 Kiểm:
-1. chưa có địa chỉ -> màn hình kết nối; nhập sai báo lỗi; quét mã QR (AoEApp giả: mã lạ báo lỗi, mã của máy tính
-   -> danh sách trận);
+1. chưa có địa chỉ -> màn hình kết nối; nhập sai báo lỗi; quét mã QR (AoEApp giả: mã lạ báo lỗi, mã cũ v14 chỉ có
+   địa chỉ mạng nhà, mã mới https://<trạm>/#r=<phòng>&l=<địa chỉ> -> danh sách trận qua mạng nhà);
 2. mở trận: tải gói hình + trận qua đường chuyển tiếp, lưu vào Cache Storage; quay lại thấy nhãn "đã lưu";
-   mở app từ trình duyệt (?pair=) đổi địa chỉ; trang của máy tính trên trình duyệt Android có nút Tải app / Mở trong app;
+   mở app từ trình duyệt (?pair=r=...&l=...) đổi địa chỉ; địa chỉ mạng nhà không vào được -> tự đi qua trạm chuyển
+   tiếp Cloudflare thật (cần Internet); trang của máy tính trên trình duyệt Android có nút Tải app / Mở trong app;
 3. tắt máy chủ máy tính: danh sách hiện trận đã lưu + ghi chú, mở trận từ bộ nhớ điện thoại.
 
     python tests/test_mobile_app.py [file.aoerec]
 Edge chạy ẩn bằng hồ sơ riêng trong thư mục tạm, tắt theo PID; không đụng game hay trình duyệt của người dùng.
 """
+import json
 import os
 import shutil
 import sys
@@ -26,6 +28,7 @@ sys.path.insert(0, os.path.join(ROOT, "tests"))
 from test_mobile_web import GAME, OUT, SRC, Browser  # noqa: E402
 
 from mapcap import mobile_server as MS  # noqa: E402
+from mapcap import relay_client as RC  # noqa: E402
 from mapcap import webexport as WE  # noqa: E402
 
 HOST = "appassets.androidplatform.net"
@@ -92,6 +95,8 @@ def main():
 
     pc, _ = MS.serve(raw, GAME, port=0, token="t", cache=web, host="127.0.0.1", log=print)
     threading.Thread(target=pc.serve_forever, daemon=True).start()
+    room = "".join(__import__("secrets").choice(RC.ROOM_CHARS) for _ in range(24))
+    relay = RC.RelayClient(room, f"http://127.0.0.1:{pc.server_address[1]}/t/", log=print).start()
     shell = ThreadingHTTPServer(("127.0.0.1", 0), shell_handler())
     shell.daemon_threads = True
     threading.Thread(target=shell.serve_forever, daemon=True).start()
@@ -120,9 +125,19 @@ def main():
         b.eval(f"localStorage.setItem('test.qr', 'HTTP://127.0.0.1:{port}/T/'); document.querySelector('#scan-qr').click(); 1")
         b.wait("!document.querySelector('#list').hidden && document.querySelectorAll('.match').length", timeout=60)
         assert b.eval("localStorage.getItem('aoe.pc')") == f"127.0.0.1:{port}/t"
+        assert b.eval("localStorage.getItem('aoe.room')") is None          # mã QR cũ (v14): chỉ mạng nhà
+        b.goto(origin + "/app/index.html")
+        b.wait("!document.querySelector('#list').hidden", timeout=30)
+        b.eval("document.querySelector('#pc-btn').click(); 1")
+        qr = RC.pair_url(room, f"127.0.0.1:{port}/t")
+        b.eval(f"localStorage.setItem('test.qr', {json.dumps(qr)}); document.querySelector('#scan-qr').click(); 1")
+        b.wait("!document.querySelector('#list').hidden && document.querySelectorAll('.match').length", timeout=60)
+        assert b.eval("localStorage.getItem('aoe.room')") == room
+        assert b.eval("localStorage.getItem('aoe.pc')") == f"127.0.0.1:{port}/t"
         assert not b.eval("document.querySelector('#pc-btn').hidden")
         b.screenshot(os.path.join(OUT, "app_list.png"))
-        print("màn hình kết nối: địa chỉ sai báo lỗi, mã QR lạ báo lỗi, quét mã máy tính -> danh sách trận: OK")
+        print("màn hình kết nối: địa chỉ sai báo lỗi, mã QR lạ báo lỗi, mã cũ v14 + mã mới (phòng + mạng nhà) "
+              "-> danh sách trận: OK")
 
         # 2. mở trận, lưu trên máy
         b.eval("document.querySelector('.match').click(); 1")
@@ -139,13 +154,30 @@ def main():
         b.wait("!document.querySelector('#list').hidden && !!document.querySelector('.match .saved')", timeout=60)
         print("mở trận, lưu gói hình + trận trên máy, quay lại thấy 'đã lưu': OK")
 
-        # mở app từ trình duyệt: aoemapcap://pair?a=... -> MainActivity tải trang ?pair=...
-        b.eval("localStorage.setItem('aoe.pc', '10.9.9.9:1/zzz'); 1")
-        b.goto(origin + "/app/index.html?pair=" + urllib.request.quote(f"127.0.0.1:{port}/t", safe=""))
+        # mở app từ trình duyệt: aoemapcap://pair?r=...&l=... -> MainActivity tải trang ?pair=r=...&l=...
+        b.eval("localStorage.setItem('aoe.pc', '10.9.9.9:1/zzz'); localStorage.removeItem('aoe.room'); 1")
+        pq = f"r={room}&l=" + urllib.request.quote(f"127.0.0.1:{port}/t", safe="")
+        b.goto(origin + "/app/index.html?pair=" + urllib.request.quote(pq, safe=""))
         b.wait("!document.querySelector('#list').hidden && document.querySelectorAll('.match').length"
                " && location.search === ''", timeout=60)
         assert b.eval("localStorage.getItem('aoe.pc')") == f"127.0.0.1:{port}/t"
-        print("mở app từ trình duyệt (?pair=): đổi địa chỉ máy tính: OK")
+        assert b.eval("localStorage.getItem('aoe.room')") == room
+        print("mở app từ trình duyệt (?pair=r=...&l=...): đổi phòng + địa chỉ máy tính: OK")
+
+        # khác mạng: địa chỉ mạng nhà không vào được -> qua trạm chuyển tiếp (xoá trận đã lưu để tải lại qua trạm)
+        b.eval("localStorage.setItem('aoe.pc', '10.255.255.1:8765/zzz');"
+               "(async () => { const c = await caches.open('aoe-web-1');"
+               " for (const k of await c.keys()) if (new URL(k.url).pathname.startsWith('/m/')) await c.delete(k); })()")
+        t0 = __import__("time").time()
+        b.goto(origin + "/app/index.html")
+        b.wait("!document.querySelector('#list').hidden && document.querySelectorAll('.match').length", timeout=60)
+        b.eval("document.querySelector('.match').click(); 1")
+        b.wait("location.search.startsWith('?m=') && window.aoeViewer && document.querySelector('#v-status').hidden",
+               timeout=300)
+        assert b.eval("(async () => !!(await (await caches.open('aoe-web-1')).match('/m/" + enc + "')))()")
+        print(f"khác mạng: mạng nhà không vào được -> danh sách + trận qua trạm Cloudflare "
+              f"({__import__('time').time() - t0:.0f} s): OK")
+        b.eval(f"localStorage.setItem('aoe.pc', '127.0.0.1:{port}/t'); 1")
 
         # quét QR bằng camera thường -> trang của máy tính trong Chrome Android: mời tải / mở app
         b.call("Emulation.setUserAgentOverride",
@@ -162,6 +194,7 @@ def main():
         # 3. máy tính tắt
         pc.shutdown()
         pc.server_close()
+        relay.stop()
         pc_up = False
         b.goto(origin + "/app/index.html")
         b.wait("!document.querySelector('#list-note').hidden && document.querySelectorAll('.match').length", timeout=60)
@@ -174,6 +207,7 @@ def main():
         assert not [c for c in b.console if c.startswith("EXC")], b.console
     finally:
         b.close()
+        relay.stop()
         if pc_up:
             pc.shutdown()
         shell.shutdown()

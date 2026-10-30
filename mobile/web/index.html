@@ -12,12 +12,15 @@
   <header class="bar"><h1>AoE-MapCap</h1><span class="sub">Kết nối máy tính</span></header>
   <form id="setup-form" class="setup">
     <p>Trên máy tính: mở AoE-MapCap, vào mục <b>Điện thoại</b>, bật "Cho điện thoại xem trận" rồi quét mã QR hiện ra.
-      Điện thoại và máy tính phải cùng Wi-Fi.</p>
+      Điện thoại dùng 4G hay Wi-Fi nào cũng được; chỉ cần quét một lần.</p>
+    <p id="setup-camera" hidden>Quét mã bằng camera của điện thoại: trang này sẽ tự kết nối.</p>
     <button type="button" id="scan-qr" class="primary" hidden>Quét mã QR</button>
-    <p class="or">hoặc nhập địa chỉ hiện dưới mã QR</p>
-    <input id="pc-addr" placeholder="192.168.1.5:8765/abc123" autocapitalize="none" autocomplete="off"
-           autocorrect="off" spellcheck="false" inputmode="url">
-    <button type="submit" class="second">Kết nối</button>
+    <div id="setup-manual" class="setup-manual">
+      <p class="or">hoặc khi cùng Wi-Fi: nhập địa chỉ mạng nhà hiện cạnh mã QR</p>
+      <input id="pc-addr" placeholder="192.168.1.5:8765/abc123" autocapitalize="none" autocomplete="off"
+             autocorrect="off" spellcheck="false" inputmode="url">
+      <button type="submit" class="second">Kết nối</button>
+    </div>
     <div id="setup-msg" class="msg"></div>
     <button type="button" id="setup-offline" class="link" hidden>Xem trận đã lưu trên điện thoại</button>
   </form>

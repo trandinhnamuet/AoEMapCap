@@ -4,8 +4,10 @@ trận đã chuyển sang .aoeweb (chuyển lần đầu khi điện thoại m�
 App Windows bật / tắt bằng trang "Điện thoại" (PhoneServer, từ v14); chạy riêng để thử:
     python -m mapcap.mobile_server [--folder=Video\\Raw] [--game-dir=...] [--port=8765]
 
-Địa chỉ có một mã ngẫu nhiên (http://<ip máy>:8765/<mã>/) để máy khác trong mạng không đoán được. Gói hình là đồ hoạ
-từ bộ cài game của chính người dùng: chỉ đi trong mạng nhà, không lên máy chủ nào.
+Địa chỉ có một mã ngẫu nhiên (http://<ip máy>:8765/<mã>/) để máy khác trong mạng không đoán được. Khác mạng (từ v16):
+PhoneServer giữ thêm kết nối tới trạm chuyển tiếp Cloudflare (relay_client), mã QR trỏ tới trang trên trạm. Gói hình là
+đồ hoạ từ bộ cài game của chính người dùng: chỉ đi từ máy tính sang điện thoại (qua trạm khi khác mạng), không lưu ở
+máy chủ nào.
 """
 import json
 import mimetypes
@@ -258,6 +260,7 @@ def serve(folder, game_dir, port=8765, token=None, log=print, cache=None, host="
         exporter.stop()
         raise
     srv.exporter = exporter
+    srv.cache, srv.token = cache, token
     url = f"http://{lan_ip() if host == '0.0.0.0' else host}:{srv.server_address[1]}/{token}/"
     return srv, url
 
@@ -300,11 +303,14 @@ class PhoneServer:
 
     PORTS = range(8765, 8775)
 
-    def __init__(self, log=print):
+    def __init__(self, log=print, on_relay=None):
         self.log = log
+        self.on_relay = on_relay or (lambda s: None)   # trạng thái trạm chuyển tiếp đổi (gọi từ luồng khác)
         self.srv = None
         self.url = None
         self.folder = None
+        self.relay = None
+        self.room = None
 
     @property
     def running(self):
@@ -324,9 +330,16 @@ class PhoneServer:
         threading.Thread(target=srv.serve_forever, daemon=True, name="phone-server").start()
         threading.Thread(target=allow_firewall, args=(self.log,), daemon=True).start()
         self.srv, self.url, self.folder = srv, url, folder
+        from .relay_client import RelayClient, stable_room
+        self.room = stable_room(srv.cache)
+        self.relay = RelayClient(self.room, f"http://127.0.0.1:{srv.server_address[1]}/{srv.token}/", self.log,
+                                 self.on_relay).start()
         return url
 
     def stop(self):
+        relay, self.relay = self.relay, None
+        if relay is not None:
+            relay.stop()
         srv, self.srv, self.url = self.srv, None, None
         if srv is not None:
             srv.shutdown()
@@ -336,6 +349,14 @@ class PhoneServer:
     def address(self):
         """Địa chỉ ngắn để nhập tay trong app: 192.168.1.5:8765/abc123."""
         return self.url.split("//", 1)[1].rstrip("/") if self.url else ""
+
+    def pair_url(self):
+        """Nội dung mã QR: trang trên trạm chuyển tiếp + mã phòng + địa chỉ mạng nhà (app thử mạng nhà trước)."""
+        from .relay_client import pair_url
+        return pair_url(self.room, self.address()) if self.url else ""
+
+    def relay_state(self):
+        return self.relay.state if self.relay is not None else "offline"
 
 
 def main(argv=None):
