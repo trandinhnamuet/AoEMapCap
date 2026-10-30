@@ -12,7 +12,6 @@ import http.client
 import json
 import os
 import socket
-import ssl
 import sys
 import threading
 import urllib.parse
@@ -152,7 +151,8 @@ def _post(url, payload, timeout=TIMEOUT):
     data = json.dumps(payload).encode("utf-8")
     headers = {"content-type": "application/json", "user-agent": f"AoE-MapCap/{APP_VERSION}"}
     if u.scheme == "https":
-        conn = _IPv4HTTPSConnection(u.hostname, u.port or 443, timeout=timeout, context=ssl.create_default_context())
+        from .updater import ssl_context                 # kho Windows + certifi (xem updater.ssl_context)
+        conn = _IPv4HTTPSConnection(u.hostname, u.port or 443, timeout=timeout, context=ssl_context())
     else:
         conn = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=timeout)
     try:

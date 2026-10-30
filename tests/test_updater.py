@@ -99,6 +99,19 @@ def test_offline():
     print("không mạng / version.json hỏng -> dùng bình thường: OK")
 
 
+def test_ssl_context():
+    """github.com (từ 28/10/2026) ký bởi Sectigo Root E46: chỉ kho Windows thì OpenSSL lúc được lúc không (app v13 không
+    thấy v14). ssl_context() thêm certifi: phải tin Root E46 + USERTrust ECC, và telemetry dùng chung."""
+    import inspect
+    from mapcap import telemetry
+    names = [dict(x[0] for x in c["subject"]).get("commonName", "") for c in updater.ssl_context().get_ca_certs()]
+    for want in ("Sectigo Public Server Authentication Root E46", "USERTrust ECC Certification Authority"):
+        assert want in names, want
+    assert updater.ssl_context() is updater.ssl_context()
+    assert "ssl_context()" in inspect.getsource(telemetry._post)
+    print("chứng chỉ: kho Windows + certifi (có Sectigo Root E46), telemetry dùng chung: OK")
+
+
 def test_update_running_exe():
     d = fresh_dir("swap")
     me = os.path.join(d, "AoE-MapCap.exe")
@@ -327,8 +340,15 @@ def test_ui():
     from mapcap.version import APP_VERSION
     nxt = str(int(APP_VERSION) + 1)                    # luôn giả lập bản cao hơn bản đang dùng một bậc
     m = manifest(srv.url, nxt, {"AoE-MapCap.exe": b"z"})
-    srv.files["/version.json"] = lambda: json.dumps(m).encode()
+    calls = []
+
+    def version_json():                                # lần đầu hỏng (như lỗi chứng chỉ / mạng chưa lên)
+        calls.append(time.time())
+        return b"<html>" if len(calls) == 1 else json.dumps(m).encode()
+    srv.files["/version.json"] = version_json
     os.environ["AOEMAPCAP_UPDATE_URL"] = srv.url + "/version.json"
+    retry = updater.RETRY_AFTER
+    updater.RETRY_AFTER = 0.5
     try:
         ctl = update_ui.UpdateController(root, root, "mapcap", "Test", is_busy=lambda: busy["v"], bar_before=body)
         ctl.start(delay_ms=10)
@@ -337,6 +357,8 @@ def test_ui():
             root.update()
             time.sleep(0.02)
         assert ctl.info is not None and ctl.info.state == "available"
+        assert len(calls) == 2, "kiểm tra lỗi thì phải thử lại sớm (RETRY_AFTER), không chờ CHECK_EVERY"
+        updater.RETRY_AFTER = retry
         assert ctl.bar.winfo_manager() == "pack" and ("v" + nxt) in ctl.lbl.cget("text")
         frozen = updater.is_frozen
         updater.is_frozen = lambda: True
@@ -369,10 +391,11 @@ def test_ui():
         assert ctl.block_win is not None and "ngừng hỗ trợ" in ctl.block_win.top.title() + str(
             [w.cget("text") for w in ctl.block_win.top.winfo_children() if isinstance(w, ttk.Label)])
     finally:
+        updater.RETRY_AFTER = retry
         os.environ.pop("AOEMAPCAP_UPDATE_URL", None)
         srv.close()
         root.destroy()
-    print("giao diện: thanh báo, chờ hết bận, Để sau, cửa sổ bắt buộc: OK")
+    print("giao diện: lỗi thì thử lại sớm, thanh báo, chờ hết bận, Để sau, cửa sổ bắt buộc: OK")
 
 
 def test_compile_all():
@@ -394,6 +417,7 @@ if __name__ == "__main__":
     test_compile_all()
     test_versions()
     test_offline()
+    test_ssl_context()
     test_update_running_exe()
     test_bad_hash_cancel_rollback()
     test_make_release()

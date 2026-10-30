@@ -71,7 +71,6 @@ class UpdateController:
         def job():
             self.q.put(("checked", updater.check(log=self.log)))
         threading.Thread(target=job, name="update-check", daemon=True).start()
-        self.root.after(int(updater.CHECK_EVERY * 1000), self._check_async)
 
     def _poll(self):
         try:
@@ -97,6 +96,9 @@ class UpdateController:
         self.root.after(1000 if self.pending else 300, self._poll)
 
     def _on_checked(self, info):
+        # lần sau: kiểm lỗi (mạng chưa lên, lỗi chứng chỉ...) thì thử lại sau vài phút, không chờ 6 tiếng
+        self.root.after(int((updater.CHECK_EVERY if info is not None else updater.RETRY_AFTER) * 1000),
+                        self._check_async)
         if info is None:
             return
         self.info = info

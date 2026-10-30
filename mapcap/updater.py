@@ -22,6 +22,7 @@ import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import time
@@ -35,7 +36,27 @@ MANIFEST_URL = f"https://github.com/{REPO}/releases/latest/download/version.json
 RELEASES_PAGE = f"https://github.com/{REPO}/releases"
 EXE_NAMES = {"mapcap": "AoE-MapCap.exe", "replay": "AoE-Replay.exe"}
 CHECK_EVERY = 6 * 3600          # giây: kiểm tra lại khi app mở lâu (bộ ghi thường chạy cả buổi)
+RETRY_AFTER = 5 * 60            # giây: kiểm tra lỗi (mạng chưa lên, lỗi chứng chỉ...) thì thử lại sớm
 TIMEOUT = 10
+
+_SSL_CTX = None
+
+
+def ssl_context():
+    """Kho chứng chỉ Windows + bộ chứng chỉ certifi (đóng gói trong exe).
+    Từ 28/10/2026 github.com dùng chuỗi Sectigo (DV E36 -> Root E46 -> USERTrust ECC). Chỉ với kho Windows, OpenSSL
+    của Python không dựng được chuỗi khoảng một nửa số lần (CERTIFICATE_VERIFY_FAILED "unable to get issuer
+    certificate"): app v13 không thấy bản v14. Có certifi (chứa Root E46) thì lần nào cũng được."""
+    global _SSL_CTX
+    if _SSL_CTX is None:
+        ctx = ssl.create_default_context()
+        try:
+            import certifi
+            ctx.load_verify_locations(certifi.where())
+        except Exception:  # noqa: BLE001
+            pass
+        _SSL_CTX = ctx
+    return _SSL_CTX
 
 
 class UpdateError(Exception):
@@ -79,7 +100,7 @@ def manifest_url():
 
 def _open(url, timeout=TIMEOUT):
     req = urllib.request.Request(url, headers={"User-Agent": f"AoE-MapCap/{APP_VERSION}"})
-    return urllib.request.urlopen(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout, context=ssl_context())
 
 
 def fetch_manifest(url=None, timeout=TIMEOUT):
