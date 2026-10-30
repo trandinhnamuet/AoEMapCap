@@ -16,6 +16,7 @@ const PAIRED = IN_APP || CLOUD;                                // ghép đôi + 
 const PC_KEY = "aoe.pc";
 const ROOM_KEY = "aoe.room";
 const MAX_SAVED = 40;           // số trận giữ trên điện thoại, bỏ trận mở lâu nhất
+const WEB_VERSION = 2;          // .aoeweb có bảng thông số (mapcap/webexport.py); trận lưu bản cũ thì lấy lại khi được
 const REPO = "trandinhnamuet/AoEMapCap";
 const APP_PKG = "io.github.trandinhnamuet.aoemapcap";
 const RELEASES = `https://github.com/${REPO}/releases`;
@@ -158,6 +159,16 @@ class Relay {
   }
 }
 
+// phiên bản file .aoeweb (meta.version) đọc từ đầu file; 0 nếu không đọc được
+function webVersion(buf) {
+  try {
+    const n = new DataView(buf).getUint32(8, true);
+    const head = new TextDecoder().decode(new Uint8Array(buf, 12, Math.min(n, 64)));
+    const m = /"version":\s*(\d+)/.exec(head);
+    return m ? +m[1] : 0;
+  } catch { return 0; }
+}
+
 function fetchTimeout(url, ms) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), ms);
@@ -236,11 +247,16 @@ class Source {
     return this._download(url, f => onStatus && onStatus("Đang tải trận… " + Math.round(f * 100) + "%"));
   }
   async match(file, info, onStatus) {
+    let old = null;
     if (this.store) {
       const b = await this.store.get("/m/" + encodeURIComponent(file));
-      if (b) { this.store.touch(file); return b; }
+      if (b && webVersion(b) >= WEB_VERSION) { this.store.touch(file); return b; }
+      old = b;                    // bản lưu cũ (chưa có bảng thông số): lấy lại từ máy tính nếu được
     }
-    const buf = await this._fetchMatch(file, onStatus);
+    let buf;
+    try { buf = await this._fetchMatch(file, onStatus); }
+    catch (e) { if (old) { this.store.touch(file); return old; } throw e; }
+    if (old && webVersion(buf) < WEB_VERSION) { this.store.touch(file); return old; }   // máy tính chưa cập nhật
     if (this.store) await this.store.saveMatch(file, buf, info);
     return buf;
   }

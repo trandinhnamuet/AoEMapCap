@@ -1,9 +1,13 @@
-// Trình xem một trận: phát / tua, đổi tầm nhìn đội, kéo / chụm để di chuyển và zoom máy quay.
+// Trình xem một trận: phát / tua, đổi tầm nhìn đội, kéo / chụm để di chuyển và zoom máy quay, HUD như trình xem máy
+// tính (bảng tỉ số, công nghệ, chạm vào unit / nhà, minimap; hud.js). Phím tắt giống replay/viewer.py khi có bàn phím.
 // Logic chọn unit theo tầm nhìn giống replay/viewer.py (_rebuild).
 import { F_BLD, F_DOP, F_DOPOK, F_FOGVIS, F_HIDE, Match, State } from "./format.js";
 import { Renderer } from "./gl.js";
+import { AGE_VI, ECO_COLS, HudData, Icons, MIL_COLS, P_AGE, TC_DAT, esc, fmtMs, scoreCell, statusOf, unitInfo } from "./hud.js";
 
-const SPEEDS = [0.5, 1, 2, 4, 8, 16];
+const SPEEDS = [0.25, 0.5, 1, 2, 4, 8, 16];
+const JUMP_MS = 15000;             // lùi / tới 15 giây giờ game
+const HUD_MS = 200;                // làm mới bảng HUD tối đa 5 lần mỗi giây khi đang phát
 const DECODE_BUDGET_MS = 8;        // giải mã sprite mới tối đa mỗi khung hình; còn lại để khung sau
 
 export function fmtClock(ms) {
@@ -34,9 +38,21 @@ export class Viewer {
     this.fog = new Uint8Array(M.map_w * M.map_h);
     this.fogDim = Math.round(M.fog_dim * 255);
     this.persp = M.rec_team >= 0 ? M.rec_team : null;
+    this.lastTeam = this.persp ?? 0;
     this.r = 0;
     this.playing = false;
-    this.speedIdx = 1;
+    this.speedIdx = SPEEDS.indexOf(1);
+    this.hud = new HudData(this.m);
+    this.icons = new Icons(this.m, this.pack.palette);
+    this.hudStatics = new Map();
+    this.hs = null;
+    this.show = { score: false, techs: false, mini: true, hide: false, help: false };
+    this.scoreMode = 0;
+    const recTeam = M.teams[this.lastTeam];
+    this.selected = recTeam && recTeam.players.length ? recTeam.players[0] : (M.players[0] || {}).index ?? null;
+    this.sel = null;               // unit / công trình đang chọn: {kind: "u" | "s", uid, owner}
+    this.follow = false;
+    this.drawn = []; this.drawnS = [];
     this.inst = { statics: new Float32Array(10 * 4096), units: new Float32Array(10 * 4096) };
     this.dirtyUnits = true; this.dirtyStatics = true; this.dirtyFog = true;
     this.lastStaticsKey = null;
@@ -161,9 +177,11 @@ export class Viewer {
   _rebuildStatics(deadline) {
     const S = this.state.statics;
     const rows = [];
-    for (const [, r] of S) {
+    this.drawnS = [];
+    for (const [uid, r] of S) {
       if (r[5] & (F_HIDE | F_DOP)) continue;
       rows.push(r);
+      this.drawnS.push(uid);
     }
     rows.sort((a, b) => (a[2] - a[1]) - (b[2] - b[1]) || (a[1] + a[2]) - (b[1] + b[2]));
     const items = new Float64Array(rows.length * 4);
@@ -236,6 +254,7 @@ export class Viewer {
       items[j * 4] = st.key[i]; items[j * 4 + 1] = ax; items[j * 4 + 2] = ay; items[j * 4 + 3] = bright[k];
     });
     this.unitCount = order.length;
+    this.drawn = idx;
     const before = this.deferred;
     this._fill("units", items, deadline);
     this.dirtyUnits = this.deferred > before;
@@ -251,8 +270,24 @@ export class Viewer {
 
   setPersp(p) {
     this.persp = p;
+    if (p !== null) this.lastTeam = p;
     this.dirtyFog = this.dirtyUnits = true;
     this._updateUi();
+  }
+
+  jumpMs(d) {                     // lùi / tới d ms giờ game
+    const m = this.m, t = m.t;
+    const target = t[Math.max(0, this.state.frame)] + d;
+    let lo = 0, hi = m.frames - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (t[mid] <= target) lo = mid; else hi = mid - 1; }
+    this.seekR(m.r[lo]);
+    this.toast((d < 0 ? "Lùi " : "Tới ") + Math.abs(d / 1000) + " giây");
+  }
+
+  setSpeed(i) {
+    this.speedIdx = Math.max(0, Math.min(SPEEDS.length - 1, i));
+    this._updateUi();
+    this.toast("Tốc độ " + this.speed + "x");
   }
 
   _loop(now) {
@@ -263,6 +298,7 @@ export class Viewer {
       if (this.r >= this.m.duration) { this.r = this.m.duration; this.playing = false; this._updateUi(); }
       this.needSeek = true;
     }
+    if (this.follow) this._followCam();
     if (this.needSeek && !this.seeking) {
       this.needSeek = false;
       const fi = this.m.frameAtR(this.r);
@@ -306,14 +342,40 @@ export class Viewer {
   _buildUi() {
     const M = this.m.meta, root = this.root;
     const q = s => root.querySelector(s);
+    const add = (cls, tag = "div", html = "") => {
+      let el = q("." + cls.split(" ")[0]);
+      if (!el) { el = document.createElement(tag); el.className = cls; root.appendChild(el); }
+      el.innerHTML = html;
+      return el;
+    };
     this.ui = { time: q(".v-time"), play: q(".v-play"), speed: q(".v-speed"), seek: q(".v-seek"),
-                persp: q(".v-persp"), ages: q(".v-ages") };
+                persp: q(".v-persp"), ages: q(".v-ages"), top: q(".v-top"), bottom: q(".v-bottom") };
     const u = this.ui;
+    u.tools = add("v-tools", "div", [["score", "Bảng"], ["techs", "Công nghệ"], ["mini", "Bản đồ"],
+      ["follow", "Khoá"], ["fit", "Toàn cảnh"], ["hide", "Ẩn"], ["help", "?"]]
+      .map(([a, t]) => `<button data-a="${a}">${t}</button>`).join(""));
+    u.panels = add("v-panels");
+    u.techs = document.createElement("div"); u.techs.className = "v-panel v-techs"; u.panels.appendChild(u.techs);
+    u.score = document.createElement("div"); u.score.className = "v-panel v-score"; u.panels.appendChild(u.score);
+    u.info = document.createElement("div"); u.info.className = "v-panel v-info"; u.panels.appendChild(u.info);
+    u.mini = add("v-mini", "canvas");
+    u.help = add("v-help");
+    u.toast = add("v-toast");
+    u.mark = add("v-mark");
+    u.unhide = add("v-unhide", "button", "Hiện HUD");
     u.seek.max = 1000;
-    u.play.onclick = () => { if (this.r >= this.m.duration) this.r = 0; this.playing = !this.playing; this._updateUi(); };
-    u.speed.onclick = () => { this.speedIdx = (this.speedIdx + 1) % SPEEDS.length; this._updateUi(); };
+    u.play.onclick = () => this.togglePlay();
+    u.speed.onclick = () => this.setSpeed(SPEEDS.indexOf(1));
+    q(".v-slow").onclick = () => this.setSpeed(this.speedIdx - 1);
+    q(".v-fast").onclick = () => this.setSpeed(this.speedIdx + 1);
+    q(".v-jb").onclick = () => this.jumpMs(-JUMP_MS);
+    q(".v-jf").onclick = () => this.jumpMs(JUMP_MS);
     u.seek.oninput = () => { this.seekR(u.seek.value / 1000 * this.m.duration); this.scrubbing = true; };
     u.seek.onchange = () => { this.scrubbing = false; };
+    u.tools.onclick = e => { const b = e.target.closest("button"); if (b) this.action(b.dataset.a); };
+    u.unhide.onclick = () => this.action("hide");
+    u.help.onclick = () => this.action("help");
+    u.help.innerHTML = this._helpHtml();
     // tầm nhìn: Toàn bản đồ, Đội 1, Đội 2...
     u.persp.innerHTML = "";
     const opts = [[null, "Toàn map"]];
@@ -341,15 +403,88 @@ export class Viewer {
       s.title = `${pl ? pl.name : idx}: đời ${age}`;
       u.ages.appendChild(s);
     }
+    // bảng: chạm vào hàng người chơi = chọn; nút đổi kinh tế / quân sự; ô lệnh = xem tên + giá
+    u.panels.onclick = e => {
+      const t = e.target.closest("[data-pl],[data-x],[data-cmd],[data-close]");
+      if (!t) return;
+      if (t.dataset.pl) this.selectPlayer(+t.dataset.pl);
+      else if (t.dataset.x !== undefined) { this.scoreMode = +t.dataset.x; this._renderHud(); }
+      else if (t.dataset.cmd !== undefined) { const c = this._cmd[+t.dataset.cmd]; if (c) this.toast(c.name + (c.cost ? ` (${c.cost})` : "")); }
+      else if (t.dataset.close === "info") this.selectUnit(null);
+      else this.action(t.dataset.close);
+    };
+    u.mini.addEventListener("pointerdown", e => this._miniPointer(e));
+    u.mini.addEventListener("pointermove", e => { if (e.buttons) this._miniPointer(e); });
+    this._buildMinimap();
+    if (!this.hud.ok) this.toast("Trận này chưa có bảng thông số: cập nhật AoE-MapCap trên máy tính (v17 trở lên), " +
+      "rồi mở lại trận khi điện thoại kết nối được máy tính.", 6000);
+    else this.toast("Chạm \"?\" để xem cách dùng", 3000);
     this._updateUi();
+  }
+
+  _helpHtml() {
+    const rows = [
+      ["Kéo / chụm 2 ngón", "di chuyển / zoom máy quay; chạm đúp: phóng to"],
+      ["Chạm vào unit / nhà", "xem máu, công, giáp, tài nguyên, đang nghiên cứu, hàng đợi sinh và các nâng cấp còn làm được"],
+      ["Khoá", "máy quay đi theo unit đang chọn (kéo bản đồ cũng bỏ khoá)"],
+      ["Bảng", "bảng tỉ số: Kinh tế / Quân sự; chạm tên người chơi để chọn và bay tới nhà chính"],
+      ["Công nghệ", "công nghệ đã xong (giờ xong) + đang nghiên cứu bao nhiêu % của người chơi đang chọn"],
+      ["Bản đồ", "minimap: chạm / kéo để đưa máy quay tới"],
+      ["Toàn map / Đội", "tầm nhìn cả bản đồ hoặc của từng đội (sương mù)"],
+      ["−15s / +15s", "lùi / tới 15 giây; − / + đổi tốc độ 0,25x … 16x, chạm số tốc độ: về 1x"],
+      ["Ẩn", "ẩn toàn bộ HUD để xem trận"],
+      ["Bàn phím", "P phát, −/=/0 tốc độ, Backspace/J lùi/tới, F1/F2/F3 tầm nhìn, V/F, O/X bảng, C công nghệ, " +
+        "M minimap, H ẩn, L khoá, Home toàn cảnh, Space về nhà chính, 1–5 / Q–T chọn người chơi"],
+    ];
+    return `<div class="v-help-box"><b>Cách dùng</b>${rows.map(([k, d]) =>
+      `<div class="hr"><span>${esc(k)}</span><em>${esc(d)}</em></div>`).join("")}<div class="hint">Chạm để đóng</div></div>`;
+  }
+
+  action(a) {
+    const s = this.show;
+    if (a === "score" || a === "techs" || a === "mini" || a === "help" || a === "hide") s[a] = !s[a];
+    else if (a === "follow") {
+      if (this.follow) { this.follow = false; this.toast("Bỏ khoá máy quay"); }
+      else if (this.sel && this.sel.kind === "u") { this.follow = true; this.toast("Khoá máy quay theo unit đang chọn"); }
+      else this.toast("Chạm chọn một unit trước để khoá máy quay");
+    } else if (a === "fit") { this.follow = false; this.fitView(); }
+    if (a === "techs" && s.techs && this.selected == null) this.selected = (this.m.meta.players[0] || {}).index;
+    this._updateUi();
+    this._renderHud();
+  }
+
+  togglePlay() {
+    if (this.r >= this.m.duration) this.r = 0;
+    this.playing = !this.playing;
+    this._updateUi();
+  }
+
+  toast(text, ms = 1600) {
+    const t = this.ui && this.ui.toast;
+    if (!t) return;
+    t.textContent = text; t.hidden = false;
+    clearTimeout(this._toastT);
+    this._toastT = setTimeout(() => { t.hidden = true; }, ms);
   }
 
   _updateUi() {
     const u = this.ui;
     if (!u) return;
+    const s = this.show;
     u.play.textContent = this.playing ? "❚❚" : "▶";
-    u.speed.textContent = this.speed + "x";
+    u.speed.textContent = String(this.speed).replace(".", ",") + "x";
     for (const b of u.persp.children) b.classList.toggle("on", b.dataset.p === (this.persp === null ? "" : String(this.persp)));
+    for (const b of u.tools.children) {
+      const a = b.dataset.a;
+      b.classList.toggle("on", a === "follow" ? this.follow : !!s[a]);
+    }
+    for (const el of [u.top, u.bottom, u.tools, u.panels]) el.hidden = s.hide;
+    u.mini.hidden = s.hide || !s.mini;
+    u.unhide.hidden = !s.hide;
+    u.help.hidden = !s.help;
+    u.score.hidden = !s.score;
+    u.techs.hidden = !s.techs;
+    u.info.hidden = !this.sel;
   }
 
   _tickUi() {
@@ -358,15 +493,275 @@ export class Viewer {
     const txt = fmtClock(this.m.t[fi]);
     if (u.time.textContent !== txt) u.time.textContent = txt;
     if (!this.scrubbing) u.seek.value = Math.round(this.r / (this.m.duration || 1) * 1000);
+    const now = performance.now();
+    const want = this.show.score || this.show.techs || this.sel;
+    if (want && !this._hudBusy && (fi !== this._hudFrame || this._hudDirty) && now - (this._hudT || 0) >= HUD_MS) {
+      this._hudBusy = true; this._hudT = now; this._hudDirty = false;
+      this._refreshHud(fi).catch(e => console.warn(e)).finally(() => { this._hudBusy = false; });
+    }
+    this._placeMark();
+    if (!u.mini.hidden && now - (this._miniT || 0) > 250) { this._miniT = now; this._drawMinimap(); }
   }
 
+  async _refreshHud(fi) {
+    const hs = await this.hud.at(fi);
+    this.hudStatics = await this.hud.statics(this.state.sIdx);
+    this.hs = hs;
+    this._hudFrame = fi;
+    this._renderHud();
+  }
+
+  _renderHud() {
+    const u = this.ui, hs = this.hs, M = this.m.meta;
+    if (!u) return;
+    this._updateUi();
+    if (!this.hud.ok) {
+      if (this.show.score || this.show.techs) u.score.innerHTML = `<div class="ph">Trận này chưa có bảng thông số: cập nhật AoE-MapCap trên máy tính (v17 trở lên) rồi mở lại trận khi điện thoại kết nối được máy tính.</div>`;
+      return;
+    }
+    if (!hs) return;
+    const tms = this.m.t[Math.max(0, this.state.frame)];
+    const players = M.players;
+    const ntech = idx => this.hud.done(idx, tms).length;
+    if (this.show.score) {
+      const cols = this.scoreMode === 0 ? ECO_COLS : MIL_COLS;
+      const head = cols.map(([label]) => label.startsWith("res")
+        ? `<th>${this.icons.res(+label.slice(3))}</th>` : `<th>${esc(label)}</th>`).join("");
+      let body = "";
+      const grouped = M.teams.some(t => t.players.length > 1);
+      M.teams.forEach((t, k) => {
+        if (grouped) body += `<tr class="team"><td colspan="${cols.length + 1}">Đội ${k + 1}</td></tr>`;
+        for (const idx of t.players) {
+          const pl = players.find(p => p.index === idx);
+          const p = hs.p[idx];
+          if (!pl || !p) continue;
+          const stt = statusOf(p);
+          const civ = stt ? stt.toUpperCase() : ((M.civs || {})[idx] || "");
+          body += `<tr data-pl="${idx}" class="${idx === this.selected ? "sel" : ""} ${stt === "thua" || stt === "đầu hàng" ? "lost" : ""}">` +
+            `<td class="nm"><i style="background:${pl.color}"></i>${esc(pl.name)}<em class="${stt === "thắng" ? "win" : stt ? "lose" : ""}">${esc(civ)}</em></td>` +
+            cols.map(([, key]) => `<td>${esc(scoreCell(p, key, ntech(idx)))}</td>`).join("") + `</tr>`;
+        }
+      });
+      u.score.innerHTML = `<div class="ph"><b>Bảng tỉ số</b>
+        <span class="tabs"><button data-x="0" class="${this.scoreMode === 0 ? "on" : ""}">Kinh tế</button><button data-x="1" class="${this.scoreMode === 1 ? "on" : ""}">Quân sự</button></span>
+        <button data-close="score" class="x">✕</button></div><div class="sc"><table><tr><th></th>${head}</tr>${body}</table></div>`;
+    }
+    if (this.show.techs) {
+      const idx = this.selected;
+      const pl = players.find(p => p.index === idx);
+      const chips = players.map(p => `<button data-pl="${p.index}" class="${p.index === idx ? "on" : ""}"><i style="background:${p.color}"></i>${esc(p.name)}</button>`).join("");
+      let html = `<div class="ph"><b>Công nghệ</b><button data-close="techs" class="x">✕</button></div><div class="chips">${chips}</div>`;
+      if (pl) {
+        const res = (hs.r[idx] || []).map(([tid, pm]) => {
+          const T = this.hud.H.techs[tid] || ["#" + tid, -1];
+          return `<div class="prog">${this.icons.tech(T[1], T[0])}<div><span>${esc(T[0])}  <b>${Math.floor(pm / 10)}%</b></span>
+            <div class="pbar"><i style="width:${pm / 10}%"></i></div></div></div>`;
+        }).join("");
+        const done = this.hud.done(idx, tms);
+        const grid = done.map(([tid, ms]) => {
+          const T = this.hud.H.techs[tid] || ["#" + tid, -1];
+          return `<div class="tc" title="${esc(T[0])}">${this.icons.tech(T[1], T[0])}<span>${fmtMs(ms)}</span></div>`;
+        }).join("");
+        html += res ? `<div class="sub">Đang nghiên cứu</div>${res}` : "";
+        html += `<div class="sub">Đã xong (${done.length})</div>` + (grid ? `<div class="grid">${grid}</div>` : `<div class="muted">(chưa có)</div>`);
+        html += `<div class="muted">Chạm vào một nhà để xem các nâng cấp còn làm được ở nhà đó.</div>`;
+      }
+      u.techs.innerHTML = html;
+    }
+    this._renderInfo();
+  }
+
+  _renderInfo() {
+    const u = this.ui;
+    if (!this.sel) { u.info.innerHTML = ""; return; }
+    if (!this.hud.ok || !this.hs) return;
+    const I = unitInfo(this, this.sel, this.hs);
+    if (I.gone) { u.info.innerHTML = `<div class="ph"><b>(unit không còn)</b><button data-close="info" class="x">✕</button></div>`; return; }
+    const ic = I.iconId >= 0 ? this.icons.unit(I.iconId, I.utype, I.colorId, I.age, I.name) : "";
+    let h = `<div class="ph">${ic}<div class="nm"><b>${esc(I.name)}</b><span style="color:${I.color}">${esc(I.owner)}</span></div>` +
+      `<button data-close="info" class="x">✕</button></div>`;
+    if (I.hp) {
+      const f = I.hp[1] ? Math.max(0, Math.min(1, I.hp[0] / I.hp[1])) : 0;
+      h += `<div class="hp"><div class="pbar ${f < 0.35 ? "low" : ""}"><i style="width:${f * 100}%"></i></div><span>${Math.ceil(I.hp[0])} / ${Math.round(I.hp[1])}</span></div>`;
+    }
+    if (I.rows.length) h += `<div class="stats">${I.rows.map(([k, l, v]) =>
+      `<span>${k ? this.icons.stat(k) : ""}<em>${esc(l)}</em> ${esc(v)}</span>`).join("")}</div>`;
+    if (I.res) h += `<div class="line">${this.icons.res(I.res[0])} ${esc(I.res[1])}</div>`;
+    for (const [name, frac, icon] of I.progress) {
+      h += `<div class="prog">${this.icons.tech(icon, name)}<div><span>Nghiên cứu: ${esc(name)} <b>${Math.floor(frac * 100)}%</b></span>
+        <div class="pbar"><i style="width:${frac * 100}%"></i></div></div></div>`;
+    }
+    if (I.queue) {
+      const Q = I.queue;
+      h += `<div class="prog">${Q.icon >= 0 ? this.icons.unit(Q.icon, Q.utype, I.colorId, I.age, Q.name) : ""}<div><span>Đang sinh: ${esc(Q.name)} <b>${Math.floor(Q.frac * 100)}%</b> · hàng đợi ${Q.count}</span>
+        <div class="pbar"><i style="width:${Q.frac * 100}%"></i></div></div></div>`;
+    }
+    this._cmd = I.cmd || [];
+    if (I.cmd && I.cmd.length) {
+      h += `<div class="sub">Làm được ở nhà này (chạm để xem tên, giá)</div><div class="cmd">${I.cmd.map((c, k) =>
+        `<button data-cmd="${k}" class="${c.kind}">${c.kind === "tech" ? this.icons.tech(c.icon, c.name)
+          : this.icons.unit(c.icon, c.utype, I.colorId, I.age, c.name)}</button>`).join("")}</div>`;
+    }
+    for (const l of I.lines) h += `<div class="muted">${esc(l)}</div>`;
+    u.info.innerHTML = h;
+  }
+
+  // ---- chọn unit / người chơi ------------------------------------------------------------
+  _screenOf(x, y, z) {
+    const [ax, ay] = this._anchor(x, y, z);
+    const c = this.cam;
+    return [(ax - c.x) * c.zoom + this.canvas.width / 2, (ay - c.y) * c.zoom + this.canvas.height / 2];
+  }
+
+  _pick(sx, sy) {
+    const st = this.state, z = this.cam.zoom, dpr = this.dpr;
+    let best = null, bd = Infinity;
+    const consider = (kind, uid, x, y, zz, owner, flags) => {
+      const [X, Y] = this._screenOf(x, y, zz);
+      const bld = (flags & F_BLD) !== 0;
+      const cy = Y - (bld ? 28 : 16) * z;
+      const lim = Math.max((bld ? 26 : 18) * dpr, (bld ? 60 : 22) * z);
+      const d = Math.hypot(sx - X, sy - cy) * (bld ? 1.4 : 1) * (kind === "s" ? 1.2 : 1);
+      if (d < lim * (bld ? 1.4 : 1) * (kind === "s" ? 1.2 : 1) && d < bd) { bd = d; best = { kind, uid, owner }; }
+    };
+    for (const i of this.drawn) consider("u", st.uid[i], st.x[i], st.y[i], st.z[i], st.owner[i], st.flags[i]);
+    for (const uid of this.drawnS) {
+      const r = st.statics.get(uid);
+      if (r) consider("s", uid, r[1], r[2], r[3], r[4], r[5]);
+    }
+    return best;
+  }
+
+  selectUnit(sel) {
+    this.sel = sel;
+    this.follow = !!(sel && sel.kind === "u");
+    this._hudDirty = true;
+    this._hudT = 0;
+    this._updateUi();
+    this._renderInfo();
+  }
+
+  _unitPos(sel) {
+    const st = this.state;
+    if (sel.kind === "u") {
+      const i = st.pos.get(sel.uid);
+      return i !== undefined && st.valid[i] ? [st.x[i], st.y[i], st.z[i]] : null;
+    }
+    const r = st.statics.get(sel.uid);
+    return r ? [r[1], r[2], r[3]] : null;
+  }
+
+  _followCam() {
+    const p = this.sel && this._unitPos(this.sel);
+    if (!p) return;
+    const [ax, ay] = this._anchor(...p);
+    if (Math.abs(ax - this.cam.x) + Math.abs(ay - this.cam.y) > 0.5) { this.cam.x = ax; this.cam.y = ay; this._clamp(); }
+  }
+
+  _placeMark() {
+    const mk = this.ui.mark;
+    const p = this.sel && !this.show.hide ? this._unitPos(this.sel) : null;
+    if (!p) { if (!mk.hidden) mk.hidden = true; return; }
+    const [X, Y] = this._screenOf(...p);
+    mk.hidden = false;
+    mk.style.transform = `translate(${X / this.dpr}px, ${Y / this.dpr}px)`;
+  }
+
+  selectPlayer(idx) {
+    this.selected = idx;
+    const pl = this.m.meta.players.find(p => p.index === idx);
+    this.toast("Đang chọn: " + (pl ? pl.name : idx));
+    this.flyHome(idx);
+    this._renderHud();
+  }
+
+  // nhà chính (Town Center) của người chơi, không có thì trọng tâm unit của họ
+  flyHome(idx) {
+    const st = this.state, H = this.hud.H, hs = this.hs;
+    let tc = null;
+    const xs = [], ys = [], zs = [];
+    for (let i = 0; i < st.cap; i++) {
+      if (!st.valid[i] || st.owner[i] !== idx || (st.flags[i] & (F_DOP | F_HIDE))) continue;
+      xs.push(st.x[i]); ys.push(st.y[i]); zs.push(st.z[i]);
+      const row = hs && hs.units.get(st.uid[i]);
+      if (H && row && H.defs[row[1]] && TC_DAT.has(H.defs[row[1]][0])) { tc = [st.x[i], st.y[i], st.z[i]]; break; }
+    }
+    if (!tc && xs.length) {
+      const med = a => [...a].sort((p, q) => p - q)[a.length >> 1];
+      tc = [med(xs), med(ys), med(zs)];
+    }
+    if (!tc) return;
+    this.follow = false;
+    const [ax, ay] = this._anchor(...tc);
+    this.cam.x = ax; this.cam.y = ay;
+    this.cam.zoom = Math.max(this.cam.zoom, 0.5 * this.dpr);
+    this._clamp();
+  }
+
+  // ---- minimap ---------------------------------------------------------------------------
+  async _buildMinimap() {
+    const M = this.m.meta, c = this.ui.mini;
+    const w = 168, h = Math.round(w * M.full_h / M.full_w);
+    const k = Math.min(this.dpr, 2);
+    c.width = Math.round(w * k); c.height = Math.round(h * k);
+    c.style.width = w + "px"; c.style.height = h + "px";
+    const bg = document.createElement("canvas");
+    bg.width = c.width; bg.height = c.height;
+    const g = bg.getContext("2d");
+    const T = M.terrain, sx = bg.width / T.w, sy = bg.height / T.h;
+    try {
+      for (const t of T.tiles) {
+        const im = await createImageBitmap(new Blob([this.m.section(t.section)], { type: "image/jpeg" }));
+        g.drawImage(im, t.x * sx, t.y * sy, t.w * sx, t.h * sy);
+        im.close && im.close();
+      }
+    } catch (e) { console.warn("minimap", e); }
+    this.miniBg = bg;
+  }
+
+  _drawMinimap() {
+    const c = this.ui.mini, g = c.getContext("2d"), M = this.m.meta;
+    const W = c.width, H = c.height, kx = W / M.full_w, ky = H / M.full_h;
+    g.clearRect(0, 0, W, H);
+    if (this.miniBg) g.drawImage(this.miniBg, 0, 0);
+    g.fillStyle = "rgba(0,0,0,.25)"; g.fillRect(0, 0, W, H);
+    const st = this.state;
+    const col = {};
+    for (const p of M.players) col[p.index] = p.color;
+    const r = Math.max(1.5, W / 110);
+    for (const i of this.drawn) {
+      const o = st.owner[i];
+      if (!o || !col[o]) continue;
+      const [ax, ay] = this._anchor(st.x[i], st.y[i], 0);
+      g.fillStyle = col[o];
+      const big = (st.flags[i] & F_BLD) ? 1.8 : 1;
+      g.fillRect(ax * kx - r * big / 2, ay * ky - r * big / 2, r * big, r * big);
+    }
+    const cm = this.cam, cw = this.canvas.width / cm.zoom, ch = this.canvas.height / cm.zoom;
+    g.strokeStyle = "#fff"; g.lineWidth = Math.max(1, W / 170);
+    g.strokeRect((cm.x - cw / 2) * kx, (cm.y - ch / 2) * ky, cw * kx, ch * ky);
+  }
+
+  _miniPointer(e) {
+    const c = this.ui.mini, M = this.m.meta;
+    const r = c.getBoundingClientRect();
+    this.follow = false;
+    this.cam.x = (e.clientX - r.left) / r.width * M.full_w;
+    this.cam.y = (e.clientY - r.top) / r.height * M.full_h;
+    this._clamp();
+    this._miniT = 0;
+    e.preventDefault();
+  }
+
+  // ---- nhập liệu -------------------------------------------------------------------------
   _bindInput() {
     const c = this.canvas;
     const pts = new Map();
-    let pinch = null, lastTap = 0;
+    let pinch = null, lastTap = 0, down = null;
     c.addEventListener("pointerdown", e => {
       c.setPointerCapture(e.pointerId);
       pts.set(e.pointerId, [e.clientX, e.clientY]);
+      down = pts.size === 1 ? { x: e.clientX, y: e.clientY, t: performance.now(), moved: false } : null;
       if (pts.size === 2) {
         const [a, b] = [...pts.values()];
         pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), zoom: this.cam.zoom };
@@ -375,18 +770,22 @@ export class Viewer {
       if (pts.size === 1 && now - lastTap < 300) {               // chạm đúp: phóng to 2 lần quanh điểm chạm
         const r = c.getBoundingClientRect();
         this.zoomAt(2, (e.clientX - r.left) * this.dpr, (e.clientY - r.top) * this.dpr);
+        down = null;
       }
       lastTap = now;
     });
     c.addEventListener("pointermove", e => {
       const p = pts.get(e.pointerId);
       if (!p) return;
+      if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 8) down.moved = true;
+      if (down && !down.moved) return;
       const prev = [...pts.values()];
       const mid0 = prev.reduce((s, q) => [s[0] + q[0] / prev.length, s[1] + q[1] / prev.length], [0, 0]);
       pts.set(e.pointerId, [e.clientX, e.clientY]);
       const cur = [...pts.values()];
       const mid1 = cur.reduce((s, q) => [s[0] + q[0] / cur.length, s[1] + q[1] / cur.length], [0, 0]);
       const z = this.cam.zoom / this.dpr;
+      this.follow = false;                                        // tự kéo máy quay: bỏ khoá
       this.cam.x -= (mid1[0] - mid0[0]) / z;
       this.cam.y -= (mid1[1] - mid0[1]) / z;
       if (pinch && pts.size === 2) {
@@ -398,7 +797,19 @@ export class Viewer {
       }
       this._clamp();
     });
-    const up = e => { pts.delete(e.pointerId); if (pts.size < 2) pinch = null; };
+    const up = e => {
+      if (down && !down.moved && pts.size === 1 && e.type === "pointerup" && performance.now() - down.t < 400) {
+        const r = c.getBoundingClientRect();
+        const hit = this._pick((e.clientX - r.left) * this.dpr, (e.clientY - r.top) * this.dpr);
+        // chạm chỗ trống: bỏ chọn (chờ xem có phải chạm đúp không)
+        if (hit) this.selectUnit(hit);
+        else setTimeout(() => { if (performance.now() - lastTap >= 290 && this.sel) this.selectUnit(null); }, 300);
+      }
+      pts.delete(e.pointerId);
+      if (pts.size < 2) pinch = null;
+      down = null;
+      if (this._updateUi) this._updateUi();
+    };
     c.addEventListener("pointerup", up);
     c.addEventListener("pointercancel", up);
     c.addEventListener("wheel", e => {
@@ -406,12 +817,39 @@ export class Viewer {
       const r = c.getBoundingClientRect();
       this.zoomAt(Math.pow(1.0015, -e.deltaY), (e.clientX - r.left) * this.dpr, (e.clientY - r.top) * this.dpr);
     }, { passive: false });
+    const M = this.m.meta;
+    const selKeys = {};
+    if (M.teams.length === 2 && M.teams.every(t => t.players.length <= 5)) {
+      M.teams[0].players.forEach((p, k) => { selKeys["12345"[k]] = p; });
+      M.teams[1].players.forEach((p, k) => { selKeys["qwert"[k]] = p; });
+    } else M.players.slice(0, 8).forEach((p, k) => { selKeys[String(k + 1)] = p.index; });
     window.addEventListener("keydown", e => {
-      if (e.key === " " || e.key === "p") { this.ui.play.click(); e.preventDefault(); }
-      else if (e.key === "Home") this.fitView();
-      else if (e.key === "F1") { this.setPersp(0); e.preventDefault(); }
-      else if (e.key === "F2" && this.m.meta.teams.length > 1) { this.setPersp(1); e.preventDefault(); }
-      else if (e.key === "F3") { this.setPersp(null); e.preventDefault(); }
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      const k = e.key, K = k.length === 1 ? k.toLowerCase() : k;
+      const fk = { F1: 0, F2: 1, F4: 2, F5: 3, F6: 4, F7: 5, F8: 6 };
+      let used = true;
+      if (K === "p") this.togglePlay();
+      else if (K === "-" || K === "_") this.setSpeed(this.speedIdx - 1);
+      else if (K === "=" || K === "+") this.setSpeed(this.speedIdx + 1);
+      else if (K === "0") this.setSpeed(SPEEDS.indexOf(1));
+      else if (K === "Backspace") this.jumpMs(-JUMP_MS);
+      else if (K === "j") this.jumpMs(JUMP_MS);
+      else if (K === "F3") this.setPersp(null);
+      else if (K in fk) { if (fk[K] < M.teams.length) this.setPersp(fk[K]); }
+      else if (K === "v") { const seq = [null, ...M.teams.map((_, i) => i)]; this.setPersp(seq[(seq.indexOf(this.persp) + 1) % seq.length]); }
+      else if (K === "f") this.setPersp(this.persp === null ? this.lastTeam : null);
+      else if (K === " ") { if (this.selected != null) this.flyHome(this.selected); }
+      else if (K in selKeys) this.selectPlayer(selKeys[K]);
+      else if (K === "o") this.action("score");
+      else if (K === "x") { this.scoreMode = 1 - this.scoreMode; this.show.score = true; this._renderHud(); }
+      else if (K === "c") this.action("techs");
+      else if (K === "m") this.action("mini");
+      else if (K === "h") this.action("hide");
+      else if (K === "l") this.action("follow");
+      else if (K === "Home") this.action("fit");
+      else if (K === "?" || K === "/" || K === "Escape") this.action("help");
+      else used = false;
+      if (used) e.preventDefault();
     });
   }
 
@@ -438,7 +876,7 @@ export class Viewer {
     }
     // phát x8 trong 3 s: đo khung
     this.frameMs = [];
-    this.speedIdx = 4; this.playing = true;
+    this.speedIdx = SPEEDS.indexOf(8); this.playing = true;
     await new Promise(r => setTimeout(r, 3000));
     this.playing = false;
     const f = [...this.frameMs].sort((a, b) => a - b);

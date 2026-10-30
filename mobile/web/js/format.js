@@ -39,7 +39,7 @@ export class Match {
     if (magic !== MAGIC) throw new Error("không phải file .aoeweb");
     const n = new DataView(buf).getUint32(8, true);
     const meta = JSON.parse(new TextDecoder().decode(u8.subarray(12, 12 + n)));
-    if (meta.version > 1) throw new Error("file của bản mới hơn, hãy cập nhật app");
+    if (meta.version > 2) throw new Error("file của bản mới hơn, hãy cập nhật app");   // 2: có dữ liệu HUD (hud.js)
     const m = new Match(u8, 12 + n, meta);
     await m._init();
     return m;

@@ -42,9 +42,14 @@
     <div class="v-persp"></div>
   </div>
   <div class="v-bottom">
-    <button class="v-play">▶</button>
     <div class="v-track"><div class="v-ages"></div><input class="v-seek" type="range" min="0" max="1000" value="0"></div>
-    <button class="v-speed">1x</button>
+    <button class="v-jb" aria-label="Lùi 15 giây">−15s</button>
+    <button class="v-play">▶</button>
+    <button class="v-jf" aria-label="Tới 15 giây">+15s</button>
+    <span class="v-gap"></span>
+    <button class="v-slow" aria-label="Chậm hơn">−</button>
+    <button class="v-speed" aria-label="Tốc độ (chạm: 1x)">1x</button>
+    <button class="v-fast" aria-label="Nhanh hơn">+</button>
   </div>
   <div id="v-status" class="v-status" hidden></div>
 </section>

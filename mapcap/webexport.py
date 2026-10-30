@@ -14,6 +14,7 @@ Phần "z" = nén zlib (trình duyệt mở bằng DecompressionStream("deflate"
     statics z: chuỗi bản ghi: i32 mẫu bắt đầu | u8 toàn bộ? | u32 số hàng | hàng... | u32 số bỏ | i32 uid[]
     index   z: u16 [h][w] chỉ số ô theo pixel (ở tỉ lệ index.scale); out = map_w * map_h
     cN      z: khối CHUNK mẫu; mẫu đầu là điểm mốc (toàn bộ unit + tầm nhìn), các mẫu sau chỉ phần đổi
+    hN, sd, i<slp> (từ phiên bản 2): dữ liệu HUD (bảng tỉ số, công nghệ, thông tin unit), xem mapcap/webhud.py
 Một khối: u32 số mẫu, rồi từng mẫu:
     u8 đầy đủ? | u32 số hàng unit | hàng (cột): i32 uid[] u32 khoá[] f32 x[] f32 y[] f32 z[] u8 chủ[] u8 cờ[]
     | u32 số bỏ | i32 uid[] | u32 số ô tầm nhìn đổi | (đầy đủ: u32 vis[h*w]) hoặc u32 ô[] u32 giá trị mới[]
@@ -31,7 +32,7 @@ import numpy as np
 from .rawrec import UNIT_DT
 
 MAGIC = b"AOEWEB01"
-WEB_VERSION = 1
+WEB_VERSION = 2                 # 2: thêm dữ liệu HUD (webhud)
 CHUNK = 250                     # mẫu mỗi khối (10 s): tua = mở một khối + áp tối đa 249 mẫu
 TERRAIN_BUDGET = 12e6           # ảnh địa hình trên điện thoại tối đa ~12 MP
 TILE = 2048                     # cắt ảnh địa hình thành ô 2048 px (mọi GPU điện thoại đều nhận)
@@ -221,6 +222,8 @@ def export_match(path, out_path, game_dir, log=None, progress=None):
 
         keys = _Keys(w, store)
         maker = _RowMaker(d, w, keys)
+        from .webhud import HudExport
+        hud = HudExport(d, w, CHUNK)
         n = d.n_frames
         H, Wm = d.map_h, d.map_w
         # trạng thái theo uid: hàng đã xuất gần nhất (bỏ qua mẫu đổi máu / tài nguyên mà hình, vị trí không đổi)
@@ -233,6 +236,7 @@ def export_match(path, out_path, game_dir, log=None, progress=None):
         for fi in range(n):
             p = d.read_frame(fi)
             st.apply(p, fi)
+            hud.frame(fi, st)
             full = fi % CHUNK == 0
             if full:
                 if buf is not None:
@@ -279,6 +283,8 @@ def export_match(path, out_path, game_dir, log=None, progress=None):
         chunks.append(buf)
         for k, c in enumerate(chunks):
             add(f"c{k}", _z(b"".join(c)))
+        for k, c in enumerate(hud.chunks):
+            add(f"h{k}", _z(json.dumps(c, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")))
         t_frames = time.time() - t0 - t_terrain
 
         # vật thể tĩnh: bản ghi đầu toàn bộ, sau đó chỉ phần đổi (kể cả các bản 'S' toàn bộ của file gốc)
@@ -307,6 +313,12 @@ def export_match(path, out_path, game_dir, log=None, progress=None):
                 np.array([f for _u, f in items], "<i4").tobytes()
         add("seen", _z(sb))
         add("keys", _z(keys.to_bytes()))
+        add("sd", _z(json.dumps(hud.statics_detail(), separators=(",", ":"), allow_nan=False).encode("utf-8")))
+        hud_meta = hud.tables()
+        hud_meta["icons"] = {}
+        for sid, b in hud.icon_slps(game_dir).items():
+            add(f"i{sid}", b)
+            hud_meta["icons"][str(sid)] = f"i{sid}"
 
         info = match_info(path)
         hdr = d.header
@@ -331,9 +343,10 @@ def export_match(path, out_path, game_dir, log=None, progress=None):
             "reveal": bool(hdr.get("reveal")), "fog_dim": FOG_DIM, "frames": n, "chunk": CHUNK,
             "chunks": len(chunks), "terrain": terr, "index": idx_info, "players": players, "teams": teams,
             "rec_team": rec_team, "ages": [[r, i, a] for r, i, a in d.age_events()],
-            "keys": len(keys.spans), "pieces": len(keys.pieces), "sections": sections,
+            "keys": len(keys.spans), "pieces": len(keys.pieces), "sections": sections, "hud": hud_meta,
+            "civs": {str(k): v for k, v in hud.civs.items()},
         }
-        js = json.dumps(meta, ensure_ascii=False).encode("utf-8")
+        js = json.dumps(meta, ensure_ascii=False, allow_nan=False).encode("utf-8")
         tmp = out_path + ".tmp"
         with open(tmp, "wb") as f:
             f.write(MAGIC + struct.pack("<I", len(js)) + js)
