@@ -716,6 +716,7 @@ class Engine:
             vrender = gfx["video"]
             game_no = 0
             rec = None
+            rec_failures = 0                 # tiến trình ghi chết trong trận đang chơi (đếm lại mỗi trận)
             last_mark = -1
             last_time = None
             last_time_change = time.time()
@@ -742,6 +743,7 @@ class Engine:
                         if in_game and not in_game_prev:
                             game_no += 1
                             last_mark = -1
+                            rec_failures = 0
                             last_time = None
                             statics.reset()
                             reader.doppels.reset()
@@ -761,6 +763,7 @@ class Engine:
                                     self._set("trong game, chờ trận")
                                 game_no += 1
                                 last_mark = -1
+                                rec_failures = 0
                                 statics.reset()
                                 reader.doppels.reset()
                             if t != last_time:
@@ -799,10 +802,21 @@ class Engine:
                                     self._set("đang ghi")
                                 elif rec is not None and isinstance(rec, ProcRecorder):
                                     self.stop_event.wait(0.25)
+                                    if not rec.rp.alive() and rec.rp.done_n is None and rec.rp.thread is not None:
+                                        rec.rp.thread.join(3)        # tin "done" có thể còn trong ống: đọc nốt
                                     if not rec.rp.alive() and rec.rp.done_n is None:
-                                        log("tiến trình ghi đã kết thúc bất thường" + (f": {rec.rp.error}" if rec.rp.error else ""))
+                                        # tiến trình ghi chết giữa trận: chốt file đang có, trận này ghi tiếp sang file mới
+                                        # (tối đa 2 lần), các trận sau vẫn ghi. Trước đây record_video = False tắt ghi cả
+                                        # phiên: 05/11 người dùng đánh 9 trận, ghi được 3 - tiến trình ghi thoát cùng lúc với
+                                        # game ở trận 3, tin "done" chưa tới, mọi trận sau đó không được ghi
+                                        game_alive = mem.alive()
+                                        log(("tiến trình ghi đã kết thúc bất thường" + (f": {rec.rp.error}" if rec.rp.error else ""))
+                                            if game_alive else "tiến trình ghi đã dừng cùng lúc game thoát")
                                         self._stop_rec(rec); rec = None
-                                        record_video = False
+                                        rec_failures += 1
+                                        if game_alive and rec_failures >= 3:
+                                            log("tiến trình ghi lỗi 3 lần trong trận này: bỏ ghi trận này, trận sau ghi lại")
+                                            last_mark = 10 ** 9
                                     elif time.time() >= next_log:
                                         now = time.time()
                                         span = now - (next_log - 60)
