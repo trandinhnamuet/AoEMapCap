@@ -109,6 +109,8 @@ class Viewer:
         self.last_team = self.rec_team
         self.selected = None
         self.sel_unit = None         # uid unit đang xem thông tin
+        self.group = []              # uid các unit khoanh bằng chuột phải (hiện thanh máu, không khoá máy quay)
+        self.box = None              # (điểm bắt đầu, điểm hiện tại) khi đang khoanh vùng bằng chuột phải
         # máy quay
         self.cx = self.cy = 0.0
         self.zoom = self.zoom_target = 0.1
@@ -332,14 +334,14 @@ class Viewer:
         self.fly = None
         if toast:
             info = self._unit_info()
-            self.set_toast(f"Khoá máy quay theo {info['name'] if info else 'unit'}  (L: bật/tắt)")
+            self.set_toast(f"Khoá máy quay theo {info['name'] if info else 'unit'}  (Y: bật/tắt)")
         return True
 
     def unfollow(self, toast=True):
         if self.follow:
             self.follow = False
             if toast:
-                self.set_toast("Bỏ khoá máy quay (L để khoá lại)")
+                self.set_toast("Bỏ khoá máy quay (Y để khoá lại)")
 
     def fly_to(self, wx, wy, zoom=None):
         self.fly = (wx, wy)
@@ -591,12 +593,71 @@ class Viewer:
                 return int(rows[ui[j]]["uid"])
         return None
 
+    PICK_SLACK_PX = 14               # bấm cách hình unit tới chừng này điểm ảnh vẫn trúng (unit nhỏ, đang chạy)
+
+    def _pick_near(self, inst, rows, wx, wy):
+        """Unit có khung hình gần điểm bấm nhất (trong PICK_SLACK_PX điểm ảnh màn hình) khi bấm trượt hình: dân, lính
+        nhỏ và đang di chuyển rất khó bấm trúng đúng điểm ảnh (người dùng 05/11). Nhà to không được ưu tiên hơn unit."""
+        if inst is None or rows is None or not len(inst[0]):
+            return None
+        slot, x0, y0, ui = inst
+        atlas = self.gpu.atlas
+        ok = (slot >= 0) & (slot < len(atlas.size))
+        sz = atlas.size[np.clip(slot, 0, max(len(atlas.size) - 1, 0))].astype(np.float32)
+        dx = np.maximum(np.maximum(x0 - wx, wx - (x0 + sz[:, 0])), 0)
+        dy = np.maximum(np.maximum(y0 - wy, wy - (y0 + sz[:, 1])), 0)
+        d = np.hypot(dx, dy) * max(self.zoom, 1e-3)              # điểm ảnh màn hình
+        d = np.where(ok, d, np.inf)
+        if not len(d):
+            return None
+        _, defs = self.data.def_arrays()
+        ut = defs["utype"][np.clip(rows["def"][ui], 0, defs["n"] - 1)]
+        area = sz[:, 0] * sz[:, 1]
+        # trong vùng sai số: unit trước nhà, rồi gần nhất, rồi khung nhỏ nhất
+        cand = np.nonzero(d <= self.PICK_SLACK_PX)[0]
+        if not len(cand):
+            return None
+        key = sorted(cand.tolist(), key=lambda j: (int(ut[j] == 80), round(float(d[j]), 1), float(area[j])))
+        return int(rows[ui[key[0]]]["uid"])
+
+    def select_box(self, p0, p1):
+        """Chuột phải kéo thả: các unit trong vùng hiện thanh máu. Một unit = như bấm chọn nó; nhiều unit thì không
+        khoá máy quay (người dùng 05/11)."""
+        rows = self.unit_rows
+        self.group = []
+        if rows is None or not len(rows) or self.world is None:
+            return
+        tlx, tly = self.cam_tl()
+        z = max(self.zoom, 1e-3)
+        ax, ay = self.world.anchors(rows)
+        sx, sy = (ax - tlx) * z, (ay - tly) * z
+        x0, x1 = sorted((p0[0], p1[0]))
+        y0, y1 = sorted((p0[1], p1[1]))
+        _, defs = self.data.def_arrays()
+        ut = defs["utype"][np.clip(rows["def"], 0, defs["n"] - 1)]
+        inside = (sx >= x0) & (sx <= x1) & (sy >= y0) & (sy <= y1) & (rows["kind"] != 25) & (rows["hp"] > 0)
+        inside &= rows["owner"] > 0               # không lấy thiên nhiên (chim bay, cây đang đốn, thú)
+        if (inside & (ut != 80)).any():
+            inside &= ut != 80                    # có unit thì bỏ nhà (như khoanh chọn trong game)
+        uids = [int(u) for u in rows["uid"][inside]]
+        if len(uids) == 1:
+            self.sel_unit = ("u", uids[0])
+            self.lock_on_selected()
+        elif uids:
+            self.group = uids
+            self.sel_unit = None
+            self.unfollow(toast=False)
+            self.set_toast(f"{len(uids)} unit: hiện thanh máu (bấm chuột trái để đóng)")
+        self._hud_dirty = True
+
     def pick_unit(self, sx, sy):
         """Unit dưới con trỏ: ('u', uid) cho unit, ('s', uid) cho vật thể tĩnh (cây, mỏ), hoặc None."""
         if self.world is None:
             return None
         wx, wy = self.screen_to_world(sx, sy)
         uid = self._pick_in(self.inst, self.unit_rows, wx, wy)
+        if uid is None:
+            uid = self._pick_near(self.inst, self.unit_rows, wx, wy)
         if uid is not None:
             return ("u", uid)
         uid = self._pick_in(getattr(self, "static_inst", None), getattr(self, "static_rows", None), wx, wy)
@@ -935,7 +996,71 @@ class Viewer:
             ctx.viewport = (0, 0, W, H)
 
     def _draw_selection(self):
-        """Hình thoi màu người chơi dưới chân unit đang chọn (như vòng chọn trong game)."""
+        """Hình thoi màu người chơi dưới chân unit đang chọn (như vòng chọn trong game), thanh máu trên đầu unit đang
+        chọn / các unit khoanh vùng, và khung khoanh khi đang kéo chuột phải."""
+        if self.box is not None:
+            (bx0, by0), (bx1, by1) = self.box
+            a, b = self.screen_to_world(bx0, by0), self.screen_to_world(bx1, by1)
+            self.gpu.draw_lines([(a[0], a[1]), (b[0], a[1]), (b[0], b[1]), (a[0], b[1])], (0.4, 1.0, 0.4, 0.9), loop=True)
+        uids = list(self.group)
+        if self.sel_unit is not None and self.sel_unit[0] == "u":
+            uids.append(self.sel_unit[1])
+        if uids:
+            self._draw_hp_bars(uids)
+        self._draw_sel_diamond()
+
+    def _draw_hp_bars(self, uids):
+        """Thanh máu trên đầu unit: xanh = máu còn, đỏ = máu đã mất (người dùng 05/11), viền đen cho dễ nhìn."""
+        rows, inst = self.unit_rows, self.inst
+        if rows is None or not len(rows) or inst is None:
+            return
+        slot, x0, y0, ui = inst
+        if not len(ui):
+            return
+        tops = np.full(len(rows), np.inf, np.float32)
+        np.minimum.at(tops, ui, y0)                              # đỉnh hình unit (chỉ unit đang hiện)
+        want = np.isin(rows["uid"], np.asarray(uids, rows["uid"].dtype)) & np.isfinite(tops)
+        idx = np.nonzero(want)[0]
+        if not len(idx):
+            return
+        z = max(self.zoom, 1e-3)
+        ax, _ay = self.world.anchors(rows[idx])
+        frame = max(self.cursor.frame, 0)
+        hp_cache = {}
+        green, red, black = [], [], []
+        h_px = 4
+        for n, i in enumerate(idx.tolist()):
+            u = rows[i]
+            d = int(u["def"])
+            if d not in hp_cache:
+                st = self.data.stats_at(d, frame)
+                dfi = self.data.defs.get(d)
+                hp_cache[d] = float((st or {}).get("hp") or (dfi.hp_max if dfi else 0) or 0)
+            hp_max = hp_cache[d]
+            if hp_max <= 0:
+                continue
+            f = max(0.0, min(1.0, float(u["hp"]) / hp_max))
+            dfi = self.data.defs.get(d)
+            du = self.world.dat.units.get(dfi.dat_id) if dfi is not None else None
+            r = max(0.25, min(3.0, float(max(du.radius_x, du.radius_y)) if du is not None else 0.3))
+            w = max(22.0, min(90.0, 32.0 * r * 2.0 * z)) / z          # rộng theo cỡ unit, 22-90 điểm ảnh
+            cx, top = float(ax[n]), float(tops[i]) - 6.0 / z
+            xl = cx - w / 2
+            xm = xl + w * f
+            for k in range(h_px):
+                y = top - k / z
+                if f > 0:
+                    green += [(xl, y), (xm, y)]
+                if f < 1:
+                    red += [(xm, y), (xl + w, y)]
+            yb0, yb1 = top + 1.0 / z, top - h_px / z
+            black += [(xl - 1 / z, yb0), (xl + w + 1 / z, yb0), (xl - 1 / z, yb1), (xl + w + 1 / z, yb1),
+                      (xl - 1 / z, yb0), (xl - 1 / z, yb1), (xl + w + 1 / z, yb0), (xl + w + 1 / z, yb1)]
+        self.gpu.draw_segments(black, (0.0, 0.0, 0.0, 1.0))
+        self.gpu.draw_segments(red, (0.86, 0.12, 0.12, 1.0))
+        self.gpu.draw_segments(green, (0.15, 0.85, 0.2, 1.0))
+
+    def _draw_sel_diamond(self):
         u = self._selected_row() if self.sel_unit is not None else None
         if u is None:
             return
@@ -1064,9 +1189,11 @@ class Viewer:
             hud.show_help = not hud.show_help
         elif k == pygame.K_HOME:
             self.fit_view()
-        elif k == pygame.K_l:
+        elif k in (pygame.K_y, pygame.K_l):
             if self.follow:
                 self.unfollow()
+            elif len(self.group) > 1:
+                self.set_toast("Đang khoanh nhiều unit: bấm chọn một unit để khoá máy quay")
             elif not self.lock_on_selected():
                 self.set_toast("Bấm chọn một unit trước để khoá máy quay")
         elif k == pygame.K_s:
@@ -1108,7 +1235,10 @@ class Viewer:
             self.fly = None
             self.zoom_anchor = None
             return
-        if ev.button in (1, 2, 3):
+        if ev.button == 3:
+            self.drag = ("box", pos, False, 3)          # chuột phải kéo: khoanh vùng hiện thanh máu
+            return
+        if ev.button in (1, 2):
             self.drag = ("world", pos, False, ev.button)
 
     def _mouse_up(self, ev):
@@ -1116,8 +1246,14 @@ class Viewer:
         self.drag = None
         if d is None:
             return
+        if d[0] == "box":
+            self.box = None
+            if d[2]:
+                self.select_box(d[1], ev.pos)
+            return
         if d[0] == "world" and not d[2]:
             if d[3] == 1:
+                self.group = []                         # bấm chuột trái bất kì: đóng thanh máu của nhóm
                 self.sel_unit = self.pick_unit(*ev.pos)
                 if self.sel_unit is not None and self.sel_unit[0] == "u":
                     self.lock_on_selected()
@@ -1142,6 +1278,12 @@ class Viewer:
             self._hud_dirty = True
         d = self.drag
         if d is None:
+            return
+        if d[0] == "box":
+            if not d[2] and abs(ev.pos[0] - d[1][0]) + abs(ev.pos[1] - d[1][1]) >= 5:
+                self.drag = ("box", d[1], True, 3)
+            if self.drag[2]:
+                self.box = (d[1], ev.pos)
             return
         if d[0] == "timeline":
             self._timeline_seek(ev.pos[0])
@@ -1307,6 +1449,46 @@ class Viewer:
                 self._hud_dirty = True
                 self._settle(10)
                 self._shot("8_thong_tin_unit")
+                # bấm hụt hình 10 điểm ảnh vẫn trúng unit; khoanh vùng chuột phải: thanh máu cả nhóm
+                tlx, tly = self.cam_tl()
+                psx, psy = (float(ax[0]) - tlx) * self.zoom, (float(ay[0]) - tly) * self.zoom
+                near = self.pick_unit(psx + 2, psy + 10)
+                self.log(f"bấm lệch 10 px dưới chân unit {int(pick['uid'])}: chọn được {near}")
+                Wv, Hv = self.size
+                self.sel_unit = None
+                self.select_box((Wv * 0.25, Hv * 0.25), (Wv * 0.75, Hv * 0.75))
+                self.log(f"khoanh vùng giữa màn hình: {len(self.group)} unit, khoá máy quay {self.follow}")
+                self._settle(10)
+                self._shot("8b_thanh_mau_nhom")
+                self.group = []
+                # một unit mất máu: thanh xanh + đỏ (tìm ở các mẫu sau)
+                fr = max(self.cursor.frame, 0)
+                for r_try in (0.75, 0.85, 0.95, 0.65):
+                    self.seek_r(d.duration() * r_try)
+                    self._settle(3)
+                    U2 = self.unit_rows
+                    if U2 is None or not len(U2):
+                        continue
+                    hurt = None
+                    for u2 in U2[(U2["owner"] > 0) & (U2["kind"] != 25) & (U2["hp"] > 0)]:
+                        st2 = d.stats_at(int(u2["def"]), max(self.cursor.frame, 0))
+                        mx2 = float((st2 or {}).get("hp") or 0)
+                        if mx2 > 0 and float(u2["hp"]) < 0.7 * mx2:
+                            hurt = u2
+                            break
+                    if hurt is not None:
+                        self.sel_unit = ("u", int(hurt["uid"]))
+                        hx2, hy2 = self.world.anchors(np.array([hurt], dtype=hurt.dtype))
+                        self.cx, self.cy = float(hx2[0]), float(hy2[0])
+                        self.follow = False
+                        self._hud_dirty = True
+                        self._settle(10)
+                        self._shot("8c_thanh_mau_mat_mau")
+                        self.log(f"unit mất máu {int(hurt['uid'])}: {float(hurt['hp']):.0f} máu")
+                        break
+                self.seek_r(d.duration() * 0.6)
+                self._settle(3)
+                U = self.unit_rows
                 # nhà chính của người ghi (tiến độ nghiên cứu) và một cây (gỗ còn lại)
                 rec = d.recorder_index()
                 tc = np.nonzero((U["owner"] == rec) & np.isin(defs["dat_id"][np.clip(U["def"], 0, defs["n"] - 1)],

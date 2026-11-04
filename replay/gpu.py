@@ -455,6 +455,18 @@ class GPU:
         self.ctx.blend_func = moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA
         self.line_vao.render(moderngl.LINE_LOOP if loop else moderngl.LINE_STRIP, vertices=len(pts))
 
+    def draw_segments(self, pts, color):
+        """Many separate segments in one call: pts = [a0, b0, a1, b1, ...] (health bars of a whole group)."""
+        pts = np.asarray(pts, np.float32)
+        if len(pts) < 2:
+            return
+        self.line_vbo.orphan(max(pts.nbytes, 8))
+        self.line_vbo.write(pts.tobytes())
+        self.p_line["color"].value = tuple(float(c) for c in color)
+        self.ctx.enable(moderngl.BLEND)
+        self.ctx.blend_func = moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA
+        self.line_vao.render(moderngl.LINES, vertices=len(pts) - len(pts) % 2)
+
     def set_cam(self, cam, zoom, view):
         self._cam(cam, zoom, view)
 
