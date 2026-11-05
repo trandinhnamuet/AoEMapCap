@@ -1028,7 +1028,12 @@ class Viewer:
         frame = max(self.cursor.frame, 0)
         hp_cache = {}
         green, red, black = [], [], []
-        h_px = 4
+        h_px = 3                                                   # cao 3 điểm ảnh (người dùng 05/11: thấp hơn)
+        tlx, tly = self.cam_tl()
+
+        def wpt(px, py):
+            # điểm ảnh màn hình (nguyên) -> toạ độ thế giới ở tâm điểm ảnh: nét 1 px sắc, không loè sang 2 px
+            return (tlx + (px + 0.5) / z, tly + (py + 0.5) / z)
         for n, i in enumerate(idx.tolist()):
             u = rows[i]
             d = int(u["def"])
@@ -1043,20 +1048,21 @@ class Viewer:
             dfi = self.data.defs.get(d)
             du = self.world.dat.units.get(dfi.dat_id) if dfi is not None else None
             r = max(0.25, min(3.0, float(max(du.radius_x, du.radius_y)) if du is not None else 0.3))
-            w = max(22.0, min(90.0, 32.0 * r * 2.0 * z)) / z          # rộng theo cỡ unit, 22-90 điểm ảnh
-            cx, top = float(ax[n]), float(tops[i]) - 6.0 / z
-            xl = cx - w / 2
-            xm = xl + w * f
+            w = int(round(max(28.0, min(112.0, 32.0 * r * 2.6 * z))))   # rộng theo cỡ unit, 28-112 điểm ảnh
+            cxs = (float(ax[n]) - tlx) * z
+            ys = int(round((float(tops[i]) - tly) * z)) - 7            # dòng dưới cùng của thanh, trên đỉnh hình
+            xl = int(round(cxs - w / 2))
+            xm = xl + int(round(w * f))
             for k in range(h_px):
-                y = top - k / z
-                if f > 0:
-                    green += [(xl, y), (xm, y)]
-                if f < 1:
-                    red += [(xm, y), (xl + w, y)]
-            yb0, yb1 = top + 1.0 / z, top - h_px / z
-            black += [(xl - 1 / z, yb0), (xl + w + 1 / z, yb0), (xl - 1 / z, yb1), (xl + w + 1 / z, yb1),
-                      (xl - 1 / z, yb0), (xl - 1 / z, yb1), (xl + w + 1 / z, yb0), (xl + w + 1 / z, yb1)]
-        self.gpu.draw_segments(black, (0.0, 0.0, 0.0, 1.0))
+                y = ys - k
+                if xm > xl:
+                    green += [wpt(xl, y), wpt(xm, y)]
+                if xm < xl + w:
+                    red += [wpt(xm, y), wpt(xl + w, y)]
+            yt, yb = ys - h_px, ys + 1                               # viền 1 điểm ảnh sát thanh
+            black += [wpt(xl - 1, yt), wpt(xl + w + 1, yt), wpt(xl - 1, yb), wpt(xl + w + 1, yb),
+                      wpt(xl - 1, yt), wpt(xl - 1, yb + 1), wpt(xl + w, yt), wpt(xl + w, yb + 1)]
+        self.gpu.draw_segments(black, (0.0, 0.0, 0.0, 0.75))
         self.gpu.draw_segments(red, (0.86, 0.12, 0.12, 1.0))
         self.gpu.draw_segments(green, (0.15, 0.85, 0.2, 1.0))
 
