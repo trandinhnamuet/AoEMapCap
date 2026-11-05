@@ -220,6 +220,21 @@ class Viewer:
             rgba, _hx, _hy = s.decode(frame, w.pal)
             return pil_to_surface(Image.fromarray(rgba))
         self.hud.slp_icon = slp_icon
+        # thanh dưới của game (interfac.drs khung 1 = 1920 x 126, ô minimap hình thoi bên phải) theo bộ giao diện
+        # của nền văn minh: 0 Ai Cập, 1 Hy Lạp, 2 Babylon, 3 Á Đông, 4 La Mã (byte "icon set" của civ trong empires.dat)
+        bar_sid = {0: 50741, 1: 50742, 2: 50743, 3: 50744, 4: 53012}
+        def bar_art(style):
+            s = rv._interfac_slp(bar_sid.get(style, 50741))
+            if s is None or len(s.frames) < 2:
+                return None
+            from PIL import Image
+            rgba, _hx, _hy = s.decode(1, w.pal)
+            rgba = rgba.copy()
+            white = (rgba[:, :, 0] >= 250) & (rgba[:, :, 1] >= 250) & (rgba[:, :, 2] >= 250)
+            rgba[white] = (12, 12, 14, 255)          # ô minimap trắng của game -> nền tối (minimap vẽ đè lên)
+            return pil_to_surface(Image.fromarray(rgba))
+        self.hud.bar_art = bar_art
+        self._civ_style = self._read_civ_styles(w.dat)
         self.fit_view()
         self.zoom = self.zoom_target
         if not self.selftest:
@@ -869,6 +884,27 @@ class Viewer:
         return cache[key]
 
     # ---- HUD ---------------------------------------------------------------------------
+    @staticmethod
+    def _read_civ_styles(dat):
+        """civ id -> bộ giao diện (0..4): khối civ trong empires.dat = tên 20 byte, số tài nguyên (u16), cây công nghệ
+        (i16), các tài nguyên (float), rồi byte icon set."""
+        import struct
+        out = {}
+        try:
+            d = dat._data
+            e, g = d.find(b"Egyptian\x00"), d.find(b"Greek\x00")
+            if e < 0 or g <= e:
+                return out
+            for i in range(16):
+                q = e + i * (g - e)
+                rc = struct.unpack_from("<H", d, q + 20)[0]
+                if not 0 < rc < 400:
+                    break
+                out[i + 1] = d[q + 24 + 4 * rc]
+        except Exception:  # noqa: BLE001
+            pass
+        return out
+
     def _hud_model(self):
         d = self.data
         loading = None
@@ -935,6 +971,10 @@ class Viewer:
                              "status": {1: "thắng", 2: "đầu hàng" if p.resigned else "thua"}.get(p.ptype)}
         m.teams = [[rows[i] for i in t if i in rows] for t in d.teams]
         m.selected = self.selected
+        # thanh dưới mang giao diện văn minh của người chơi đang chọn (chưa chọn: người ghi trận), như trong game
+        who = self.selected if self.selected is not None else d.recorder_index()
+        pc = players[who].civ if who is not None and 0 <= who < len(players) else None
+        m.bar_style = getattr(self, "_civ_style", {}).get(int(pc)) if pc else None
         m.sel_player = rows.get(self.selected)
         m.game_over = bool(st.go)
         m.techs = []

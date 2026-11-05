@@ -73,6 +73,8 @@ class Hud:
         self.icons = {}              # attr -> Surface (tài nguyên)
         self.tech_icon = None        # hàm (icon_id, size) -> Surface hoặc None
         self.slp_icon = None         # hàm (slp id interfac.drs, khung) -> Surface hoặc None
+        self.bar_art = None          # hàm (bộ giao diện 0..4) -> Surface 1920 x 126 thanh dưới của game
+        self._bar_cache = {}
         # vùng bấm (cập nhật mỗi lần vẽ)
         self.r_timeline = None
         self.r_play = None
@@ -127,7 +129,9 @@ class Hud:
         self.u = max(0.6, H / 1080)
         u = self.u
         self.tl_h = int(46 * u)
-        mm_w = int(min(W * 0.2, 380 * u))          # (trong thanh dưới chung: thấp hơn cho thấy nhiều bản đồ)
+        mm_w = int(min(W * 0.2, 380 * u))
+        # trong thanh dưới có ảnh của game: minimap nằm đúng ô hình thoi của ảnh (219 x 109 trên ảnh 1920 x 126)
+        mm_w = int(W * 219 / 1920)          # (trong thanh dưới chung: thấp hơn cho thấy nhiều bản đồ)
         mm_h = int(mm_w * world_aspect)
         bottom = H - (self.tl_h + int(8 * u) if self.show_timeline and self.show_hud else int(8 * u))
         self.r_minimap = pygame.Rect(W - mm_w - int(10 * u), bottom - mm_h - int(6 * u), mm_w, mm_h)
@@ -281,38 +285,77 @@ class Hud:
         (minimap / bảng người chơi; unit có bảng lệnh dài thì thanh cao lên)."""
         W, H = self.size
         u = self.u
-        pad = int(8 * u)
+        pad = int(5 * u)
         ui = self._unit_info(surf, m, measure=True) if m.unit_info else None
         sb = self._scoreboard(surf, m, measure=True) if self.show_score and m.teams else None
         mm = self.r_minimap if self.show_minimap else None
-        hs = [x[1] for x in (ui, sb) if x] + ([mm.h + int(4 * u)] if mm is not None else [])
-        if not hs:
+        art = self._bar_surface(getattr(m, "bar_style", None), W)
+        base_h = int(round(126 * W / 1920)) if art is not None else 0      # cao như thanh dưới của game
+        hs = [x[1] + 2 * pad for x in (ui, sb) if x] + ([mm.h + int(8 * u)] if mm is not None else []) + [base_h]
+        if not any(hs):
             return
-        bar_h = max(hs) + 2 * pad
+        bar_h = max(hs)
         top = self.bottom - bar_h
         self.bar_top = top
         bg = pygame.Surface((W, H - top), pygame.SRCALPHA)
         bg.fill(self.BAR_BG)
-        pygame.draw.line(bg, self.BAR_EDGE, (0, 0), (W, 0), max(1, int(2 * u)))
         surf.blit(bg, (0, top))
+        art_top = top
+        if art is not None:
+            art_h = art.get_height()
+            art_top = top + bar_h - art_h                    # ảnh giữ chiều cao gốc ở đáy thanh
+            if bar_h > art_h:
+                # thanh cao hơn ảnh (bảng lệnh của nhà...): phần trên lấp bằng dải hoa văn giữa ảnh (bỏ ô chân dung
+                # và ô minimap), không kéo dãn ảnh
+                key = ("fill", id(art), bar_h - art_h)
+                if key not in self._bar_cache:
+                    band = art.subsurface(pygame.Rect(int(W * 140 / 1920), int(art_h * 0.15), int(W * 1540 / 1920), int(art_h * 0.7)))
+                    self._bar_cache[key] = pygame.transform.smoothscale(band, (W, bar_h - art_h))
+                surf.blit(self._bar_cache[key], (0, top))
+            surf.blit(art, (0, art_top))
+        pygame.draw.line(surf, self.BAR_EDGE, (0, top), (W, top), max(1, int(2 * u)))
         y = top + pad
         left_end = pad
         if ui:
-            left_end = pad + ui[0] + pad
-            pygame.draw.line(surf, self.BAR_SEP, (left_end, top + pad), (left_end, top + bar_h - pad))
-            left_end += pad
+            self.panel(surf, pygame.Rect(pad // 2, top + pad // 2, ui[0] + pad, bar_h - pad), (8, 10, 14, 170), radius=4)
+            left_end = pad + ui[0] + 2 * pad
         right_end = W - pad
         if mm is not None:
-            mm.topleft = (W - mm.w - pad - int(2 * u), y + int(2 * u))
-            pygame.draw.rect(surf, (120, 110, 80), mm.inflate(int(4 * u), int(4 * u)), 1)
-            right_end = mm.x - int(2 * u) - pad
-            pygame.draw.line(surf, self.BAR_SEP, (right_end, top + pad), (right_end, top + bar_h - pad))
-            right_end -= pad
+            if art is not None:
+                # ô hình thoi của ảnh: x 1692-1910, y 7-115 trên ảnh 1920 x 126 (giữ tỉ lệ bản đồ, đặt giữa ô)
+                bx0, bx1 = W * 1692 / 1920, W * 1911 / 1920
+                ah = bar_h - (art_top - top)
+                by0, by1 = art_top + ah * 7 / 126, art_top + ah * 116 / 126
+                bw, bh = bx1 - bx0, by1 - by0
+                s = min(bw / mm.w, bh / mm.h)
+                mm.size = (int(mm.w * s), int(mm.h * s))
+                mm.center = (int((bx0 + bx1) / 2), int((by0 + by1) / 2))
+                right_end = int(bx0) - pad
+            else:
+                mm.topleft = (W - mm.w - pad - int(2 * u), y + int(2 * u))
+                pygame.draw.rect(surf, (120, 110, 80), mm.inflate(int(4 * u), int(4 * u)), 1)
+                right_end = mm.x - int(2 * u) - pad
         if sb:
             x = left_end + max(0, (right_end - left_end - sb[0]) // 2)
+            self.panel(surf, pygame.Rect(x - pad, top + pad // 2, sb[0] + 2 * pad, bar_h - pad), (8, 10, 14, 170), radius=4)
             self._scoreboard(surf, m, pos=(x, y))
         if ui:
             self._unit_info(surf, m, pos=(pad, y))
+
+    def _bar_surface(self, style, W):
+        """Ảnh thanh dưới của game theo bộ giao diện, kéo theo chiều rộng cửa sổ (None: không có đồ hoạ game)."""
+        if self.bar_art is None or style is None:
+            return None
+        key = (style, W)
+        if key not in self._bar_cache:
+            try:
+                im = self.bar_art(style)
+            except Exception:  # noqa: BLE001
+                im = None
+            if im is not None:
+                im = pygame.transform.smoothscale(im, (W, int(round(126 * W / 1920))))
+            self._bar_cache[key] = im
+        return self._bar_cache[key]
 
     def _cell(self, p, key):
         if key == "age":
@@ -472,7 +515,7 @@ class Hud:
 
     def _unit_info(self, surf, m, measure=False, pos=None):
         """Bảng thông tin unit kiểu trong game: chân dung, tên, chủ, thanh máu (còn / mất), chỉ số có icon."""
-        u = self.u
+        u = self.u * 0.78                     # (gọn trong thanh dưới chung: người dùng 05/11 thấy quá to)
         info = m.unit_info
         fs = int(16 * u)
         icon = info.get("icon")
@@ -482,7 +525,7 @@ class Hud:
             head.append(self.text(info["owner"], int(15 * u), info["rgb"], True))
         hp = info.get("hp")
         stats = info.get("stats") or []
-        cols = 2
+        cols = 3 if (measure or pos is not None) else 2   # trong thanh dưới: 3 cột chỉ số cho thanh thấp hơn
         cell_w = int(170 * u)
         row_h = int(28 * u)
         n_rows = (len(stats) + cols - 1) // cols
