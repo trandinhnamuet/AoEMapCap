@@ -569,8 +569,7 @@ class Hud:
         hp_t = None
         if hp:
             cur, mx = hp
-            lost = max(0, int(round(mx - cur)))
-            hp_t = self.text(f"{int(round(cur))} / {int(mx)}" + (f"  (mất {lost})" if lost else ""), int(13 * u), WHITE, True)
+            hp_t = self.text(f"{int(round(cur))} / {int(mx)}", int(13 * u), WHITE, True)
         hp_w = max(int(150 * u), hp_t.get_width() + int(16 * u)) if hp_t else 0
         head_w = max([sh.get_width() for sh in head] + [hp_w])
         a_w = max([m12 + port + m12 + head_w + m12, int(230 * u)]
