@@ -737,8 +737,10 @@ class Viewer:
                 return f"{self._fmt_num(base)}+{self._fmt_num(cur - base)}" if base is not None and cur > base else self._fmt_num(cur)
             if atk > 0:
                 rows.append(("attack", "Công", plus(atk, stats.get("d_attack") if stats.get("d_attack", 0) > 0 else None)))
-            rows.append(("armor", "Giáp", plus(melee, stats.get("d_melee"))))
-            if pierce or pierce_atk or "d_pierce" in stats:
+            bld0 = utype == 80                # công trình: giáp / giáp xuyên đều 0 -> không hiện (người dùng 05/11)
+            if not (bld0 and melee <= 0):
+                rows.append(("armor", "Giáp", plus(melee, stats.get("d_melee"))))
+            if (pierce or pierce_atk or "d_pierce" in stats) and not (bld0 and pierce <= 0):
                 rows.append(("pierce", "Giáp xuyên", plus(pierce, stats.get("d_pierce"))))
             rng = stats.get("range", 0) or 0
             if rng >= 1.0:
