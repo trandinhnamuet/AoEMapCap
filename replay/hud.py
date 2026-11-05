@@ -127,7 +127,7 @@ class Hud:
         self.u = max(0.6, H / 1080)
         u = self.u
         self.tl_h = int(46 * u)
-        mm_w = int(min(W * 0.24, 460 * u))
+        mm_w = int(min(W * 0.2, 380 * u))          # (trong thanh dưới chung: thấp hơn cho thấy nhiều bản đồ)
         mm_h = int(mm_w * world_aspect)
         bottom = H - (self.tl_h + int(8 * u) if self.show_timeline and self.show_hud else int(8 * u))
         self.r_minimap = pygame.Rect(W - mm_w - int(10 * u), bottom - mm_h - int(6 * u), mm_w, mm_h)
@@ -148,17 +148,11 @@ class Hud:
             return surf
         if self.show_hud:
             self._top(surf, m)
+            self._bottom_bar(surf, m)
             if self.show_timeline:
                 self._timeline(surf, m)
-            if self.show_minimap:
-                r = self.r_minimap
-                self.panel(surf, r.inflate(int(8 * self.u), int(8 * self.u)), (8, 10, 14, 230), border=(120, 110, 80))
-            if self.show_score:
-                self._scoreboard(surf, m)
             if self.show_techs:
                 self._techs(surf, m)
-            if m.unit_info:
-                self._unit_info(surf, m)
         if m.toast:
             t = self.text(m.toast, int(22 * self.u), GOLD, bold=True)
             y = int(96 * self.u) if self.show_hud else int(20 * self.u)
@@ -277,6 +271,49 @@ class Hud:
                 ("Công nghệ", "ntech"), ("Vàng KT", "gold_mined"), ("Bơm", "tribute")]
     RES_LABEL = {O.ATTR_FOOD: "Thực", O.ATTR_WOOD: "Gỗ", O.ATTR_GOLD: "Vàng", O.ATTR_STONE: "Đá"}
 
+    BAR_BG = (12, 12, 14, 232)
+    BAR_EDGE = (150, 135, 90)
+    BAR_SEP = (90, 85, 70)
+
+    def _bottom_bar(self, surf, m):
+        """Một thanh thông tin chung ở cạnh dưới như giao diện trong game (người dùng 05/11): trái = thông tin unit
+        đang chọn, giữa = bảng người chơi, phải = minimap; liền với thanh thời gian bên dưới. Cao bằng phần cao nhất
+        (minimap / bảng người chơi; unit có bảng lệnh dài thì thanh cao lên)."""
+        W, H = self.size
+        u = self.u
+        pad = int(8 * u)
+        ui = self._unit_info(surf, m, measure=True) if m.unit_info else None
+        sb = self._scoreboard(surf, m, measure=True) if self.show_score and m.teams else None
+        mm = self.r_minimap if self.show_minimap else None
+        hs = [x[1] for x in (ui, sb) if x] + ([mm.h + int(4 * u)] if mm is not None else [])
+        if not hs:
+            return
+        bar_h = max(hs) + 2 * pad
+        top = self.bottom - bar_h
+        self.bar_top = top
+        bg = pygame.Surface((W, H - top), pygame.SRCALPHA)
+        bg.fill(self.BAR_BG)
+        pygame.draw.line(bg, self.BAR_EDGE, (0, 0), (W, 0), max(1, int(2 * u)))
+        surf.blit(bg, (0, top))
+        y = top + pad
+        left_end = pad
+        if ui:
+            left_end = pad + ui[0] + pad
+            pygame.draw.line(surf, self.BAR_SEP, (left_end, top + pad), (left_end, top + bar_h - pad))
+            left_end += pad
+        right_end = W - pad
+        if mm is not None:
+            mm.topleft = (W - mm.w - pad - int(2 * u), y + int(2 * u))
+            pygame.draw.rect(surf, (120, 110, 80), mm.inflate(int(4 * u), int(4 * u)), 1)
+            right_end = mm.x - int(2 * u) - pad
+            pygame.draw.line(surf, self.BAR_SEP, (right_end, top + pad), (right_end, top + bar_h - pad))
+            right_end -= pad
+        if sb:
+            x = left_end + max(0, (right_end - left_end - sb[0]) // 2)
+            self._scoreboard(surf, m, pos=(x, y))
+        if ui:
+            self._unit_info(surf, m, pos=(pad, y))
+
     def _cell(self, p, key):
         if key == "age":
             a = p["age"]
@@ -289,9 +326,10 @@ class Hud:
         v = p.get(key)
         return "-" if v is None else str(int(v))
 
-    def _scoreboard(self, surf, m):
+    def _scoreboard(self, surf, m, measure=False, pos=None):
+        """measure: chỉ trả về (rộng, cao); pos: góc trên trái trong thanh dưới (không vẽ khung riêng)."""
         if not m.teams:
-            return
+            return None
         W, _H = self.size
         u = self.u
         cols = self.ECO_COLS if self.score_mode == 0 else self.MIL_COLS
@@ -306,8 +344,13 @@ class Hud:
         avail_right = (self.r_minimap.x - int(12 * u)) if self.show_minimap else W
         x0 = max(int(10 * u), min((W - w) // 2, avail_right - w))
         y0 = self.bottom - h - int(6 * u)
+        if measure:
+            return w, h
+        if pos is not None:
+            x0, y0 = pos
         r = pygame.Rect(x0, y0, w, h)
-        self.panel(surf, r, border=(120, 110, 80))
+        if pos is None:
+            self.panel(surf, r, border=(120, 110, 80))
         y = y0 + int(6 * u)
         title = "Kinh tế" if self.score_mode == 0 else "Quân sự"
         surf.blit(self.text(f"{title}  (X đổi)", fs, GOLD, bold=True), (x0 + int(10 * u), y + int(2 * u)))
@@ -427,7 +470,7 @@ class Hud:
                     cache[k] = pygame.transform.smoothscale(im, (w, size))
         return cache[k]
 
-    def _unit_info(self, surf, m):
+    def _unit_info(self, surf, m, measure=False, pos=None):
         """Bảng thông tin unit kiểu trong game: chân dung, tên, chủ, thanh máu (còn / mất), chỉ số có icon."""
         u = self.u
         info = m.unit_info
@@ -465,8 +508,11 @@ class Hud:
                 + [e.get_width() + int(24 * u) for e in extra + ([cmd_note] if cmd_note else [])])
         top_h = max(port, sum(s.get_height() for s in head) + (int(30 * u) if hp else 0)) + int(16 * u)
         h = top_h + res_h + n_rows * row_h + prog_h + sum(e.get_height() for e in extra) + int(12 * u)
-        r = pygame.Rect(int(10 * u), self.bottom - h - int(6 * u), w, h)
-        self.panel(surf, r, (8, 10, 14, 225), border=(150, 135, 90))
+        if measure:
+            return w, h
+        r = pygame.Rect(int(10 * u), self.bottom - h - int(6 * u), w, h) if pos is None else pygame.Rect(pos[0], pos[1], w, h)
+        if pos is None:
+            self.panel(surf, r, (8, 10, 14, 225), border=(150, 135, 90))
         x = r.x + int(12 * u)
         y = r.y + int(8 * u)
         pr = pygame.Rect(x, y, port, port)
