@@ -276,6 +276,7 @@ class Hud:
     RES_LABEL = {O.ATTR_FOOD: "Thực", O.ATTR_WOOD: "Gỗ", O.ATTR_GOLD: "Vàng", O.ATTR_STONE: "Đá"}
 
     BAR_BG = (12, 12, 14, 232)
+    UNIT_RESERVE = 540            # bề rộng (x u) dành sẵn cho thẻ unit bên trái thanh dưới
     BAR_EDGE = (150, 135, 90)
     BAR_SEP = (90, 85, 70)
 
@@ -337,7 +338,20 @@ class Hud:
                 pygame.draw.rect(surf, (120, 110, 80), mm.inflate(int(4 * u), int(4 * u)), 1)
                 right_end = mm.x - int(2 * u) - pad
         if sb:
-            x = left_end + max(0, (right_end - left_end - sb[0]) // 2)
+            # vị trí cố định (người dùng 05/11): giữa vùng từ chỗ dành sẵn cho thẻ unit tới minimap, theo bề rộng lớn
+            # nhất của hai chế độ bảng -> không xê dịch khi chọn / bỏ chọn unit hay đổi Kinh tế / Quân sự
+            sm = self.score_mode
+            sw = sb[0]
+            try:
+                self.score_mode = 1 - sm
+                o = self._scoreboard(surf, m, measure=True)
+                sw = max(sw, o[0]) if o else sw
+            finally:
+                self.score_mode = sm
+            l_res = int(self.UNIT_RESERVE * u)
+            x = l_res + max(0, (right_end - l_res - sw) // 2)
+            x = max(x, left_end) if ui and left_end > l_res else x     # (thẻ quá rộng: tránh đè, hiếm)
+            self.sb_x = x
             self.panel(surf, pygame.Rect(x - pad, top + pad // 2, sb[0] + 2 * pad, bar_h - pad), (8, 10, 14, 170), radius=4)
             self._scoreboard(surf, m, pos=(x, y))
         if ui:
@@ -530,8 +544,15 @@ class Hud:
         hp = info.get("hp")
         stats = info.get("stats") or []
         cols = 3
-        cell_w = int(170 * u)
         row_h = int(28 * u)
+        ic_sz = int(22 * u)
+        stat_s = []                           # (icon hoặc nhãn, giá trị) dựng sẵn để đo cột vừa nội dung
+        for key, label, val in stats:
+            ic = self._stat_icon(key, ic_sz) if key else None
+            lab = ic if ic is not None else self.text(label, int(14 * u), GREY)
+            stat_s.append((lab, ic is not None, self.text(val, fs, WHITE, True)))
+        cell_w = max([lb.get_width() + int((6 if isic else 8) * u) + vt.get_width() for lb, isic, vt in stat_s] + [0]) \
+            + int(18 * u)
         n_rows = (len(stats) + cols - 1) // cols
         extra = [self.text(s, int(14 * u), GREY) for s in info.get("lines", [])]
         res = info.get("res")
@@ -544,8 +565,16 @@ class Hud:
         res_h = row_h if res else 0
         top_h = max(port, sum(s.get_height() for s in head) + (int(30 * u) if hp else 0)) + int(16 * u)
         a_h = top_h + res_h + n_rows * row_h + sum(e.get_height() for e in extra) + int(8 * u)
-        a_w = max([m12 + port + m12 + max(s.get_width() for s in head) + int(16 * u), int(300 * u)]
-                  + ([cols * cell_w + 2 * m12] if stats else []) + [e.get_width() + 2 * m12 for e in extra])
+        # thanh máu ngắn gọn (người dùng 05/11: quá dài): vừa chữ số máu, không kéo theo bề rộng thẻ
+        hp_t = None
+        if hp:
+            cur, mx = hp
+            lost = max(0, int(round(mx - cur)))
+            hp_t = self.text(f"{int(round(cur))} / {int(mx)}" + (f"  (mất {lost})" if lost else ""), int(13 * u), WHITE, True)
+        hp_w = max(int(150 * u), hp_t.get_width() + int(16 * u)) if hp_t else 0
+        head_w = max([sh.get_width() for sh in head] + [hp_w])
+        a_w = max([m12 + port + m12 + head_w + m12, int(230 * u)]
+                  + ([cols * cell_w - int(18 * u) + 2 * m12] if stats else []) + [e.get_width() + 2 * m12 for e in extra])
         # ---- cột phải
         gap = int(4 * u)
         prog_t = [self.text(f"{label}  {int(frac * 100)}%", int(14 * u), WHITE) for label, frac, _i in progress]
@@ -590,15 +619,13 @@ class Hud:
             ty += s.get_height()
         if hp:
             cur, mx = hp
-            bar = pygame.Rect(tx, ty + int(6 * u), a_right - tx - m12, int(14 * u))
+            bar = pygame.Rect(tx, ty + int(6 * u), min(hp_w, a_right - tx - m12), int(14 * u))
             frac = max(0.0, min(1.0, cur / mx)) if mx else 0.0
             pygame.draw.rect(surf, (120, 25, 25), bar)
             b2 = bar.copy(); b2.width = int(bar.width * frac)
             pygame.draw.rect(surf, (50, 190, 60) if frac > 0.5 else (220, 190, 40) if frac > 0.25 else (220, 70, 40), b2)
             pygame.draw.rect(surf, (0, 0, 0), bar, 1)
-            lost = max(0, int(round(mx - cur)))
-            t = self.text(f"{int(round(cur))} / {int(mx)}" + (f"   (mất {lost})" if lost else ""), int(13 * u), WHITE, True)
-            surf.blit(t, t.get_rect(center=bar.center))
+            surf.blit(hp_t, hp_t.get_rect(center=bar.center))
         y = r.y + top_h
         if res:
             ic = self._stat_icon(res[0], int(22 * u))
@@ -609,18 +636,11 @@ class Hud:
             t = self.text(res[1], int(17 * u), GOLD, True)
             surf.blit(t, (cx, y + (row_h - t.get_height()) // 2))
             y += row_h
-        for k, (key, label, val) in enumerate(stats):
+        for k, (lab, isic, vt) in enumerate(stat_s):
             cx = r.x + m12 + (k % cols) * cell_w
             cy = y + (k // cols) * row_h
-            ic = self._stat_icon(key, int(22 * u)) if key else None
-            if ic is not None:
-                surf.blit(ic, (cx, cy + (row_h - ic.get_height()) // 2))
-                lx = cx + ic.get_width() + int(6 * u)
-            else:
-                lt = self.text(label, int(14 * u), GREY)
-                surf.blit(lt, (cx, cy + (row_h - lt.get_height()) // 2))
-                lx = cx + lt.get_width() + int(8 * u)
-            vt = self.text(val, fs, WHITE, True)
+            surf.blit(lab, (cx, cy + (row_h - lab.get_height()) // 2))
+            lx = cx + lab.get_width() + int((6 if isic else 8) * u)
             surf.blit(vt, (lx, cy + (row_h - vt.get_height()) // 2))
         y += n_rows * row_h
         for e in extra:

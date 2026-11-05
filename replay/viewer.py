@@ -1493,7 +1493,6 @@ class Viewer:
                 ax, ay = self.world.anchors(np.array([pick], dtype=pick.dtype))
                 self.cx, self.cy = float(ax[0]), float(ay[0])
                 self.zoom = self.zoom_target = 2.0
-                self.hud.show_score = False
                 self._hud_dirty = True
                 self._settle(10)
                 self._shot("8_thong_tin_unit")
@@ -1582,6 +1581,11 @@ class Viewer:
                     self._hud_dirty = True
                     self._settle(5)
                     self._shot("13_bang_lenh_nhieu_o")
+                    x_card = getattr(self.hud, "sb_x", None)
+                    self.sel_unit = None
+                    self._hud_dirty = True
+                    self._settle(3)
+                    self.log(f"bảng người chơi x = {x_card} khi chọn công trình, {getattr(self.hud, 'sb_x', None)} khi bỏ chọn")
                     self.log(f"bảng lệnh {best[0]} ô: thanh dưới cao {self.hud.bottom - self.hud.bar_top} px")
                 S = getattr(self, "static_rows", None)
                 if S is not None and len(S):
