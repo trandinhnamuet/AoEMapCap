@@ -286,11 +286,12 @@ class Hud:
         W, H = self.size
         u = self.u
         pad = int(5 * u)
-        ui = self._unit_info(surf, m, measure=True) if m.unit_info else None
         sb = self._scoreboard(surf, m, measure=True) if self.show_score and m.teams else None
         mm = self.r_minimap if self.show_minimap else None
         art = self._bar_surface(getattr(m, "bar_style", None), W)
         base_h = int(round(126 * W / 1920)) if art is not None else 0      # cao như thanh dưới của game
+        self.bar_inner_h = base_h - 2 * pad                                 # thẻ unit cố vừa chiều cao này
+        ui = self._unit_info(surf, m, measure=True) if m.unit_info else None
         hs = [x[1] + 2 * pad for x in (ui, sb) if x] + ([mm.h + int(8 * u)] if mm is not None else []) + [base_h]
         if not any(hs):
             return
@@ -514,63 +515,82 @@ class Hud:
         return cache[k]
 
     def _unit_info(self, surf, m, measure=False, pos=None):
-        """Bảng thông tin unit kiểu trong game: chân dung, tên, chủ, thanh máu (còn / mất), chỉ số có icon."""
+        """Bảng thông tin unit kiểu trong game. Cột trái: chân dung, tên, chủ, thanh máu (còn / mất), tài nguyên, chỉ
+        số có icon. Cột phải (công trình): tiến độ nghiên cứu / hàng sinh quân, hoặc bảng lệnh 2 x 5 khi nhà đang rảnh
+        — đặt bên cạnh thay vì xếp chồng để thẻ không cao hơn thanh dưới của game (người dùng 05/11)."""
         u = self.u * 0.78                     # (gọn trong thanh dưới chung: người dùng 05/11 thấy quá to)
         info = m.unit_info
         fs = int(16 * u)
         icon = info.get("icon")
         port = int(64 * u)
+        m12 = int(12 * u)
         head = [self.text(info["name"], int(20 * u), WHITE, True)]
         if info.get("owner"):
             head.append(self.text(info["owner"], int(15 * u), info["rgb"], True))
         hp = info.get("hp")
         stats = info.get("stats") or []
-        cols = 3 if (measure or pos is not None) else 2   # trong thanh dưới: 3 cột chỉ số cho thanh thấp hơn
+        cols = 3
         cell_w = int(170 * u)
         row_h = int(28 * u)
         n_rows = (len(stats) + cols - 1) // cols
         extra = [self.text(s, int(14 * u), GREY) for s in info.get("lines", [])]
         res = info.get("res")
         progress = info.get("progress") or []
-        res_h = row_h if res else 0
-        prog_h = len(progress) * int(36 * u)
         queue = info.get("queue")
-        if queue:
-            prog_h += int(52 * u)
         cmd = info.get("cmd")
-        cell = int(46 * u)
+        if progress or queue:                 # đang nâng cấp / sinh quân: không cần danh sách có thể làm
+            cmd = None
+        # ---- cột trái
+        res_h = row_h if res else 0
+        top_h = max(port, sum(s.get_height() for s in head) + (int(30 * u) if hp else 0)) + int(16 * u)
+        a_h = top_h + res_h + n_rows * row_h + sum(e.get_height() for e in extra) + int(8 * u)
+        a_w = max([m12 + port + m12 + max(s.get_width() for s in head) + int(16 * u), int(300 * u)]
+                  + ([cols * cell_w + 2 * m12] if stats else []) + [e.get_width() + 2 * m12 for e in extra])
+        # ---- cột phải
         gap = int(4 * u)
+        prog_t = [self.text(f"{label}  {int(frac * 100)}%", int(14 * u), WHITE) for label, frac, _i in progress]
+        q_t = None
+        if queue:
+            q_t = self.text(f"Đang sinh: {queue['name']}  {int(queue['frac'] * 100)}%", int(15 * u), WHITE, True)
         cmd_rows = 0
         if cmd and cmd["slots"]:
             cmd_rows = max((b - 1) // 5 for b, _v in cmd["slots"]) + 1
         cmd_note = self.text(cmd["note"], int(12 * u), GREY) if cmd and cmd.get("note") else None
-        cmd_h = (cmd_rows * (cell + gap) + int(10 * u) if cmd_rows else 0) + (cmd_note.get_height() + int(4 * u) if cmd_note else 0)
-        prog_h += cmd_h
-        w = max([int(12 * u) + port + int(12 * u) + max(s.get_width() for s in head) + int(16 * u),
-                 cols * cell_w + int(24 * u), int(360 * u), 5 * (cell + gap) + int(24 * u)]
-                + [e.get_width() + int(24 * u) for e in extra + ([cmd_note] if cmd_note else [])])
-        top_h = max(port, sum(s.get_height() for s in head) + (int(30 * u) if hp else 0)) + int(16 * u)
-        h = top_h + res_h + n_rows * row_h + prog_h + sum(e.get_height() for e in extra) + int(12 * u)
+        note_h = cmd_note.get_height() + int(4 * u) if cmd_note else 0
+        avail = max(a_h, int(getattr(self, "bar_inner_h", 0) or 0))   # cao thẻ được phép (thanh dưới của game)
+        cell = 0
+        if cmd_rows:
+            cell = max(int(24 * u), min(int(46 * u), (avail - int(16 * u) - note_h) // cmd_rows - gap))
+        b_h = len(progress) * int(36 * u) + (int(52 * u) if queue else 0) + cmd_rows * (cell + gap) + note_h
+        b_w = 0
+        if b_h:
+            b_h += int(16 * u)
+            b_w = max([int(260 * u)] + [t.get_width() + int(30 * u) + int(8 * u) for t in prog_t]
+                      + ([q_t.get_width() + int(54 * u)] if q_t else [])
+                      + ([5 * (cell + gap)] if cmd_rows else []) + ([cmd_note.get_width()] if cmd_note else [])) + 2 * m12
+        w = a_w + b_w
+        h = max(a_h, b_h)
         if measure:
             return w, h
         r = pygame.Rect(int(10 * u), self.bottom - h - int(6 * u), w, h) if pos is None else pygame.Rect(pos[0], pos[1], w, h)
         if pos is None:
             self.panel(surf, r, (8, 10, 14, 225), border=(150, 135, 90))
-        x = r.x + int(12 * u)
+        a_right = r.x + a_w
+        x = r.x + m12
         y = r.y + int(8 * u)
         pr = pygame.Rect(x, y, port, port)
         pygame.draw.rect(surf, (30, 30, 30), pr)
         if icon is not None:
             surf.blit(pygame.transform.smoothscale(icon, (port, port)), pr)
         pygame.draw.rect(surf, info["rgb"], pr, max(1, int(2 * u)))
-        tx = pr.right + int(12 * u)
+        tx = pr.right + m12
         ty = y
         for s in head:
             surf.blit(s, (tx, ty))
             ty += s.get_height()
         if hp:
             cur, mx = hp
-            bar = pygame.Rect(tx, ty + int(6 * u), r.right - tx - int(12 * u), int(14 * u))
+            bar = pygame.Rect(tx, ty + int(6 * u), a_right - tx - m12, int(14 * u))
             frac = max(0.0, min(1.0, cur / mx)) if mx else 0.0
             pygame.draw.rect(surf, (120, 25, 25), bar)
             b2 = bar.copy(); b2.width = int(bar.width * frac)
@@ -582,7 +602,7 @@ class Hud:
         y = r.y + top_h
         if res:
             ic = self._stat_icon(res[0], int(22 * u))
-            cx = r.x + int(12 * u)
+            cx = r.x + m12
             if ic is not None:
                 surf.blit(ic, (cx, y + (row_h - ic.get_height()) // 2))
                 cx += ic.get_width() + int(8 * u)
@@ -590,7 +610,7 @@ class Hud:
             surf.blit(t, (cx, y + (row_h - t.get_height()) // 2))
             y += row_h
         for k, (key, label, val) in enumerate(stats):
-            cx = r.x + int(12 * u) + (k % cols) * cell_w
+            cx = r.x + m12 + (k % cols) * cell_w
             cy = y + (k // cols) * row_h
             ic = self._stat_icon(key, int(22 * u)) if key else None
             if ic is not None:
@@ -603,23 +623,31 @@ class Hud:
             vt = self.text(val, fs, WHITE, True)
             surf.blit(vt, (lx, cy + (row_h - vt.get_height()) // 2))
         y += n_rows * row_h
-        for label, frac, icon_id in progress:
+        for e in extra:
+            surf.blit(e, (r.x + m12, y))
+            y += e.get_height()
+        # ---- cột phải
+        self.cmd_hits = []
+        if not b_w:
+            return
+        pygame.draw.line(surf, (90, 85, 70), (a_right, r.y + int(8 * u)), (a_right, r.bottom - int(8 * u)))
+        bx = a_right + m12
+        y = r.y + int(8 * u)
+        for (label, frac, icon_id), t in zip(progress, prog_t):
             ic = self.tech_icon(icon_id, int(30 * u)) if self.tech_icon else None
-            cx = r.x + int(12 * u)
+            cx = bx
             if ic is not None:
                 surf.blit(ic, (cx, y + int(2 * u)))
                 cx += ic.get_width() + int(8 * u)
-            t = self.text(f"{label}  {int(frac * 100)}%", int(14 * u), WHITE)
             surf.blit(t, (cx, y))
-            bar = pygame.Rect(cx, y + t.get_height() + int(2 * u), r.right - cx - int(12 * u), int(7 * u))
+            bar = pygame.Rect(cx, y + t.get_height() + int(2 * u), r.right - cx - m12, int(7 * u))
             pygame.draw.rect(surf, (50, 50, 50), bar)
             b2 = bar.copy(); b2.width = int(bar.width * frac)
             pygame.draw.rect(surf, GOLD, b2)
             y += int(36 * u)
         if queue:                                         # đang sinh: icon unit + số trong hàng + thanh tiến độ
             qi = int(44 * u)
-            cx = r.x + int(12 * u)
-            box = pygame.Rect(cx, y + int(2 * u), qi, qi)
+            box = pygame.Rect(bx, y + int(2 * u), qi, qi)
             pygame.draw.rect(surf, (30, 30, 30), box)
             if queue.get("icon") is not None:
                 surf.blit(pygame.transform.smoothscale(queue["icon"], (qi, qi)), box)
@@ -628,23 +656,19 @@ class Hud:
                 ct = self.text(str(queue["count"]), int(16 * u), WHITE, True)
                 surf.blit(ct, ct.get_rect(bottomright=(box.right - int(2 * u), box.bottom)))
             tx = box.right + int(10 * u)
-            t = self.text(f"Đang sinh: {queue['name']}  {int(queue['frac'] * 100)}%", int(15 * u), WHITE, True)
-            surf.blit(t, (tx, y + int(2 * u)))
-            bar = pygame.Rect(tx, y + int(4 * u) + t.get_height(), r.right - tx - int(12 * u), int(7 * u))
+            surf.blit(q_t, (tx, y + int(2 * u)))
+            bar = pygame.Rect(tx, y + int(4 * u) + q_t.get_height(), r.right - tx - m12, int(7 * u))
             t2 = self.text(f"Hàng đợi: {queue['count']}", int(13 * u), GREY)
             surf.blit(t2, (tx, bar.bottom + int(2 * u)))
             pygame.draw.rect(surf, (50, 50, 50), bar)
             b2 = bar.copy(); b2.width = int(bar.width * queue["frac"])
             pygame.draw.rect(surf, (90, 200, 90), b2)
             y += int(52 * u)
-        self.cmd_hits = []
         if cmd_rows:                                      # bảng lệnh 2 x 5 như trong game: nút b -> hàng (b-1)//5, cột (b-1)%5
-            y += int(6 * u)
-            x0 = r.x + int(12 * u)
             mouse = pygame.mouse.get_pos()
             for b, (kind, ic, label, cost) in cmd["slots"]:
                 k = b - 1
-                box = pygame.Rect(x0 + (k % 5) * (cell + gap), y + (k // 5) * (cell + gap), cell, cell)
+                box = pygame.Rect(bx + (k % 5) * (cell + gap), y + (k // 5) * (cell + gap), cell, cell)
                 pygame.draw.rect(surf, (30, 30, 30), box)
                 if ic is not None:
                     surf.blit(pygame.transform.smoothscale(ic, (cell, cell)), box)
@@ -655,13 +679,9 @@ class Hud:
                 pygame.draw.rect(surf, GOLD if hov else ((150, 135, 90) if kind == "tech" else (110, 130, 160)), box,
                                  max(1, int(2 * u)) if hov else 1)
                 self.cmd_hits.append((box, label + (f"  ({cost})" if cost else "")))
-            y += cmd_rows * (cell + gap) + int(4 * u)
+            y += cmd_rows * (cell + gap)
         if cmd_note is not None:
-            surf.blit(cmd_note, (r.x + int(12 * u), y))
-            y += cmd_note.get_height() + int(4 * u)
-        for e in extra:
-            surf.blit(e, (r.x + int(12 * u), y))
-            y += e.get_height()
+            surf.blit(cmd_note, (bx, y))
         if self.hover_cmd is not None and self.hover_cmd < len(self.cmd_hits):
             box, tip = self.cmd_hits[self.hover_cmd]
             t = self.text(tip, int(14 * u), WHITE, True)

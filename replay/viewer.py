@@ -786,7 +786,9 @@ class Viewer:
                 queue = {"name": nm, "count": total, "frac": frac if making >= 0 else 0.0,
                          "icon": self._dat_icon(cur, owner)}
         cmd = None
-        if utype == 80 and int(u["kind"]) != 25 and int(u["status"]) == 2 and owner > 0 and hp > 0:
+        # đang nâng cấp / sinh quân: không hiện danh sách quân có thể sinh / công nghệ chưa nâng (người dùng 05/11)
+        if utype == 80 and int(u["kind"]) != 25 and int(u["status"]) == 2 and owner > 0 and hp > 0 \
+                and not progress and not queue:
             cmd = self._command_panel(dfi.dat_id, owner)
         if int(u["kind"]) == 25:
             lines.append("Hình ghi nhớ trong sương mù")
@@ -1563,6 +1565,24 @@ class Viewer:
                         self._settle(5)
                         self._shot(name)
                         self.hud.hover_cmd = None
+                # công trình rảnh có bảng lệnh nhiều ô nhất: thẻ không được làm thanh dưới cao hơn ảnh của game
+                ut_all = defs["utype"][np.clip(U["def"], 0, defs["n"] - 1)]
+                best = None
+                for i in np.nonzero((U["owner"] > 0) & (U["status"] == 2) & (ut_all == 80) & (U["kind"] != 25))[0]:
+                    self.sel_unit = ("u", int(U[int(i)]["uid"]))
+                    inf = self._unit_info() or {}
+                    sl = (inf.get("cmd") or {}).get("slots") or []
+                    if sl and (best is None or max(b for b, _v in sl) > best[0]):
+                        best = (max(b for b, _v in sl), int(i))
+                if best is not None:
+                    pick = U[best[1]]
+                    self.sel_unit = ("u", int(pick["uid"]))
+                    ax, ay = self.world.anchors(np.array([pick], dtype=pick.dtype))
+                    self.cx, self.cy = float(ax[0]), float(ay[0])
+                    self._hud_dirty = True
+                    self._settle(5)
+                    self._shot("13_bang_lenh_nhieu_o")
+                    self.log(f"bảng lệnh {best[0]} ô: thanh dưới cao {self.hud.bottom - self.hud.bar_top} px")
                 S = getattr(self, "static_rows", None)
                 if S is not None and len(S):
                     pick = S[len(S) // 2]
