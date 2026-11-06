@@ -179,6 +179,8 @@ def _terrain(world, budget=TERRAIN_BUDGET):
             t.save(b, "JPEG", quality=88)
             tiles.append(((x, y, t.width, t.height), b.getvalue()))
     terr = {"scale": ts, "w": world.tex_w, "h": world.tex_h}
+    if getattr(world, "keep_rgb", False):
+        world.terrain_rgb = world.terrain          # test: so với bộ chuyển trên điện thoại (trước khi nén JPEG)
     world.terrain = None
     its = ts / INDEX_SCALE_DIV
     world.ts = its
@@ -194,153 +196,268 @@ def _palette_rgb(world, owner):
     return "#%02x%02x%02x" % (r, g, b)
 
 
-def export_match(path, out_path, game_dir, log=None, progress=None):
-    """Chuyển một trận .aoerec -> .aoeweb. Trả về dict thống kê (cỡ, thời gian). progress(0..1): theo các bước
-    (đọc file 0-20%, các mẫu 20-90%, vật thể tĩnh và bảng HUD 90-100%) để điện thoại không đứng ở 0%."""
-    from replay.data import ReplayData, normalize_units
-    from replay.library import match_info
-    from replay.world import World, load_graphics
-    log = log or (lambda m: None)
-    prog = progress or (lambda f: None)
-    t0 = time.time()
-    d = ReplayData(path)
-    try:
-        d._index(progress=lambda f: prog(0.2 * f))
-        if d.n_frames == 0:
-            raise ValueError("trận không có mẫu nào")
-        dat, store, pal = load_graphics(game_dir)
-        w = World(d.header, dat, store, pal)
-        sections = {}
-        blobs = []
-        pos = [0]
+def _records(path):
+    """(tag, payload, vị trí byte đã đọc tới) của mọi bản ghi theo thứ tự file, khối 'B' mở ra tại chỗ. Dừng êm ở bản
+    ghi cụt / hỏng (như ReplayData._index)."""
+    from . import safeload
+    from .rawrec import MAGIC as REC_MAGIC, decode_block
+    with open(path, "rb") as f:
+        data = f.read()
+    if data[:len(REC_MAGIC)] != REC_MAGIC:
+        raise ValueError("không phải file .aoerec")
+    pos = len(REC_MAGIC)
+    size = len(data)
+    while pos + 5 <= size:
+        tag = data[pos:pos + 1]
+        n = struct.unpack_from("<I", data, pos + 1)[0]
+        if pos + 5 + n > size:
+            return
+        raw = data[pos + 5:pos + 5 + n]
+        pos += 5 + n
+        try:
+            if tag == b"B":
+                inner = decode_block(raw)
+            elif tag in (b"H", b"D", b"S", b"Q", b"U", b"F"):
+                inner = [(tag, safeload.zlib_loads(raw))]
+            else:
+                continue
+        except Exception:  # noqa: BLE001
+            return
+        for t, pl in inner:
+            yield t, pl, pos / size
 
-        def add(name, b):
-            sections[name] = [pos[0], len(b)]
-            blobs.append(b)
-            pos[0] += len(b)
 
-        terr, tiles, idx_info, idx = _terrain(w)
+class _Stream:
+    """Dữ liệu trận đọc tuần tự một lượt (không mở file như replay.data.ReplayData): defs, chỉ số, bản ghi tĩnh, giờ
+    từng mẫu, công trình mỗi đội đã thấy. Dùng lại các hàm của ReplayData (cùng tên trường)."""
+
+    def __init__(self, header):
+        from replay.data import ReplayData
+        from replay.library import teams_from_header
+        self._rd = ReplayData
+        self.header = header
+        self.map_w, self.map_h = int(header["map_w"]), int(header["map_h"])
+        self.defs = {}
+        self._def_ver = 0
+        self.f_off, self.f_t, self.f_at, self.f_r = [], [], [], []
+        self.s_first = []
+        self.stats = {}
+        self.final_tech_times = {}
+        self.players = ReplayData._make_players(self)
+        self.teams = teams_from_header(header)
+        self.seen = [dict() for _ in self.teams]
+        self._team_vm = []
+        for t in self.teams:
+            vm = 0
+            for i in t:
+                if 0 <= i < len(self.players):
+                    vm |= int(self.players[i].visible_mask)
+            self._team_vm.append(vm)
+
+    n_frames = property(lambda self: len(self.f_off))
+
+    def __getattr__(self, name):                 # _apply_defs, def_arrays, _mark_seen, players_at, age_events...
+        f = getattr(self._rd, name)
+        return f.__get__(self, type(self)) if callable(f) else f
+
+
+class WebBuilder:
+    """.aoerec -> .aoeweb trong MỘT lượt đọc tuần tự các bản ghi (feed), giống hệt bộ chuyển trên điện thoại
+    (mobile/web/js/rec/build.js, cùng thứ tự xử lý, cùng kết quả từng byte trừ ảnh JPEG địa hình): mỗi bản ghi tĩnh
+    'S' / 'Q' xuất ngay khi gặp (áp từ mẫu kế tiếp), mỗi mẫu 'F' áp vào trạng thái rồi xuất ngay.
+    Trước v19: lập chỉ mục cả file (ReplayData._index) rồi đọc lại từng mẫu, vật thể tĩnh xuất sau cùng."""
+
+    def __init__(self, header, graphics, game_dir, info=None, log=None, keep_terrain=False):
+        from replay.data import FrameState
+        from replay.world import World
+        from .webhud import HudExport
+        dat, store, pal = graphics
+        self.log = log or (lambda m: None)
+        self.game_dir, self.info = game_dir, info
+        self.d = d = _Stream(header)
+        self.w = w = World(header, dat, store, pal)
+        w.keep_rgb = keep_terrain
+        self.sections, self.blobs, self.pos = {}, [], 0
+        terr, tiles, self.idx_info, idx = _terrain(w)
         for k, (rect, jpg) in enumerate(tiles):
-            add(f"t{k}", jpg)
+            self._add(f"t{k}", jpg)
         terr["tiles"] = [{"x": r[0], "y": r[1], "w": r[2], "h": r[3], "section": f"t{k}"}
                          for k, (r, _j) in enumerate(tiles)]
-        add("index", _z(idx.astype("<u2").tobytes()))
-        idx_info["section"] = "index"
-        t_terrain = time.time() - t0
+        self.terr = terr
+        self._add("index", _z(idx.astype("<u2").tobytes()))
+        self.idx_info["section"] = "index"
+        self.keys = _Keys(w, store)
+        self.maker = _RowMaker(d, w, keys=self.keys)
+        self.hud = HudExport(d, w, CHUNK)
+        self.st = FrameState(d.map_w, d.map_h)
+        self.acc_r = 0.0                         # thời gian phát (giờ thật, bỏ đoạn tạm dừng)
+        self.frozen = 0.0
+        self.broken = False                      # bản ghi hỏng: dừng ở đó như ReplayData._index
+        self.cur = {}                            # uid -> bytes hàng ROW_DT đã xuất gần nhất
+        self.prev_vis = None
+        self.chunks = []                         # khối đã đủ (bytes, chưa nén)
+        self.buf = None                          # các mẫu của khối đang dựng
+        self.statics = None                      # mảng vật thể tĩnh hiện tại (UNIT_DT)
+        self.scur = None                         # hàng tĩnh đã xuất, sắp theo uid
+        self.srecs = []
 
-        keys = _Keys(w, store)
-        maker = _RowMaker(d, w, keys)
-        from .webhud import HudExport
-        hud = HudExport(d, w, CHUNK)
-        n = d.n_frames
-        H, Wm = d.map_h, d.map_w
-        # trạng thái theo uid: hàng đã xuất gần nhất (bỏ qua mẫu đổi máu / tài nguyên mà hình, vị trí không đổi)
-        from replay.data import FrameState
-        st = FrameState(Wm, H)
-        cur = {}                                   # uid -> bytes hàng ROW_DT
-        prev_vis = None
-        chunks = []
-        buf = None
-        for fi in range(n):
-            p = d.read_frame(fi)
+    def _add(self, name, b):
+        self.sections[name] = [self.pos, len(b)]
+        self.blobs.append(b)
+        self.pos += len(b)
+
+    def feed(self, tag, p):
+        if self.broken:
+            return
+        try:
+            if tag == b"D":
+                self.d._apply_defs(p)
+            elif tag in (b"S", b"Q"):
+                self._static(tag, p)
+            elif tag == b"U":
+                fi_next = self.d.n_frames
+                for idx, stv in p.items():
+                    e = self.d.stats.setdefault(int(idx), ([], []))
+                    e[0].append(fi_next)
+                    e[1].append(stv)
+            elif tag == b"F":
+                self._frame(p)
+        except _Broken:
+            self.broken = True
+
+    def _static(self, tag, p):
+        from replay.data import _apply_static_delta, normalize_units
+        d = self.d
+        first = d.n_frames
+        d.s_first.append(first)
+        units = normalize_units(p.get("units"))
+        if tag == b"S" or self.statics is None:
+            self.statics = units
+        else:
+            self.statics = _apply_static_delta(self.statics, units, p.get("removed"))
+        S = self.statics
+        R = self.maker.rows(S)
+        scur = self.scur
+        if scur is None:
+            out, rem = R, []
+        else:
+            pu = scur["uid"]
+            if len(pu):
+                k = np.minimum(np.searchsorted(pu, R["uid"]), len(pu) - 1)
+                same = (pu[k] == R["uid"]) & (scur.view(_ROW_V)[k] == R.view(_ROW_V))
+            else:
+                same = np.zeros(len(R), bool)
+            out = R[~same]                         # giữ thứ tự hàng (điện thoại vẽ theo thứ tự khi trùng chỗ)
+            rem = pu[~np.isin(pu, R["uid"])].tolist()
+        self.scur = R[np.argsort(R["uid"], kind="stable")]
+        self.srecs.append(struct.pack("<iBI", first, 0 if self.srecs else 1, len(out)) + _rows_bytes(out) +
+                          struct.pack("<I", len(rem)) + np.array(rem, "<i4").tobytes())
+        self.hud.static(first, S)
+
+    def _frame(self, p):
+        from replay.data import MAX_STEP, PAUSE_GAP, SEEN_EVERY, normalize_units
+        d, st = self.d, self.st
+        fi = d.n_frames
+        try:
             st.apply(p, fi)
-            hud.frame(fi, st)
-            full = fi % CHUNK == 0
-            if full:
-                if buf is not None:
-                    chunks.append(buf)
-                buf = [struct.pack("<I", min(CHUNK, n - fi))]
-            removed = []
-            if full or p.get("full_units"):
-                U = st.units()
-                R = maker.rows(U)
-                if p.get("full_units") and not full:
-                    alive = set(U["uid"].tolist())
-                    removed = [u for u in cur if u not in alive]
-                cur = {int(r["uid"]): r.tobytes() for r in R}
-                out = R
+            if fi % SEEN_EVERY == 0:
+                d._mark_seen(st, fi)
+            t, at = int(p["t"]), float(p["at"])
+        except Exception as e:  # noqa: BLE001
+            raise _Broken() from e
+        if fi:
+            dr = min(max(at - d.f_at[-1], 0.0), MAX_STEP)
+            if t == d.f_t[-1]:
+                self.frozen += dr
+                if self.frozen > PAUSE_GAP:
+                    dr = 0.0
             else:
-                ch = normalize_units(p.get("units"))
-                rem = p.get("removed")
-                if rem is not None and len(rem):
-                    for u in rem.tolist():
-                        if cur.pop(int(u), None) is not None:
-                            removed.append(int(u))
-                R = maker.rows(ch)
-                keep = []
-                for i, r in enumerate(R):
-                    b = r.tobytes()
-                    u = int(r["uid"])
-                    if cur.get(u) != b:
-                        cur[u] = b
-                        keep.append(i)
-                out = R[keep]
-            V = st.vis
-            parts = [struct.pack("<BI", 1 if full else 0, len(out)), _rows_bytes(out),
-                     struct.pack("<I", len(removed)), np.array(removed, "<i4").tobytes()]
-            if full or prev_vis is None:
-                parts += [struct.pack("<I", V.size), V.astype("<u4").tobytes()]
-            else:
-                ch_idx = np.flatnonzero(V != prev_vis)
-                parts += [struct.pack("<I", len(ch_idx)), ch_idx.astype("<u4").tobytes(),
-                          V.ravel()[ch_idx].astype("<u4").tobytes()]
-            prev_vis = V.copy()
-            buf.append(b"".join(parts))
-            if (fi & 255) == 0:
-                prog(0.2 + 0.7 * fi / n)
-        chunks.append(buf)
-        for k, c in enumerate(chunks):
-            add(f"c{k}", _z(b"".join(c)))
+                self.frozen = 0.0
+            self.acc_r += dr
+        d.f_t.append(t)
+        d.f_at.append(at)
+        d.f_r.append(self.acc_r)
+        d.f_off.append(None)
+        self.hud.frame(fi, st)
+        full = fi % CHUNK == 0
+        if full:
+            self._flush_chunk()
+            self.buf = []
+        removed = []
+        if full or p.get("full_units"):
+            U = st.units()
+            R = self.maker.rows(U)
+            if p.get("full_units") and not full:
+                alive = set(U["uid"].tolist())
+                removed = [u for u in self.cur if u not in alive]
+            self.cur = {int(r["uid"]): r.tobytes() for r in R}
+            out = R
+        else:
+            ch = normalize_units(p.get("units"))
+            rem = p.get("removed")
+            if rem is not None and len(rem):
+                for u in rem.tolist():
+                    if self.cur.pop(int(u), None) is not None:
+                        removed.append(int(u))
+            R = self.maker.rows(ch)
+            keep = []
+            for i, r in enumerate(R):
+                b = r.tobytes()
+                u = int(r["uid"])
+                if self.cur.get(u) != b:
+                    self.cur[u] = b
+                    keep.append(i)
+            out = R[keep]
+        V = st.vis
+        parts = [struct.pack("<BI", 1 if full else 0, len(out)), _rows_bytes(out),
+                 struct.pack("<I", len(removed)), np.array(removed, "<i4").tobytes()]
+        if full or self.prev_vis is None:
+            parts += [struct.pack("<I", V.size), V.astype("<u4").tobytes()]
+        else:
+            ch_idx = np.flatnonzero(V != self.prev_vis)
+            parts += [struct.pack("<I", len(ch_idx)), ch_idx.astype("<u4").tobytes(),
+                      V.ravel()[ch_idx].astype("<u4").tobytes()]
+        self.prev_vis = V.copy()
+        self.buf.append(b"".join(parts))
+
+    def _flush_chunk(self):
+        if self.buf:
+            self.chunks.append(struct.pack("<I", len(self.buf)) + b"".join(self.buf))
+        self.buf = None
+
+    def finish(self, file_name):
+        """Bytes của file .aoeweb."""
+        d, w, hud = self.d, self.w, self.hud
+        n = d.n_frames
+        if n == 0:
+            raise ValueError("trận không có mẫu nào")
+        self._flush_chunk()
+        d.final_tech_times = {k: dict(v) for k, v in self.st.tech_times.items()}
+        for k, c in enumerate(self.chunks):
+            self._add(f"c{k}", _z(c))
         for k, c in enumerate(hud.chunks):
-            add(f"h{k}", _z(json.dumps(c, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")))
-        t_frames = time.time() - t0 - t_terrain
-
-        # vật thể tĩnh: bản ghi đầu toàn bộ, sau đó chỉ phần đổi (kể cả các bản 'S' toàn bộ của file gốc)
-        prog(0.9)
-        srecs = []
-        scur = None                                # hàng bản ghi trước, sắp theo uid (so bằng numpy: hàng chục nghìn hàng)
-        for si in range(len(d.s_first)):
-            _ver, S = d.load_statics(si)
-            R = maker.rows(S)
-            if scur is None:
-                out, rem = R, []
-            else:
-                pu = scur["uid"]
-                if len(pu):
-                    k = np.minimum(np.searchsorted(pu, R["uid"]), len(pu) - 1)
-                    same = (pu[k] == R["uid"]) & (scur.view(_ROW_V)[k] == R.view(_ROW_V))
-                else:
-                    same = np.zeros(len(R), bool)
-                out = R[~same]                     # giữ thứ tự hàng (điện thoại vẽ theo thứ tự khi trùng chỗ)
-                rem = pu[~np.isin(pu, R["uid"])].tolist()
-            scur = R[np.argsort(R["uid"], kind="stable")]
-            srecs.append(struct.pack("<iBI", d.s_first[si], 1 if si == 0 else 0, len(out)) + _rows_bytes(out) +
-                         struct.pack("<I", len(rem)) + np.array(rem, "<i4").tobytes())
-        add("statics", _z(struct.pack("<I", len(srecs)) + b"".join(srecs)))
-        prog(0.94)
-
-        add("times", _z(np.array(d.f_t, "<i4").tobytes() + np.array(d.f_r, "<f4").tobytes()))
+            self._add(f"h{k}", _z(json.dumps(c, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+                                  .encode("utf-8")))
+        self._add("statics", _z(struct.pack("<I", len(self.srecs)) + b"".join(self.srecs)))
+        self._add("times", _z(np.array(d.f_t, "<i4").tobytes() + np.array(d.f_r, "<f4").tobytes()))
         sb = b""
         for seen in d.seen:
             items = sorted(seen.items())
             sb += struct.pack("<I", len(items)) + np.array([u for u, _f in items], "<i4").tobytes() + \
                 np.array([f for _u, f in items], "<i4").tobytes()
-        add("seen", _z(sb))
-        add("keys", _z(keys.to_bytes()))
-        add("sd", _z(json.dumps(hud.statics_detail(), separators=(",", ":"), allow_nan=False).encode("utf-8")))
-        prog(0.97)
+        self._add("seen", _z(sb))
+        self._add("keys", _z(self.keys.to_bytes()))
+        self._add("sd", _z(json.dumps(hud.sd, separators=(",", ":"), allow_nan=False).encode("utf-8")))
         hud_meta = hud.tables()
         hud_meta["icons"] = {}
-        for sid, b in hud.icon_slps(game_dir).items():
-            add(f"i{sid}", b)
+        for sid, b in hud.icon_slps(self.game_dir).items():
+            self._add(f"i{sid}", b)
             hud_meta["icons"][str(sid)] = f"i{sid}"
-
-        info = match_info(path)
         hdr = d.header
         rec = d.recorder_index()
         rec_team = next((k for k, t in enumerate(d.teams) if rec in t), -1)
         teams = []
-        for k, t in enumerate(d.teams):
+        for t in d.teams:
             vm = em = 0
             for i in t:
                 vm |= int(d.players[i].visible_mask)
@@ -353,28 +470,55 @@ def export_match(path, out_path, game_dir, log=None, progress=None):
             players.append({"index": p.index, "name": p.name, "color": _palette_rgb(w, p.index),
                             "color_id": int(w.color_lut[p.index]) if p.index < len(w.color_lut) else 0})
         meta = {
-            "version": WEB_VERSION, "file": os.path.basename(path), "info": info,
-            "map_w": Wm, "map_h": H, "full_w": w.full_w, "full_h": w.full_h, "Y0": w.Y0,
+            "version": WEB_VERSION, "file": file_name, "info": self.info,
+            "map_w": d.map_w, "map_h": d.map_h, "full_w": w.full_w, "full_h": w.full_h, "Y0": w.Y0,
             "reveal": bool(hdr.get("reveal")), "fog_dim": FOG_DIM, "frames": n, "chunk": CHUNK,
-            "chunks": len(chunks), "terrain": terr, "index": idx_info, "players": players, "teams": teams,
-            "rec_team": rec_team, "ages": [[r, i, a] for r, i, a in d.age_events()],
-            "keys": len(keys.spans), "pieces": len(keys.pieces), "sections": sections, "hud": hud_meta,
-            "civs": {str(k): v for k, v in hud.civs.items()},
+            "chunks": len(self.chunks), "terrain": self.terr, "index": self.idx_info, "players": players,
+            "teams": teams, "rec_team": rec_team, "ages": [[r, i, a] for r, i, a in d.age_events()],
+            "keys": len(self.keys.spans), "pieces": len(self.keys.pieces), "sections": self.sections,
+            "hud": hud_meta, "civs": {str(k): v for k, v in hud.civs.items()},
         }
         js = json.dumps(meta, ensure_ascii=False, allow_nan=False).encode("utf-8")
-        tmp = out_path + ".tmp"
-        with open(tmp, "wb") as f:
-            f.write(MAGIC + struct.pack("<I", len(js)) + js)
-            for b in blobs:
-                f.write(b)
-        os.replace(tmp, out_path)
-        stats = {"seconds": round(time.time() - t0, 1), "terrain_s": round(t_terrain, 1),
-                 "frames_s": round(t_frames, 1), "size": os.path.getsize(out_path), "src_size": d.size,
-                 "frames": n, "keys": len(keys.spans), "pieces": len(keys.pieces)}
-        log(f"xuất web {os.path.basename(path)}: {stats}")
-        return stats
-    finally:
-        d.close()
+        return MAGIC + struct.pack("<I", len(js)) + js + b"".join(self.blobs)
+
+
+class _Broken(Exception):
+    pass
+
+
+def export_match(path, out_path, game_dir, log=None, progress=None):
+    """Chuyển một trận .aoerec -> .aoeweb (một lượt, WebBuilder). Trả về dict thống kê. progress(0..1) theo phần file
+    đã đọc."""
+    from replay.library import match_info
+    from replay.world import load_graphics
+    log = log or (lambda m: None)
+    prog = progress or (lambda f: None)
+    t0 = time.time()
+    b = None
+    n = 0
+    for tag, pl, frac in _records(path):
+        if b is None:
+            if tag != b"H":
+                raise ValueError("file thiếu header")
+            b = WebBuilder(pl, load_graphics(game_dir), game_dir, info=match_info(path), log=log)
+            prog(0.05)
+            continue
+        b.feed(tag, pl)
+        if tag == b"F":
+            n += 1
+            if (n & 255) == 0:
+                prog(0.05 + 0.9 * frac)
+    if b is None:
+        raise ValueError("file thiếu header")
+    data = b.finish(os.path.basename(path))
+    tmp = out_path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, out_path)
+    stats = {"seconds": round(time.time() - t0, 1), "size": len(data), "src_size": os.path.getsize(path),
+             "frames": b.d.n_frames, "keys": len(b.keys.spans), "pieces": len(b.keys.pieces)}
+    log(f"xuất web {os.path.basename(path)}: {stats}")
+    return stats
 
 
 def export_sprites(game_dir, out_path):
@@ -402,3 +546,59 @@ def export_sprites(game_dir, out_path):
             f.write(b)
     os.replace(tmp, out_path)
     return {"slp": len(slps), "size": os.path.getsize(out_path)}
+
+
+GD_MAGIC = b"AOEGD001"
+GAMEDATA_VERSION = 1
+
+
+def export_gamedata(game_dir, out_path):
+    """Gói dữ liệu game cho bộ chuyển trên điện thoại (mobile/web/js/rec/build.js), tạo một lần như gói hình: bảng đồ
+    hoạ / unit / địa hình / viền / công nghệ / màu quân của empires.dat, chuỗi tên của language*.dll, SLP icon của
+    interfac.drs. Cùng nguồn với WebBuilder (load_graphics) nên điện thoại chuyển trận ra đúng như máy tính.
+        "AOEGD001" | u32 độ dài JSON | JSON | dữ liệu (icon: JSON["icons"][slp] = [vị trí, cỡ])
+    """
+    from replay.library import CIV_NAMES
+    from replay.world import load_graphics
+    from .lang import GameStrings
+    from .webhud import ICON_SLPS
+    from .gamefiles import read_group
+    dat, _store, _pal = load_graphics(game_dir)
+    strings = GameStrings(game_dir)
+    st = {}
+    for sid in range(1, 65536):
+        v = strings.get(sid)
+        if v:
+            st[str(sid)] = v
+    meta = {
+        "version": GAMEDATA_VERSION,
+        "colours": [[c.id, c.minimap_color] for c in dat.player_colours],
+        "graphics": {str(g.id): [g.slp_id, g.frame_count, g.angle_count, g.mirroring_mode,
+                                 [[dl.graphic_id, dl.offset_x, dl.offset_y] for dl in g.deltas]]
+                     for g in dat.graphics.values()},
+        "units": {str(u.id): [u.type, u.standing_graphic, u.dying_graphic, -1 if u.icon_id is None else u.icon_id,
+                              u.lang_name, u.name] for u in dat.units.values()},
+        "terrains": [[t.id, t.slp_id, t.terrain_to_draw, t.terrain_replacement_id, list(t.dims),
+                      [[e.frame_count, e.angle_count, e.shape_id] for e in t.elevation_graphics]] for t in dat.terrains],
+        "borders": [[b.enabled, b.slp_id, [[list(c) for c in row] for row in b.frames]] for b in dat.borders],
+        "research": [[r.id, r.name, r.lang_name, r.time, r.location, r.icon, r.button, [list(c) for c in r.costs]]
+                     for r in dat.research],
+        "strings": st,
+        "civs": {str(k): v for k, v in CIV_NAMES.items()},
+    }
+    files = read_group(game_dir, "interface")
+    blobs, icons, off = [], {}, 0
+    for sid in ICON_SLPS:
+        b = files.get(("slp", sid))
+        if b:
+            icons[str(sid)] = [off, len(b)]
+            blobs.append(b)
+            off += len(b)
+    meta["icons"] = icons
+    js = json.dumps(meta, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    tmp = out_path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(GD_MAGIC + struct.pack("<I", len(js)) + js + b"".join(blobs))
+    os.replace(tmp, out_path)
+    return {"size": os.path.getsize(out_path), "graphics": len(meta["graphics"]), "units": len(meta["units"]),
+            "strings": len(st)}

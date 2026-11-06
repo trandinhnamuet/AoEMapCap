@@ -129,6 +129,12 @@ class App:
         self.stop_event = None
         self.phone = None            # máy chủ cho app điện thoại (mobile_server.PhoneServer), tạo khi bật lần đầu
         self._recording = False      # đang ghi trận: máy chủ điện thoại hoãn chuyển trận (tốn CPU)
+        self._was_rec = False        # vừa hết trận -> kiểm tra tự dọn trận cũ
+        self._clean_busy = False     # đang quét / dọn ở luồng nền (mapcap/retention)
+        self._clean_st = None        # tình trạng quét gần nhất
+        self._low_disk = False
+        self.var_clean = tk.BooleanVar(value=self.cfg.auto_clean)
+        self.var_clean_usage = tk.StringVar(value="")
         self._build()
         self.root.after(200, self._poll)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -147,6 +153,7 @@ class App:
         telemetry.send("mapcap", "open", self.cfg.telemetry, raw_dir=self.cfg.raw_dir())
         if self.cfg.phone_server:
             self.root.after(1500, lambda: self._phone_start(quiet=True))
+        self.root.after(4000, self._clean_timer)
 
     # ---- giao diện: thanh bên trái + đầu trang + các trang (kiểu XArena) ------------------
     def _build(self):
@@ -315,12 +322,13 @@ class App:
         os.makedirs(raw_dir, exist_ok=True)
         bot = ttk.Frame(tab)
         bot.pack(side="bottom", fill="x", pady=(12, 0))
+        self._build_clean_bar(tab)
         self.table = MatchTable(tab, raw_dir, self._launch_replay, show_dir_button=False)
         self.table.pack(fill="both", expand=True)
         ttk.Button(bot, text="▶  Xem replay", style="Accent.TButton", command=self.table.open_selected).pack(side="left")
         for text, cmd in (("Xuất video...", self._export_selected), ("Mở file khác...", self._open_other),
                           ("Mở thư mục", self._open_dir), ("Xoá trận", self.table.delete_selected),
-                          ("Nén trận cũ", self._compact_old)):
+                          ("★ Ghim", self._pin_selected), ("Nén trận cũ", self._compact_old)):
             ttk.Button(bot, text=text, command=cmd).pack(side="left", padx=(8, 0))
         self.table.is_busy = self._is_recording_path
         self.table.prefetch_ok = lambda: self._mode_now() != "rec"   # không quét trận cũ ở nền khi đang ghi
@@ -501,9 +509,30 @@ class App:
             return                                        # cửa sổ đã đóng
         self.root.after(1000, self._phone_tick)
 
+    def _scroll_page(self, key):
+        """Trang cuộn được (nội dung dài hơn cửa sổ, vd Cài đặt từ v28): trả về khung để đặt nội dung."""
+        C = theme.C
+        outer = tk.Frame(self.content, bg=C["bg"])
+        self.pages[key] = outer
+        cv = tk.Canvas(outer, bg=C["bg"], highlightthickness=0, bd=0)
+        sb = ttk.Scrollbar(outer, command=cv.yview)
+        cv.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y", padx=(6, 0))
+        cv.pack(side="left", fill="both", expand=True)
+        inner = tk.Frame(cv, bg=C["bg"])
+        win = cv.create_window(0, 0, window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda e: cv.configure(scrollregion=cv.bbox("all")))
+        cv.bind("<Configure>", lambda e: cv.itemconfigure(win, width=e.width))
+
+        def wheel(e):
+            if inner.winfo_height() > cv.winfo_height():
+                cv.yview_scroll(int(-e.delta / 120) or (-1 if e.delta > 0 else 1), "units")
+        outer.bind("<Enter>", lambda e: outer.bind_all("<MouseWheel>", wheel))
+        outer.bind("<Leave>", lambda e: outer.unbind_all("<MouseWheel>"))
+        return inner
+
     def _build_settings(self):
-        tab = tk.Frame(self.content, bg=theme.C["bg"])
-        self.pages["settings"] = tab
+        tab = self._scroll_page("settings")
         pad = {"padx": (0, 14), "pady": 6}
         cfg = self.cfg
         self.var_cap = tk.IntVar(value=int(cfg.capture_fps))
@@ -518,6 +547,8 @@ class App:
         self.var_auto = tk.BooleanVar(value=cfg.auto_start)
         self.var_tele = tk.BooleanVar(value=cfg.telemetry)
         self.var_tray = tk.BooleanVar(value=cfg.close_to_tray)
+        self.var_clean_limit = tk.DoubleVar(value=cfg.clean_limit_gb)
+        self.var_clean_days = tk.IntVar(value=int(cfg.clean_days))
 
         rec = self._card(tab, "Ghi trận")
         ttk.Label(rec, text="Nhịp đọc game (lần/giây)", style="Card.TLabel").grid(row=0, column=0, sticky="w", **pad)
@@ -537,6 +568,24 @@ class App:
                         variable=self.var_tele, style="Card.TCheckbutton").grid(row=4, column=0, columnspan=4,
                                                                                 sticky="w", pady=2)
         rec.columnconfigure(2, weight=1)
+
+        cl = self._card(tab, "Dọn trận cũ")
+        ttk.Checkbutton(cl, text="Tự dọn trận cũ (chuyển vào Thùng rác, khôi phục được; trận đã ghim ★ không bao giờ bị dọn)",
+                        variable=self.var_clean, style="Card.TCheckbutton", command=self._clean_toggled).grid(
+            row=0, column=0, columnspan=6, sticky="w", pady=(0, 6))
+        ttk.Label(cl, text="Khi tổng trận vượt", style="Card.TLabel").grid(row=1, column=0, sticky="w", **pad)
+        ttk.Spinbox(cl, from_=0.5, to=10000, increment=1, textvariable=self.var_clean_limit, width=7).grid(
+            row=1, column=1, sticky="w", pady=6)
+        ttk.Label(cl, text="GB, dọn các trận cũ hơn", style="Card.TLabel").grid(row=1, column=2, sticky="w", padx=8)
+        ttk.Spinbox(cl, from_=1, to=3650, textvariable=self.var_clean_days, width=6).grid(row=1, column=3, sticky="w",
+                                                                                      pady=6)
+        ttk.Label(cl, text="ngày (cũ nhất trước, tới khi về dưới ngưỡng)", style="Card.TLabel").grid(
+            row=1, column=4, sticky="w", padx=8)
+        ttk.Button(cl, text="Kiểm tra / dọn ngay", command=self._clean_check).grid(
+            row=1, column=5, sticky="e", pady=6)
+        ttk.Label(cl, textvariable=self.var_clean_usage, style="CardMuted.TLabel", justify="left").grid(
+            row=2, column=0, columnspan=6, sticky="w", pady=(4, 0))
+        cl.columnconfigure(4, weight=1)
 
         vid = self._card(tab, "Xuất video (tuỳ chọn)")
         ttk.Checkbutton(vid, text="Tự xuất video sau mỗi trận (tốn CPU sau trận; mặc định tắt — dùng nút Xuất video... khi cần)",
@@ -586,6 +635,13 @@ class App:
         cfg.auto_start = bool(self.var_auto.get())
         cfg.telemetry = bool(self.var_tele.get())
         cfg.close_to_tray = bool(self.var_tray.get())
+        try:
+            cfg.clean_limit_gb = float(self.var_clean_limit.get())
+            cfg.clean_days = int(self.var_clean_days.get())
+        except (tk.TclError, ValueError) as e:
+            messagebox.showerror(APP_TITLE, f"Giá trị không hợp lệ: {e}")
+            return None
+        cfg.auto_clean = bool(self.var_clean.get())
         cfg.record_mode = "raw"
         cfg.record_video = True
         cfg.keep_raw = True
@@ -597,6 +653,8 @@ class App:
         cfg.fps = max(cfg.fps, cfg.capture_fps)      # nhịp đọc không vượt FPS (Config.clamp)
         cfg.clamp()
         self.var_cap.set(int(cfg.capture_fps))
+        self.var_clean_limit.set(cfg.clean_limit_gb)
+        self.var_clean_days.set(cfg.clean_days)
         return cfg
 
     def _sync_settings_from_cfg(self):
@@ -625,6 +683,7 @@ class App:
         if self._phone_running() and os.path.normcase(new_raw) != os.path.normcase(self.phone.folder):
             self._phone_start()                         # máy chủ điện thoại theo thư mục lưu mới
         self._append("đã lưu cài đặt")
+        self._clean_check()                             # ngưỡng / thời hạn / thư mục có thể đã đổi
 
     def _choose_dir(self):
         d = filedialog.askdirectory(initialdir=self.var_out.get() or os.getcwd(), title="Chọn thư mục lưu dữ liệu")
@@ -757,6 +816,138 @@ class App:
             self.q.put("__reload_table__")
         threading.Thread(target=job, daemon=True).start()
 
+    # ---- tự dọn trận cũ (mapcap/retention) -----------------------------------------------
+    CLEAN_EVERY_MS = 30 * 60 * 1000
+
+    def _build_clean_bar(self, tab):
+        """Dòng thông báo trên trang Trận đã ghi: tự dọn đang bật / tắt (bật tắt ngay tại đây), đề nghị dọn lần đầu
+        (Đồng ý / Tắt), cảnh báo ổ đĩa sắp đầy."""
+        C = theme.C
+        bar = tk.Frame(tab, bg=C["panel"], highlightthickness=1, highlightbackground=C["line"])
+        bar.pack(side="top", fill="x", pady=(0, 10))
+        self.clean_bar = bar
+        row = tk.Frame(bar, bg=C["panel"])
+        row.pack(fill="x", padx=12, pady=(8, 8))
+        ttk.Checkbutton(row, text="Tự dọn trận cũ", variable=self.var_clean, style="Card.TCheckbutton",
+                        command=self._clean_toggled).pack(side="left")
+        self.clean_msg = tk.Label(row, text="", bg=C["panel"], fg=C["muted"], font=theme.F(10), anchor="w",
+                                  justify="left", wraplength=760)
+        self.clean_msg.pack(side="left", fill="x", expand=True, padx=(12, 0))
+        self.clean_btns = tk.Frame(bar, bg=C["panel"])          # đề nghị dọn lần đầu: hàng riêng dưới dòng chữ
+        ttk.Button(self.clean_btns, text="Đồng ý dọn", style="Accent.TButton", command=self._clean_agree).pack(
+            side="left")
+        ttk.Button(self.clean_btns, text="Tắt tự dọn", command=self._clean_decline).pack(side="left", padx=(8, 0))
+        self.disk_msg = tk.Label(bar, text="", bg=C["panel"], fg=C["lose"], font=theme.F(10, "bold"), anchor="w",
+                                 justify="left", wraplength=980)
+
+        def wrap(e):
+            self.clean_msg.configure(wraplength=max(300, e.width - 190))
+            self.disk_msg.configure(wraplength=max(300, e.width - 30))
+        bar.bind("<Configure>", wrap)
+
+    def _pin_selected(self):
+        on = self.table.toggle_pin_selected()
+        if on is not None:
+            self._clean_check()
+
+    def _clean_toggled(self):
+        """Bật / tắt tự dọn (ô ở trang Trận đã ghi hoặc Cài đặt): lưu ngay."""
+        self.cfg.auto_clean = bool(self.var_clean.get())
+        if self.cfg.auto_clean:
+            self.cfg.clean_agreed = False             # bật lại: lần dọn đầu vẫn hỏi trước
+        self._save_cfg()
+        self._append("tự dọn trận cũ: " + ("BẬT" if self.cfg.auto_clean else "TẮT (trận được giữ mãi)"))
+        self._clean_check()
+
+    def _clean_agree(self):
+        self.cfg.clean_agreed = True
+        self._save_cfg()
+        self._clean_check()
+
+    def _clean_decline(self):
+        self.var_clean.set(False)
+        self._clean_toggled()
+
+    def _clean_timer(self):
+        self._clean_check()
+        self.root.after(self.CLEAN_EVERY_MS, self._clean_timer)
+
+    def _clean_check(self):
+        """Quét thư mục trận ở luồng nền; dọn nếu bật + đã đồng ý + không đang ghi trận (kết quả về qua self.q)."""
+        if self._clean_busy:
+            return
+        from . import retention
+        cfg = self.cfg
+        raw = cfg.raw_dir()
+        limit = int(cfg.clean_limit_gb * retention.GB)
+        days = int(cfg.clean_days)
+        do = cfg.auto_clean and cfg.clean_agreed and self._mode_now() != "rec"
+        self._clean_busy = True
+
+        def work():
+            res = None
+            try:
+                if do:
+                    res = retention.run(raw, limit, days, busy=self._is_recording_path, log=self.q.put)
+                st = retention.status(raw, limit, days, busy=self._is_recording_path)
+            except Exception as e:  # noqa: BLE001
+                st = {"error": str(e)}
+            self.q.put(("__clean__", st, res))
+        threading.Thread(target=work, daemon=True, name="auto-clean").start()
+
+    def _clean_result(self, st, res):
+        import time
+
+        from . import retention
+        self._clean_busy = False
+        self._clean_st = st
+        if res and (res["deleted"] or res["web"]):
+            self.table.reload()
+        cfg = self.cfg
+        C = theme.C
+        if "error" in st:
+            self.clean_msg.configure(text=f"Không đọc được thư mục trận: {st['error']}", fg=C["lose"])
+            return
+        used = f"Hiện có {st['count']} trận, {retention.fmt_size(st['bytes'])}"
+        if st.get("keep"):
+            used += f" ({st['keep']} trận ghim ★)"
+        lim, days = retention.fmt_size(int(cfg.clean_limit_gb * retention.GB)), cfg.clean_days
+        pending = cfg.auto_clean and not cfg.clean_agreed and st["plan"]
+        if not cfg.auto_clean:
+            text, fg = f"TẮT — trận được giữ mãi. {used}.", C["muted"]
+        elif pending:
+            text = (f"Tổng trận đã vượt {lim}: sẽ chuyển {len(st['plan'])} trận ({retention.fmt_size(st['plan_bytes'])}) "
+                    f"cũ hơn {days} ngày vào Thùng rác (khôi phục được; trận ghim ★ được giữ). Đồng ý?")
+            fg = C["gold_hi"]
+        else:
+            text = (f"BẬT — khi tổng trận vượt {lim}, trận cũ hơn {days} ngày được chuyển vào Thùng rác, cũ nhất trước "
+                    f"(trận ghim ★ không bao giờ bị dọn). {used}.")
+            if res and res["deleted"]:
+                text += f" Vừa dọn {len(res['deleted'])} trận ({retention.fmt_size(res['freed'])})."
+            fg = C["muted"]
+        self.clean_msg.configure(text=text, fg=fg)
+        if pending:
+            self.clean_btns.pack(fill="x", padx=12, pady=(0, 10), before=self.disk_msg if self.disk_msg.winfo_ismapped()
+                                 else None)
+        else:
+            self.clean_btns.pack_forget()
+        self.var_clean_usage.set(f"{used}; trận cũ nhất: "
+                                 f"{time.strftime('%d/%m/%Y', time.localtime(st['oldest'])) if st['oldest'] else '—'}.")
+        # ổ đĩa sắp đầy
+        free = st.get("free")
+        low = free is not None and free < retention.LOW_DISK_BYTES
+        if low:
+            drive = os.path.splitdrive(os.path.abspath(cfg.raw_dir()))[0] or cfg.raw_dir()
+            msg = (f"⚠ Ổ {drive} sắp đầy: chỉ còn {retention.fmt_size(free)} trống. Trận mới có thể không ghi được — "
+                   f"hãy xoá bớt trận / giảm ngưỡng tự dọn trong Cài đặt, hoặc đổi thư mục lưu sang ổ khác.")
+            self.disk_msg.configure(text=msg)
+            self.disk_msg.pack(fill="x", padx=12, pady=(0, 8))
+            if not self._low_disk:
+                self._append("cảnh báo: " + msg)
+        else:
+            self.disk_msg.pack_forget()
+        self._low_disk = low
+
     def _is_recording_path(self, path):
         """File đang được bộ ghi viết (không cho xoá)."""
         eng = self.engine
@@ -840,6 +1031,8 @@ class App:
                         self._refresh_status()
                     elif kind == "__tray__":           # từ luồng khay / bản mở sau (instance.signal_show)
                         self._tray_action(item[1])
+                    elif kind == "__clean__":          # tình trạng tự dọn (luồng nền)
+                        self._clean_result(item[1], item[2])
                     elif kind == "__done__":
                         self._append("=== đã dừng ghi")
                         self.state_text = "đã dừng"
@@ -887,6 +1080,9 @@ class App:
         C = theme.C
         mode = self._mode_now()
         self._recording = mode == "rec"
+        if self._was_rec and mode != "rec":
+            self.root.after(30000, self._clean_check)
+        self._was_rec = mode == "rec"
         st = (self.state_text or "").strip()
         title, color, btn_text, btn_style = self.MODE_LOOK[mode]
         if mode == "rec":

@@ -16,6 +16,8 @@ const PAIRED = IN_APP || CLOUD;                                // ghép đôi + 
 const PC_KEY = "aoe.pc";
 const ROOM_KEY = "aoe.room";
 const MAX_SAVED = 40;           // số trận giữ trên điện thoại, bỏ trận mở lâu nhất
+const MAX_SAVED_BYTES = 500e6;  // và tổng dung lượng trận đã lưu (máy ít bộ nhớ không bị đầy); trận vừa mở luôn giữ
+const SIZE_GUESS = 20e6;        // trận lưu từ bản trước chưa ghi cỡ
 const WEB_VERSION = 2;          // .aoeweb có bảng thông số (mapcap/webexport.py); trận lưu bản cũ thì lấy lại khi được
 const REPO = "trandinhnamuet/AoEMapCap";
 const APP_PKG = "io.github.trandinhnamuet.aoemapcap";
@@ -71,9 +73,12 @@ class Store {
   async saveMatch(file, buf, info) {
     const k = encodeURIComponent(file);
     if (!await this.put("/m/" + k, buf)) return;
-    await this.put("/i/" + k, new TextEncoder().encode(JSON.stringify({ file, info, at: Date.now() })));
-    for (const old of (await this.saved()).slice(MAX_SAVED)) {
-      const ok = encodeURIComponent(old.file);
+    await this.put("/i/" + k, new TextEncoder().encode(JSON.stringify({ file, info, at: Date.now(), size: buf.byteLength })));
+    let n = 0, total = 0;
+    for (const e of await this.saved()) {          // mới mở trước: giữ tới khi quá số trận / dung lượng
+      n++; total += e.size || SIZE_GUESS;
+      if (n === 1 || (n <= MAX_SAVED && total <= MAX_SAVED_BYTES)) continue;
+      const ok = encodeURIComponent(e.file);
       await this.c.delete("/m/" + ok); await this.c.delete("/i/" + ok);
     }
   }

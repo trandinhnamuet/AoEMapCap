@@ -62,6 +62,8 @@ class HudExport:
         self.prev_u = {}                 # uid -> hàng chi tiết đã xuất trong khối hiện tại
         self.prev_a, self.prev_t = {}, {}
         self.dats = set()                # dat id cần tên (hàng đợi, bảng lệnh)
+        self.sd = []                     # phần "sd": chi tiết vật thể tĩnh theo bản ghi tĩnh (static)
+        self.prev_s = None
         self.civs = {p.index: civ_name(p.civ) for p in data.players
                      if p.index and (p.addr or p.pid) and p.civ is not None and p.civ > 0}
 
@@ -190,16 +192,12 @@ class HudExport:
         self.chunks[-1].append(s)
 
     # ---- kết thúc ----------------------------------------------------------------------
-    def statics_detail(self):
-        out = []
-        prev = None
-        for si in range(len(self.d.s_first)):
-            _ver, S = self.d.load_statics(si)
-            rows = self._detail(S)
-            ch, gone = self._diff(prev, rows)
-            out.append([int(self.d.s_first[si]), 1 if si == 0 else 0, self._rows(ch), [int(u) for u in gone.tolist()]])
-            prev = rows
-        return out
+    def static(self, first, S):
+        """Gọi cho từng bản ghi tĩnh theo thứ tự (S: vật thể tĩnh sau bản ghi, áp từ mẫu first) -> self.sd."""
+        rows = self._detail(S)
+        ch, gone = self._diff(self.prev_s, rows)
+        self.sd.append([int(first), 0 if self.sd else 1, self._rows(ch), [int(u) for u in gone.tolist()]])
+        self.prev_s = rows
 
     def tables(self):
         d = self.d

@@ -84,6 +84,10 @@ class Config:
     telemetry: bool = True                   # gửi thống kê sử dụng: mã máy ngẫu nhiên, phiên bản, IP (2026-10-15)
     close_to_tray: bool = True               # bấm X: ẩn xuống khay hệ thống, vẫn ghi trận; Thoát ở menu khay (2026-10-16)
     phone_server: bool = False               # mở app là bật máy chủ cho app điện thoại (trang Điện thoại, v14)
+    auto_clean: bool = True                  # tự dọn trận cũ (mapcap/retention, v19): tổng vượt ngưỡng thì bỏ trận quá hạn
+    clean_limit_gb: float = 5.0              # ngưỡng tổng dung lượng file ghi (GB); dưới ngưỡng giữ hết
+    clean_days: int = 30                     # trận cũ hơn số ngày này mới bị dọn (cũ nhất trước)
+    clean_agreed: bool = False               # đã đồng ý lần đầu; trước đó chỉ hiện đề nghị trên giao diện, chưa dọn
     config_version: int = 3                  # tăng khi đổi mặc định quan trọng (v2: nhịp đọc = FPS;
                                              # v3: chỉ ghi dữ liệu trận, không tự dựng video / ảnh tĩnh)
 
@@ -121,6 +125,8 @@ class Config:
         self.record_mode = "live" if str(self.record_mode).lower().startswith("live") else "raw"
         self.fog_style = "dither" if str(self.fog_style).lower().startswith("dit") else "dim"
         self.render_width = max(640, min(9216, int(self.render_width)))
+        self.clean_limit_gb = max(0.5, min(10000.0, float(self.clean_limit_gb)))
+        self.clean_days = max(1, min(3650, int(self.clean_days)))
         self.render_workers = max(0, min(32, int(self.render_workers)))
         return self
 

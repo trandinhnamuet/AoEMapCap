@@ -12,6 +12,8 @@ import time
 import tkinter as tk
 from tkinter import filedialog, ttk
 
+from mapcap.retention import load_keep, set_keep
+
 from .library import Library, fmt_duration
 
 COLUMNS = (
@@ -113,6 +115,7 @@ class MatchTable(ttk.Frame):
         self.folder = folder
         self.var_dir.set(folder)
         self.infos = {}
+        self.pinned = load_keep(folder)
         self.tree.delete(*self.tree.get_children())
         self.reload()
 
@@ -227,6 +230,8 @@ class MatchTable(ttk.Frame):
                 if find not in hay:
                     continue
             vals, tag = self._row(info)
+            if os.path.basename(p) in self.pinned:              # ghim: không tự dọn (mapcap/retention)
+                vals = ("★ " + vals[0],) + tuple(vals[1:])
             tags = ((tag,) if tag else ()) + (("odd",) if row % 2 else ())
             self.tree.insert("", "end", iid=p, values=vals, tags=tags)
             row += 1
@@ -543,6 +548,23 @@ class MatchTable(ttk.Frame):
         self.var_status.set(f"Đã xoá {os.path.basename(p)} (trong Thùng rác).")
         return True
 
+    def toggle_pin_selected(self):
+        """Ghim / bỏ ghim trận đang chọn: trận ghim (★) không bao giờ bị tự dọn. Trả về True nếu giờ đang ghim."""
+        p = self.selected_path()
+        if not p:
+            self.var_status.set("Chọn một trận để ghim.")
+            return None
+        name = os.path.basename(p)
+        on = name not in self.pinned
+        try:
+            self.pinned = set_keep(self.folder, name, on)
+        except OSError as e:
+            self.var_status.set(f"Không ghim được: {e}")
+            return None
+        self._refill()
+        self.var_status.set("Đã ghim trận: không bao giờ tự dọn." if on else "Đã bỏ ghim trận.")
+        return on
+
     def stop(self):
         self._gen += 1
 
@@ -626,28 +648,7 @@ class PickerWindow:
         self.top.destroy()
 
 
-def send_to_recycle_bin(path):
-    """Đưa file vào Thùng rác của Windows (SHFileOperationW + FOF_ALLOWUNDO). Trả về (ok, lỗi)."""
-    if os.name != "nt":
-        try:
-            os.remove(path)
-            return True, ""
-        except OSError as e:
-            return False, str(e)
-    import ctypes
-    from ctypes import wintypes
-
-    class SHFILEOPSTRUCTW(ctypes.Structure):
-        _fields_ = [("hwnd", wintypes.HWND), ("wFunc", ctypes.c_uint), ("pFrom", ctypes.c_wchar_p),
-                    ("pTo", ctypes.c_wchar_p), ("fFlags", ctypes.c_ushort), ("fAnyOperationsAborted", wintypes.BOOL),
-                    ("hNameMappings", ctypes.c_void_p), ("lpszProgressTitle", ctypes.c_wchar_p)]
-    FO_DELETE, FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO, FOF_NOERRORUI = 3, 0x4, 0x10, 0x40, 0x400
-    op = SHFILEOPSTRUCTW(None, FO_DELETE, os.path.abspath(path) + "\0", None,
-                         FOF_SILENT | FOF_NOCONFIRMATION | FOF_ALLOWUNDO | FOF_NOERRORUI, False, None, None)
-    rc = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
-    if rc != 0 or op.fAnyOperationsAborted or os.path.exists(path):
-        return False, f"mã lỗi {rc}"
-    return True, ""
+from mapcap.retention import send_to_recycle_bin  # noqa: E402,F401  (giữ tên cũ cho chỗ gọi khác)
 
 
 def app_icon():
