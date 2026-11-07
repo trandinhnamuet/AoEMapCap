@@ -88,6 +88,8 @@ class Config:
     clean_limit_gb: float = 5.0              # ngưỡng tổng dung lượng file ghi (GB); dưới ngưỡng giữ hết
     clean_days: int = 30                     # trận cũ hơn số ngày này mới bị dọn (cũ nhất trước)
     clean_agreed: bool = False               # đã đồng ý lần đầu; trước đó chỉ hiện đề nghị trên giao diện, chưa dọn
+    win_startup_init: bool = False           # bản exe đã tự bật Khởi động cùng Windows lần đầu (mapcap/winstartup, v30);
+                                             # sau đó theo ô ở thanh bên, không tự bật lại
     config_version: int = 3                  # tăng khi đổi mặc định quan trọng (v2: nhịp đọc = FPS;
                                              # v3: chỉ ghi dữ liệu trận, không tự dựng video / ảnh tĩnh)
 

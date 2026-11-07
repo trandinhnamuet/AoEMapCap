@@ -215,13 +215,13 @@ def apply(root):
     try:
         off, on = _check_image(False), _check_image(True)
         st.element_create("Dark.Checkbutton.indicator", "image", off, ("selected", on), width=28, sticky="w")
-        for name in ("TCheckbutton", "Card.TCheckbutton"):
+        for name in ("TCheckbutton", "Card.TCheckbutton", "Side.TCheckbutton"):
             st.layout(name, [("Checkbutton.padding", {"sticky": "nswe", "children": [
                 ("Dark.Checkbutton.indicator", {"side": "left", "sticky": ""}),
                 ("Checkbutton.label", {"side": "left", "sticky": "nswe", "expand": 1})]})])
     except Exception:  # noqa: BLE001
         pass
-    for w, bg in (("TCheckbutton", C["bg"]), ("Card.TCheckbutton", C["panel"])):
+    for w, bg in (("TCheckbutton", C["bg"]), ("Card.TCheckbutton", C["panel"]), ("Side.TCheckbutton", C["sidebar"])):
         st.configure(w, background=bg, foreground=C["text"], indicatorbackground=C["field"], indicatorforeground="#fff",
                      indicatormargin=(0, 0, 8, 0), padding=(2, 4, 2, 4), focuscolor=bg)
         st.configure(w + ".label", padding=(10, 0, 0, 0))

@@ -147,8 +147,9 @@ def gui():
     app._clean_check()
     until(root, lambda: app._clean_st is not None)
     pump(root, 0.3)
-    # ô bật / tắt nằm trên hàng Thư mục / Tìm tên của bảng, không có dải riêng
-    assert app.clean_cb.master is app.table.bar and app.clean_cb.winfo_ismapped()
+    # ô bật / tắt ở đáy thanh bên (v30), không còn trên trang Trận đã ghi; biểu tượng (i) ngay sau chữ
+    assert app.clean_cb.winfo_ismapped() and app.clean_icon.winfo_ismapped()
+    assert app.clean_cb.winfo_toplevel() is root and app.table.bar not in (app.clean_cb.master, app.clean_cb.master.master)
     assert app.clean_cb.winfo_width() >= app.clean_cb.winfo_reqwidth(), "ô Tự dọn trận cũ bị cắt"
     txt = app.clean_ask.cget("text")
     assert "chuyển 3 trận" in txt and app.clean_btns.winfo_ismapped(), txt

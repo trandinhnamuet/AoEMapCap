@@ -21,6 +21,22 @@ _k32.CloseHandle.argtypes = [wt.HANDLE]
 _k32.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
 _k32.WaitForSingleObject.restype = wt.DWORD
 _u32 = ctypes.WinDLL("user32", use_last_error=True)
+
+
+class _PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [("dwSize", wt.DWORD), ("cntUsage", wt.DWORD), ("th32ProcessID", wt.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wt.DWORD), ("cntThreads", wt.DWORD),
+                ("th32ParentProcessID", wt.DWORD), ("pcPriClassBase", ctypes.c_long), ("dwFlags", wt.DWORD),
+                ("szExeFile", ctypes.c_wchar * 260)]
+
+
+TH32CS_SNAPPROCESS = 0x2
+_INVALID_HANDLE = ctypes.c_void_p(-1).value
+_k32.CreateToolhelp32Snapshot.restype = wt.HANDLE
+_k32.CreateToolhelp32Snapshot.argtypes = [wt.DWORD, wt.DWORD]
+for _f in (_k32.Process32FirstW, _k32.Process32NextW):
+    _f.restype = wt.BOOL
+    _f.argtypes = [wt.HANDLE, ctypes.POINTER(_PROCESSENTRY32W)]
 _EnumProc = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
 
 
@@ -56,14 +72,48 @@ def has_window(pid):
     return bool(found)
 
 
+def process_names():
+    """[(pid, tên exe)] mọi tiến trình qua một ảnh chụp Toolhelp: một lần gọi hệ thống, vài ms CPU. (psutil.process_iter
+    mở từng tiến trình: ~1 s CPU mỗi lượt với ~300 tiến trình - dò game 2 s một lần thì bộ ghi lúc chờ game ăn ~40% một
+    nhân, đo 2026-11-07.) None nếu không chụp được."""
+    h = _k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if not h or h == _INVALID_HANDLE:
+        return None
+    out = []
+    try:
+        e = _PROCESSENTRY32W()
+        e.dwSize = ctypes.sizeof(e)
+        ok = _k32.Process32FirstW(h, ctypes.byref(e))
+        while ok:
+            out.append((int(e.th32ProcessID), e.szExeFile))
+            ok = _k32.Process32NextW(h, ctypes.byref(e))
+    finally:
+        _k32.CloseHandle(h)
+    return out
+
+
+def _is_game_name(name):
+    name = (name or "").lower()
+    return (name.endswith(".exe") and name[:-4].startswith(GAME_EXE_PREFIXES) and name.startswith("empires")
+            and "setup" not in name)
+
+
 def find_game_process(exclude=()):
-    """Trả về psutil.Process của game đang chạy, hoặc None. exclude: pid bỏ qua (exe không hỗ trợ / đã bỏ).
-    Bỏ qua bản chụp lỗi 0 luồng (process_runs)."""
-    for p in psutil.process_iter(["name", "exe"]):
-        name = (p.info["name"] or "").lower()
-        if name.endswith(".exe") and name[:-4].startswith(GAME_EXE_PREFIXES):
-            if name.startswith("empires") and "setup" not in name and p.pid not in exclude and process_runs(p):
-                return p
+    """Trả về psutil.Process của game đang chạy (p.info["name"] = tên exe), hoặc None. exclude: pid bỏ qua (exe không
+    hỗ trợ / đã bỏ). Bỏ qua bản chụp lỗi 0 luồng (process_runs). Chỉ mở tiến trình có tên giống game."""
+    procs = process_names()
+    if procs is None:
+        procs = [(p.pid, p.info["name"]) for p in psutil.process_iter(["name"])]
+    for pid, name in procs:
+        if pid in exclude or not _is_game_name(name):
+            continue
+        try:
+            p = psutil.Process(pid)
+        except psutil.Error:
+            continue
+        p.info = {"name": name}
+        if process_runs(p):
+            return p
     return None
 
 

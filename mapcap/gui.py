@@ -154,6 +154,7 @@ class App:
         if self.cfg.phone_server:
             self.root.after(1500, lambda: self._phone_start(quiet=True))
         self.root.after(4000, self._clean_timer)
+        self._winstart_init()
 
     # ---- giao diện: thanh bên trái + đầu trang + các trang (kiểu XArena) ------------------
     def _build(self):
@@ -212,6 +213,8 @@ class App:
         self.lbl_status = tk.Label(stat, text="", bg=C["panel"], fg=C["muted"], font=theme.F(9), justify="left",
                                    anchor="w", wraplength=190)
         self.lbl_status.pack(fill="x", padx=12, pady=(0, 10))
+        self.lbl_status.bind("<Configure>", lambda e: self.lbl_status.configure(wraplength=max(80, e.width - 4)))
+        self._build_side_opts(side)
 
         # dải màu trên cùng: đỏ = đang ghi trận, vàng = bộ ghi bật (chờ game / chờ trận), xám = không ghi
         self.strip = tk.Frame(self.main, bg=C["line"], height=4)
@@ -233,7 +236,8 @@ class App:
         self.chip_title = tk.Label(chip_txt, text="KHÔNG GHI", bg=C["panel"], fg=C["muted"], font=theme.F(12, "bold"),
                                    anchor="w", width=18)
         self.chip_title.pack(anchor="w")
-        self.chip_sub = tk.Label(chip_txt, text="", bg=C["panel"], fg=C["muted"], font=theme.F(9), anchor="w", width=34)
+        self.chip_sub = tk.Label(chip_txt, text="", bg=C["panel"], fg=C["muted"], font=theme.F(9), anchor="w", width=34,
+                                 justify="left")
         self.chip_sub.pack(anchor="w")
         self._chip_parts = (self.chip, self.chip_dot, chip_txt, self.chip_title, self.chip_sub)
         self.btn_rec = ttk.Button(btns, text="●  Bắt đầu ghi", style="Accent.TButton", command=self._toggle, width=14)
@@ -251,6 +255,74 @@ class App:
         self.show_page("matches")
         self._refresh_status()
         self.root.after(500, self._tick)
+
+    def _build_side_opts(self, side):
+        """Đáy thanh bên, ngay trên thẻ Trạng thái: ô Khởi động cùng Windows + ô Tự dọn trận cũ (người dùng 07/11). Sau
+        chữ mỗi ô có biểu tượng (i): rê chuột lên ô hoặc biểu tượng để đọc giải thích (theme.Tip)."""
+        from . import winstartup
+        C = theme.C
+        box = tk.Frame(side, bg=C["sidebar"])
+        box.pack(side="bottom", fill="x", padx=(14, 6))
+        mdl = "Segoe MDL2 Assets" in tkfont.families()
+
+        def row(text, var, cmd, tip):
+            r = tk.Frame(box, bg=C["sidebar"])
+            r.pack(fill="x")
+            cb = ttk.Checkbutton(r, text=text, variable=var, command=cmd, style="Side.TCheckbutton")
+            cb.pack(side="left")
+            ic = tk.Label(r, text="\ue946" if mdl else "\u24d8", font=("Segoe MDL2 Assets", 10) if mdl else theme.F(11),
+                          bg=C["sidebar"], fg=C["muted"], cursor="question_arrow")
+            ic.pack(side="left", padx=(1, 0))
+            ic.bind("<Enter>", lambda e: ic.configure(fg=C["gold_hi"]), add="+")
+            ic.bind("<Leave>", lambda e: ic.configure(fg=C["muted"]), add="+")
+            return cb, ic, theme.Tip(cb, tip), theme.Tip(ic, tip)
+
+        self.var_winstart = tk.BooleanVar(value=winstartup.is_enabled())
+        self.start_cb, self.start_icon, self.start_tip, self.start_icon_tip = row(
+            "Khởi động cùng Windows", self.var_winstart, self._winstart_toggled, self._winstart_text)
+        self.clean_text = ""                                   # mô tả + tình trạng tự dọn (chú thích khi rê chuột)
+        self.clean_cb, self.clean_icon, self.clean_tip, self.clean_icon_tip = row(
+            "Tự dọn trận cũ", self.var_clean, self._clean_toggled, lambda: self.clean_text)
+
+    def _winstart_text(self):
+        on = bool(self.var_winstart.get())
+        return ("Khởi động cùng Windows đang " + ("BẬT" if on else "TẮT") + ".\n"
+                "Bật: mở máy là AoE-MapCap tự chạy ngầm ở khay hệ thống (góc phải thanh tác vụ) và bật ghi sẵn, vào trận "
+                "là tự ghi. Không sợ quên mở app mà mất trận.\n"
+                "Ngoài trận app không làm gì nên không tốn tài nguyên, không nặng máy, chỉ nhẹ như Vietkey.\n"
+                "Bật / tắt ở đây hoặc trong Task Manager > Startup apps.")
+
+    def _winstart_toggled(self):
+        from . import winstartup
+        want = bool(self.var_winstart.get())
+        try:
+            on = winstartup.set_enabled(want)
+        except OSError as e:
+            on = winstartup.is_enabled()
+            messagebox.showerror(APP_TITLE, f"Không đổi được Khởi động cùng Windows: {e}")
+        self.var_winstart.set(on)
+        if not self.cfg.win_startup_init:
+            self.cfg.win_startup_init = True               # người dùng đã tự chọn: không tự bật lại
+            self._save_cfg()
+        self._append("khởi động cùng Windows: " + ("BẬT (mở máy là tự chạy ngầm + bật ghi)" if on else "TẮT"))
+
+    def _winstart_init(self):
+        """Bản exe: lần mở đầu tiên tự bật Khởi động cùng Windows (mặc định bật: tránh quên mở app mà không ghi được
+        trận), các lần sau chỉ sửa đường dẫn nếu thư mục app đã chuyển chỗ. Chạy từ mã nguồn (test) không tự bật."""
+        from . import winstartup
+        if not getattr(sys, "frozen", False) or not winstartup.supported():
+            return
+        try:
+            if not self.cfg.win_startup_init:
+                self.cfg.win_startup_init = True
+                winstartup.set_enabled(True)
+                self._save_cfg()
+                self._append("khởi động cùng Windows: BẬT (mặc định; tắt bằng ô ở góc dưới thanh bên)")
+            elif winstartup.refresh():
+                self._append("khởi động cùng Windows: cập nhật đường dẫn app")
+        except OSError as e:
+            self._append(f"khởi động cùng Windows: không ghi được ({e})")
+        self.var_winstart.set(winstartup.is_enabled())
 
     def _logo_image(self, size):
         try:
@@ -820,17 +892,11 @@ class App:
     CLEAN_EVERY_MS = 30 * 60 * 1000
 
     def _build_clean_bar(self, tab):
-        """Tự dọn trận cũ trên trang Trận đã ghi, không lấy thêm chiều cao của bảng: ô bật / tắt nằm trên hàng
-        Thư mục / Tìm tên của bảng, mô tả + tình trạng chỉ hiện khi rê chuột (theme.Tip). Cảnh báo ổ sắp đầy là chữ đỏ
-        ngắn cùng hàng (chi tiết khi rê chuột). Chỉ lúc chờ đồng ý lần dọn đầu mới có một dòng hỏi (Đồng ý / Tắt) phía
-        trên bảng, trả lời xong thì mất."""
+        """Tự dọn trận cũ trên trang Trận đã ghi, không lấy thêm chiều cao của bảng (ô bật / tắt ở đáy thanh bên,
+        _build_side_opts). Cảnh báo ổ sắp đầy là chữ đỏ ngắn trên hàng Thư mục / Tìm tên (chi tiết khi rê chuột). Chỉ
+        lúc chờ đồng ý lần dọn đầu mới có một dòng hỏi (Đồng ý / Tắt) phía trên bảng, trả lời xong thì mất."""
         C = theme.C
         bar = self.table.bar
-        self.clean_text = ""                                   # mô tả + tình trạng (chú thích khi rê chuột)
-        self.clean_cb = ttk.Checkbutton(bar, text="Tự dọn trận cũ", variable=self.var_clean,
-                                        command=self._clean_toggled)
-        self.clean_cb.pack(side="right", padx=(0, 18))
-        self.clean_tip = theme.Tip(self.clean_cb, lambda: self.clean_text)
         dl = self.table.dir_label                              # đường dẫn dài nhường chỗ (bị cắt trước), rê chuột xem đủ
         dl.pack_forget()
         dl.pack(side="left", padx=6)
@@ -1066,11 +1132,13 @@ class App:
     # chế độ hiển thị: rec = đang ghi trận | armed = bộ ghi bật, chờ game/trận | stopping = đang dừng | off = không ghi
     MODE_LOOK = {
         "rec": ("ĐANG GHI TRẬN", "red_hi", "■  Dừng ghi", "TButton"),
-        "armed": ("SẴN SÀNG GHI", "gold", "■  Dừng ghi", "TButton"),
+        "armed": ("ĐANG GHI", "gold", "■  Dừng ghi", "TButton"),
         "stopping": ("ĐANG DỪNG…", "muted", "Đang dừng…", "TButton"),
         "off": ("KHÔNG GHI", "dim", "●  Bắt đầu ghi", "Accent.TButton"),
     }
-    WAIT_TEXT = {"chờ game": "Chờ mở game AoE-HD / AOE1R", "trong game, chờ trận": "Đã thấy game — vào trận là tự ghi"}
+    WAIT_TEXT = {"chờ game": "Sẽ tự ghi khi vào trận", "trong game, chờ trận": "Đã thấy game — vào trận là tự ghi"}
+    IDLE_SHORT = "Ngoài trận không làm gì, nhẹ như Vietkey"
+    IDLE_LONG = "Ngoài trận không làm gì nên không tốn tài nguyên, không nặng máy, chỉ nhẹ như Vietkey."
 
     def _mode_now(self):
         if self.engine is None:
@@ -1100,8 +1168,12 @@ class App:
             sub = f"Đã ghi {s // 3600:d}:{s // 60 % 60:02d}:{s % 60:02d}" if s >= 3600 else f"Đã ghi {s // 60:02d}:{s % 60:02d}"
         else:
             self._rec_since = None
-            sub = {"armed": self.WAIT_TEXT.get(st, "Vào trận là tự ghi"), "stopping": "Đang chốt dữ liệu trận…",
+            sub = {"armed": self.WAIT_TEXT.get(st, "Sẽ tự ghi khi vào trận"), "stopping": "Đang chốt dữ liệu trận…",
                    "off": "Bấm Bắt đầu ghi để tự ghi các trận"}[mode]
+        side_sub = sub
+        if mode == "armed":                          # bộ ghi bật, ngoài trận: chỉ dò game 2 giây một lần
+            side_sub = f"{sub}. {self.IDLE_LONG}"
+            sub = f"{sub}\n{self.IDLE_SHORT}"
         if mode != self._mode:                       # đổi màu cả khối chỉ khi đổi chế độ
             self._mode = mode
             chip_bg = {"rec": C["red_lo"], "armed": C["panel"], "stopping": C["panel"], "off": C["panel"]}[mode]
@@ -1119,13 +1191,13 @@ class App:
         dot = C[color] if mode != "rec" or not self._pulse else "#ffffff"
         self.chip_dot.itemconfigure(self.chip_dot_id, fill=dot)
         # thẻ trạng thái ở thanh bên: cùng chế độ
-        side = {"rec": "Đang ghi trận", "armed": "Sẵn sàng ghi", "stopping": "Đang dừng…", "off": "Không ghi"}[mode]
+        side = {"rec": "Đang ghi trận", "armed": "Đang ghi", "stopping": "Đang dừng…", "off": "Không ghi"}[mode]
         if st == "xuất video LỖI":
             side = "Xuất video LỖI"
         self.lbl_state.configure(text=side, fg="#ffffff" if mode in ("rec", "armed") else C["muted"])
         self.dot.itemconfigure(self.dot_id, fill=dot)
         extra = [f"{k}: {v}" for k, v in self.renders.items()]
-        self.lbl_status.configure(text="\n".join(extra) if extra else sub)
+        self.lbl_status.configure(text="\n".join(extra) if extra else side_sub)
         if self.tray is not None:
             self.tray.update(f"AoE-MapCap — {side}\n{sub}", {"rec": "rec", "armed": "armed"}.get(mode),
                              "Bắt đầu ghi" if mode == "off" else "Dừng ghi")
