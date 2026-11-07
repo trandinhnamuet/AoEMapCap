@@ -64,9 +64,11 @@ class MatchTable(ttk.Frame):
         dark = theme.APPLIED                                  # giao diện tối kiểu XArena (AoE-MapCap)
         bar = ttk.Frame(self)
         bar.pack(fill="x", pady=(0, 8))
+        self.bar = bar                                        # AoE-MapCap gắn ô Tự dọn trận cũ vào hàng này
         ttk.Label(bar, text="Thư mục:", style="Muted.TLabel" if dark else "TLabel").pack(side="left")
         self.var_dir = tk.StringVar()
-        ttk.Label(bar, textvariable=self.var_dir, style="Muted.TLabel" if dark else "TLabel").pack(side="left", padx=6)
+        self.dir_label = ttk.Label(bar, textvariable=self.var_dir, style="Muted.TLabel" if dark else "TLabel")
+        self.dir_label.pack(side="left", padx=6)
         if show_dir_button:
             ttk.Button(bar, text="Đổi thư mục...", command=self._choose_dir).pack(side="right")
         ttk.Button(bar, text="Làm mới", command=self.reload).pack(side="right", padx=(4, 0))

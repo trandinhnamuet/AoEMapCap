@@ -287,9 +287,19 @@ class Hud:
         W, H = self.size
         u = self.u
         pad = int(5 * u)
-        sb = self._scoreboard(surf, m, measure=True) if self.show_score and m.teams else None
         mm = self.r_minimap if self.show_minimap else None
         art = self._bar_surface(getattr(m, "bar_style", None), W)
+        # vùng ngang của bảng người chơi (từ chỗ dành cho thẻ unit tới minimap) + chiều cao bảng được phép (bằng ảnh
+        # thanh dưới của game) -> bảng nhiều người chia 2 cột thay vì làm thanh cao gấp đôi
+        if mm is None:
+            sb_right = W - pad
+        elif art is not None:
+            sb_right = int(W * 1692 / 1920) - pad
+        else:
+            sb_right = W - mm.w - 2 * pad - int(4 * u)
+        self._sb_span = (int(self.UNIT_RESERVE * u), sb_right)
+        self._sb_max_h = int(round(126 * W / 1920)) - 2 * pad
+        sb = self._scoreboard(surf, m, measure=True) if self.show_score and m.teams else None
         base_h = int(round(126 * W / 1920)) if art is not None else 0      # cao như thanh dưới của game
         self.bar_inner_h = base_h - 2 * pad                                 # thẻ unit cố vừa chiều cao này
         ui = self._unit_info(surf, m, measure=True) if m.unit_info else None
@@ -384,21 +394,78 @@ class Hud:
         v = p.get(key)
         return "-" if v is None else str(int(v))
 
+    SHORT_LABEL = {"Công nghệ": "C.nghệ", "Thời đại": "T.đại", "Phá nhà": "Phá"}
+    SPLIT_GAP = 14                # (x u) khoảng giữa hai cột của bảng chia đôi
+
+    def _sb_layout(self, m):
+        """Bố cục bảng người chơi. Một cột (dòng tên đội + từng người) khi vừa chiều cao thanh dưới của game; không vừa
+        (2v2 trở lên, đánh tự do từ 4 người) thì chia 2 cột cạnh nhau (người dùng 07/11: 5-8 người làm thanh chồng 2
+        tầng): mỗi cột một hàng tiêu đề + tối đa 4 người, cắt ở ranh giới đội nếu được, tên đội ghi ở hàng tiêu đề."""
+        u = self.u
+        cols = self.ECO_COLS if self.score_mode == 0 else self.MIL_COLS
+        grouped = any(len(t) > 1 for t in m.teams)        # mỗi người một đội (đánh tự do): không cần dòng tên đội
+        flat = [(k, p) for k, t in enumerate(m.teams) for p in t]
+        n_rows = len(flat) + (len(m.teams) if grouped else 0) + 1
+        row_h = int(25 * u)
+        one_h = n_rows * row_h + int(12 * u)
+        max_h = getattr(self, "_sb_max_h", None)
+        L = {"cols": cols, "grouped": grouped, "fs": int(16 * u), "row_h": row_h, "split": False}
+        if max_h is None or one_h <= max_h or len(flat) < 2:
+            L.update(name_w=int(250 * u), col_w=int(78 * u), h=one_h)
+            L["w"] = L["name_w"] + L["col_w"] * len(cols) + int(20 * u)
+            return L
+        # chia 2 cột: cắt ở ranh giới đội nếu cột dài nhất vẫn vừa chiều cao (hàng >= 19 px), gần nửa nhất; không thì
+        # chia đều (7v1, 5v3: một đội nằm ở cả hai cột, có vạch giữa hai đội)
+        n = len(flat)
+        half = (n + 1) // 2
+        cap = max(half, (max_h - int(12 * u)) // max(1, int(19 * u)) - 1)
+        cut = half
+        acc = 0
+        best = None
+        for t in m.teams[:-1]:
+            acc += len(t)
+            if 0 < acc < n and max(acc, n - acc) <= cap and (best is None or abs(acc - half) < abs(best - half)):
+                best = acc
+        if best is not None:
+            cut = best
+        parts = [flat[:cut], flat[cut:]]
+        rows = max(len(p) for p in parts) + 1
+        row_h = max(int(16 * u), min(int(25 * u), (max_h - int(12 * u)) // rows))
+        fs = max(int(11 * u), min(int(16 * u), int(row_h * 0.72)))
+        l_res, right = getattr(self, "_sb_span", (0, self.size[0]))
+        gap = int(self.SPLIT_GAP * u)
+        cw = min(int(250 * u) + int(78 * u) * len(cols) + int(20 * u), (right - l_res - gap) // 2)
+        inner = cw - int(20 * u)
+        col_w = max(int(36 * u), min(int(78 * u), (inner - int(165 * u)) // len(cols)))
+        name_w = max(int(90 * u), inner - col_w * len(cols))
+        cw = name_w + col_w * len(cols) + int(20 * u)
+        L.update(split=True, parts=parts, row_h=row_h, fs=fs, name_w=name_w, col_w=col_w, cw=cw, gap=gap,
+                 w=2 * cw + gap, h=rows * row_h + int(12 * u))
+        return L
+
+    def _fit(self, s, size, maxw, color=WHITE, bold=False, min_size=None):
+        """Chữ vừa bề rộng maxw: thu nhỏ cỡ chữ (tới min_size) rồi mới cắt bớt kèm "…"."""
+        t = self.text(s, size, color, bold=bold)
+        if t.get_width() <= maxw:
+            return t
+        lo = min_size or max(8, int(size * 0.8))
+        for sz in range(size - 1, lo - 1, -1):
+            t = self.text(s, sz, color, bold=bold)
+            if t.get_width() <= maxw:
+                return t
+        while len(s) > 1 and t.get_width() > maxw:
+            s = s[:-1]
+            t = self.text(s.rstrip() + "…", lo, color, bold=bold)
+        return t
+
     def _scoreboard(self, surf, m, measure=False, pos=None):
         """measure: chỉ trả về (rộng, cao); pos: góc trên trái trong thanh dưới (không vẽ khung riêng)."""
         if not m.teams:
             return None
         W, _H = self.size
         u = self.u
-        cols = self.ECO_COLS if self.score_mode == 0 else self.MIL_COLS
-        fs = int(16 * u)
-        row_h = int(25 * u)
-        name_w = int(250 * u)
-        col_w = int(78 * u)
-        grouped = any(len(t) > 1 for t in m.teams)        # mỗi người một đội (đánh tự do): không cần dòng tên đội
-        n_rows = sum(len(t) for t in m.teams) + (len(m.teams) if grouped else 0) + 1
-        w = name_w + col_w * len(cols) + int(20 * u)
-        h = n_rows * row_h + int(12 * u)
+        L = self._sb_layout(m)
+        w, h = L["w"], L["h"]
         avail_right = (self.r_minimap.x - int(12 * u)) if self.show_minimap else W
         x0 = max(int(10 * u), min((W - w) // 2, avail_right - w))
         y0 = self.bottom - h - int(6 * u)
@@ -409,57 +476,106 @@ class Hud:
         r = pygame.Rect(x0, y0, w, h)
         if pos is None:
             self.panel(surf, r, border=(120, 110, 80))
-        y = y0 + int(6 * u)
         title = "Kinh tế" if self.score_mode == 0 else "Quân sự"
-        surf.blit(self.text(f"{title}  (X đổi)", fs, GOLD, bold=True), (x0 + int(10 * u), y + int(2 * u)))
-        x = x0 + name_w
-        for label, key in cols:
+        # một cỡ chữ cho cả cột (chữ dài như "Công cụ" không nhỏ hơn "Đồ đá" ở hàng bên cạnh)
+        room = L["col_w"] - int(4 * u)
+        L["cell_fs"] = {}
+        for _label, ck in L["cols"]:
+            sz = L["fs"]
+            for team in m.teams:
+                for p in team:
+                    while sz > max(8, int(L["fs"] * 0.8)) and self.text(self._cell(p, ck), sz).get_width() > room:
+                        sz -= 1
+            L["cell_fs"][ck] = sz
+        if not L["split"]:
+            y = self._sb_header(surf, L, x0, y0 + int(6 * u), f"{title}  (X đổi)")
+            for k, team in enumerate(m.teams):
+                if L["grouped"]:
+                    row_h = L["row_h"]
+                    pygame.draw.line(surf, (90, 85, 70), (x0 + int(8 * u), y + row_h // 2), (r.right - int(8 * u), y + row_h // 2))
+                    t = self.text(f"Đội {k + 1}", int(14 * u), GREY, bold=True)
+                    tr = t.get_rect(midleft=(x0 + int(10 * u), y + row_h // 2))
+                    pygame.draw.rect(surf, (8, 10, 14), tr.inflate(int(8 * u), 0))
+                    surf.blit(t, tr)
+                    y += row_h
+                for p in team:
+                    self._sb_row(surf, m, L, x0, y, w, p)
+                    y += L["row_h"]
+            return
+        # hai cột cạnh nhau: tên đội ở hàng tiêu đề; đội đổi giữa cột thì kẻ một vạch giữa hai hàng
+        cw = L["cw"]
+        for c, part in enumerate(L["parts"]):
+            cx = x0 + c * (cw + L["gap"])
+            if c:
+                pygame.draw.line(surf, self.BAR_SEP, (cx - L["gap"] // 2, y0 + int(4 * u)),
+                                 (cx - L["gap"] // 2, y0 + h - int(4 * u)))
+            teams = sorted({k for k, _p in part})
+            label = (f"Đội {teams[0] + 1}" if len(teams) == 1 else f"Đội {teams[0] + 1}–{teams[-1] + 1}") \
+                if L["grouped"] and teams else ""
+            head = (f"{title} · {label}" if c == 0 else label) if label else (title if c == 0 else "")
+            y = self._sb_header(surf, L, cx, y0 + int(6 * u), head)
+            prev = None
+            for k, p in part:
+                if L["grouped"] and prev is not None and k != prev:
+                    pygame.draw.line(surf, self.BAR_EDGE, (cx + int(6 * u), y), (cx + cw - int(6 * u), y), max(1, int(2 * u)))
+                prev = k
+                self._sb_row(surf, m, L, cx, y, cw, p)
+                y += L["row_h"]
+
+    def _sb_header(self, surf, L, x0, y, head):
+        """Hàng tiêu đề: chữ ở ô tên + nhãn / biểu tượng các cột. Trả về y của hàng kế."""
+        u = self.u
+        fs, row_h, col_w = L["fs"], L["row_h"], L["col_w"]
+        if head:
+            surf.blit(self._fit(head, fs, L["name_w"] - int(12 * u), GOLD, bold=True), (x0 + int(10 * u), y + int(2 * u)))
+        x = x0 + L["name_w"]
+        for label, key in L["cols"]:
             ic = self.icons.get(key) if isinstance(key, int) else None
             if ic is not None:
                 s = pygame.transform.smoothscale(ic, (int(ic.get_width() * row_h * 0.8 / ic.get_height()), int(row_h * 0.8)))
                 surf.blit(s, s.get_rect(center=(x + col_w // 2, y + row_h // 2)))
             else:
                 lab = self.RES_LABEL.get(key, label) if isinstance(key, int) else label
-                t = self.text(lab, fs, GOLD)
+                room = col_w - int(4 * u)
+                if lab in self.SHORT_LABEL and self.text(lab, max(8, int(fs * 0.8)), GOLD).get_width() > room:
+                    lab = self.SHORT_LABEL[lab]                  # cột hẹp (bảng chia 2 cột): nhãn ngắn thay vì "…"
+                t = self._fit(lab, fs, room, GOLD)
                 surf.blit(t, t.get_rect(center=(x + col_w // 2, y + row_h // 2)))
             x += col_w
-        y += row_h
-        for k, team in enumerate(m.teams):
-            if grouped:
-                pygame.draw.line(surf, (90, 85, 70), (x0 + int(8 * u), y + row_h // 2), (r.right - int(8 * u), y + row_h // 2))
-                t = self.text(f"Đội {k + 1}", int(14 * u), GREY, bold=True)
-                tr = t.get_rect(midleft=(x0 + int(10 * u), y + row_h // 2))
-                pygame.draw.rect(surf, (8, 10, 14), tr.inflate(int(8 * u), 0))
-                surf.blit(t, tr)
-                y += row_h
-            for p in team:
-                rr = pygame.Rect(x0 + int(4 * u), y, w - int(8 * u), row_h)
-                if p["index"] == m.selected:
-                    self.panel(surf, rr, (255, 214, 120, 50), radius=4)
-                self.score_rows.append((rr, p["index"]))
-                sq = pygame.Rect(x0 + int(10 * u), y + int(5 * u), row_h - int(10 * u), row_h - int(10 * u))
-                pygame.draw.rect(surf, p["rgb"], sq)
-                pygame.draw.rect(surf, WHITE, sq, 1)
-                key = p.get("hotkey")
-                nm = (f"[{key}] " if key else "") + p["name"]
-                civ = p.get("civ") or ""
-                stt = p.get("status")
-                if stt:
-                    civ = stt.upper()
-                t = self.text(nm, fs, GREY if stt in ("thua", "đầu hàng") else WHITE, bold=p["index"] == m.selected)
-                surf.blit(t, (sq.right + int(8 * u), y + (row_h - t.get_height()) // 2))
-                if civ:
-                    col = (120, 220, 120) if stt == "thắng" else (230, 110, 100) if stt else GREY
-                    tc = self.text(civ, int(13 * u), col, bold=bool(stt))
-                    cx = sq.right + int(14 * u) + t.get_width()
-                    if cx + tc.get_width() < x0 + name_w - int(4 * u):
-                        surf.blit(tc, (cx, y + (row_h - tc.get_height()) // 2 + 1))
-                x = x0 + name_w
-                for _label, ck in cols:
-                    t = self.text(self._cell(p, ck), fs)
-                    surf.blit(t, t.get_rect(center=(x + col_w // 2, y + row_h // 2)))
-                    x += col_w
-                y += row_h
+        return y + row_h
+
+    def _sb_row(self, surf, m, L, x0, y, w, p):
+        """Một hàng người chơi (ô màu, [phím] tên, civ / trạng thái nếu còn chỗ, các cột số)."""
+        u = self.u
+        fs, row_h, name_w, col_w = L["fs"], L["row_h"], L["name_w"], L["col_w"]
+        rr = pygame.Rect(x0 + int(4 * u), y, w - int(8 * u), row_h)
+        if p["index"] == m.selected:
+            self.panel(surf, rr, (255, 214, 120, 50), radius=4)
+        self.score_rows.append((rr, p["index"]))
+        sqs = min(row_h - int(10 * u), int(15 * u))
+        sq = pygame.Rect(x0 + int(10 * u), y + (row_h - sqs) // 2, sqs, sqs)
+        pygame.draw.rect(surf, p["rgb"], sq)
+        pygame.draw.rect(surf, WHITE, sq, 1)
+        key = p.get("hotkey")
+        nm = (f"[{key}] " if key else "") + p["name"]
+        civ = p.get("civ") or ""
+        stt = p.get("status")
+        if stt:
+            civ = stt.upper()
+        name_room = x0 + name_w - int(4 * u) - (sq.right + int(8 * u))
+        t = self._fit(nm, fs, name_room, GREY if stt in ("thua", "đầu hàng") else WHITE, bold=p["index"] == m.selected)
+        surf.blit(t, (sq.right + int(8 * u), y + (row_h - t.get_height()) // 2))
+        if civ:
+            col = (120, 220, 120) if stt == "thắng" else (230, 110, 100) if stt else GREY
+            tc = self.text(civ, min(int(13 * u), fs - int(2 * u)), col, bold=bool(stt))
+            cx = sq.right + int(14 * u) + t.get_width()
+            if cx + tc.get_width() < x0 + name_w - int(4 * u):
+                surf.blit(tc, (cx, y + (row_h - tc.get_height()) // 2 + 1))
+        x = x0 + name_w
+        for _label, ck in L["cols"]:
+            t = self._fit(self._cell(p, ck), L.get("cell_fs", {}).get(ck, fs), col_w - int(4 * u))
+            surf.blit(t, t.get_rect(center=(x + col_w // 2, y + row_h // 2)))
+            x += col_w
 
     def _techs(self, surf, m):
         W, _H = self.size

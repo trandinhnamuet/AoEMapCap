@@ -322,9 +322,9 @@ class App:
         os.makedirs(raw_dir, exist_ok=True)
         bot = ttk.Frame(tab)
         bot.pack(side="bottom", fill="x", pady=(12, 0))
-        self._build_clean_bar(tab)
         self.table = MatchTable(tab, raw_dir, self._launch_replay, show_dir_button=False)
         self.table.pack(fill="both", expand=True)
+        self._build_clean_bar(tab)
         ttk.Button(bot, text="▶  Xem replay", style="Accent.TButton", command=self.table.open_selected).pack(side="left")
         for text, cmd in (("Xuất video...", self._export_selected), ("Mở file khác...", self._open_other),
                           ("Mở thư mục", self._open_dir), ("Xoá trận", self.table.delete_selected),
@@ -820,30 +820,33 @@ class App:
     CLEAN_EVERY_MS = 30 * 60 * 1000
 
     def _build_clean_bar(self, tab):
-        """Dòng thông báo trên trang Trận đã ghi: tự dọn đang bật / tắt (bật tắt ngay tại đây), đề nghị dọn lần đầu
-        (Đồng ý / Tắt), cảnh báo ổ đĩa sắp đầy."""
+        """Tự dọn trận cũ trên trang Trận đã ghi, không lấy thêm chiều cao của bảng: ô bật / tắt nằm trên hàng
+        Thư mục / Tìm tên của bảng, mô tả + tình trạng chỉ hiện khi rê chuột (theme.Tip). Cảnh báo ổ sắp đầy là chữ đỏ
+        ngắn cùng hàng (chi tiết khi rê chuột). Chỉ lúc chờ đồng ý lần dọn đầu mới có một dòng hỏi (Đồng ý / Tắt) phía
+        trên bảng, trả lời xong thì mất."""
         C = theme.C
-        bar = tk.Frame(tab, bg=C["panel"], highlightthickness=1, highlightbackground=C["line"])
-        bar.pack(side="top", fill="x", pady=(0, 10))
-        self.clean_bar = bar
-        row = tk.Frame(bar, bg=C["panel"])
-        row.pack(fill="x", padx=12, pady=(8, 8))
-        ttk.Checkbutton(row, text="Tự dọn trận cũ", variable=self.var_clean, style="Card.TCheckbutton",
-                        command=self._clean_toggled).pack(side="left")
-        self.clean_msg = tk.Label(row, text="", bg=C["panel"], fg=C["muted"], font=theme.F(10), anchor="w",
-                                  justify="left", wraplength=760)
-        self.clean_msg.pack(side="left", fill="x", expand=True, padx=(12, 0))
-        self.clean_btns = tk.Frame(bar, bg=C["panel"])          # đề nghị dọn lần đầu: hàng riêng dưới dòng chữ
-        ttk.Button(self.clean_btns, text="Đồng ý dọn", style="Accent.TButton", command=self._clean_agree).pack(
-            side="left")
-        ttk.Button(self.clean_btns, text="Tắt tự dọn", command=self._clean_decline).pack(side="left", padx=(8, 0))
-        self.disk_msg = tk.Label(bar, text="", bg=C["panel"], fg=C["lose"], font=theme.F(10, "bold"), anchor="w",
-                                 justify="left", wraplength=980)
-
-        def wrap(e):
-            self.clean_msg.configure(wraplength=max(300, e.width - 190))
-            self.disk_msg.configure(wraplength=max(300, e.width - 30))
-        bar.bind("<Configure>", wrap)
+        bar = self.table.bar
+        self.clean_text = ""                                   # mô tả + tình trạng (chú thích khi rê chuột)
+        self.clean_cb = ttk.Checkbutton(bar, text="Tự dọn trận cũ", variable=self.var_clean,
+                                        command=self._clean_toggled)
+        self.clean_cb.pack(side="right", padx=(0, 18))
+        self.clean_tip = theme.Tip(self.clean_cb, lambda: self.clean_text)
+        dl = self.table.dir_label                              # đường dẫn dài nhường chỗ (bị cắt trước), rê chuột xem đủ
+        dl.pack_forget()
+        dl.pack(side="left", padx=6)
+        theme.Tip(dl, lambda: self.table.var_dir.get())
+        self.disk_text = ""
+        self.disk_msg = tk.Label(bar, text="", bg=C["bg"], fg=C["lose"], font=theme.F(10, "bold"), anchor="e")
+        self.disk_tip = theme.Tip(self.disk_msg, lambda: self.disk_text)
+        # dòng hỏi trước lần dọn đầu (chỉ hiện khi đang chờ trả lời)
+        ask = tk.Frame(tab, bg=C["panel"], highlightthickness=1, highlightbackground=C["gold"])
+        self.clean_btns = ask
+        ttk.Button(ask, text="Tắt tự dọn", command=self._clean_decline).pack(side="right", padx=(6, 10), pady=6)
+        ttk.Button(ask, text="Đồng ý dọn", style="Accent.TButton", command=self._clean_agree).pack(side="right", pady=6)
+        self.clean_ask = tk.Label(ask, text="", bg=C["panel"], fg=C["gold_hi"], font=theme.F(10), anchor="w",
+                                  justify="left", wraplength=600)
+        self.clean_ask.pack(side="left", fill="x", expand=True, padx=(12, 8))
+        ask.bind("<Configure>", lambda e: self.clean_ask.configure(wraplength=max(260, e.width - 300)))
 
     def _pin_selected(self):
         on = self.table.toggle_pin_selected()
@@ -906,29 +909,32 @@ class App:
         cfg = self.cfg
         C = theme.C
         if "error" in st:
-            self.clean_msg.configure(text=f"Không đọc được thư mục trận: {st['error']}", fg=C["lose"])
+            self.clean_text = f"Không đọc được thư mục trận: {st['error']}"
             return
         used = f"Hiện có {st['count']} trận, {retention.fmt_size(st['bytes'])}"
         if st.get("keep"):
             used += f" ({st['keep']} trận ghim ★)"
         lim, days = retention.fmt_size(int(cfg.clean_limit_gb * retention.GB)), cfg.clean_days
         pending = cfg.auto_clean and not cfg.clean_agreed and st["plan"]
+        if res and res["deleted"]:
+            self._clean_last = (f"Lần dọn gần nhất ({time.strftime('%H:%M %d/%m')}): {len(res['deleted'])} trận "
+                                f"({retention.fmt_size(res['freed'])}).")
         if not cfg.auto_clean:
-            text, fg = f"TẮT — trận được giữ mãi. {used}.", C["muted"]
-        elif pending:
-            text = (f"Tổng trận đã vượt {lim}: sẽ chuyển {len(st['plan'])} trận ({retention.fmt_size(st['plan_bytes'])}) "
-                    f"cũ hơn {days} ngày vào Thùng rác (khôi phục được; trận ghim ★ được giữ). Đồng ý?")
-            fg = C["gold_hi"]
+            text = f"Tự dọn trận cũ đang TẮT: trận được giữ mãi.\n{used}."
         else:
-            text = (f"BẬT — khi tổng trận vượt {lim}, trận cũ hơn {days} ngày được chuyển vào Thùng rác, cũ nhất trước "
-                    f"(trận ghim ★ không bao giờ bị dọn). {used}.")
-            if res and res["deleted"]:
-                text += f" Vừa dọn {len(res['deleted'])} trận ({retention.fmt_size(res['freed'])})."
-            fg = C["muted"]
-        self.clean_msg.configure(text=text, fg=fg)
+            text = (f"Tự dọn trận cũ đang BẬT: khi tổng trận vượt {lim}, trận cũ hơn {days} ngày được chuyển vào Thùng "
+                    f"rác (khôi phục được), cũ nhất trước. Trận ghim ★ không bao giờ bị dọn.\n{used}.")
+            if pending:
+                text += "\nĐang chờ bạn đồng ý lần dọn đầu."
+        if getattr(self, "_clean_last", ""):
+            text += "\n" + self._clean_last
+        self.clean_text = text + "\nĐổi ngưỡng / số ngày trong Cài đặt."
         if pending:
-            self.clean_btns.pack(fill="x", padx=12, pady=(0, 10), before=self.disk_msg if self.disk_msg.winfo_ismapped()
-                                 else None)
+            self.clean_ask.configure(
+                text=f"Tổng trận đã vượt {lim}: chuyển {len(st['plan'])} trận cũ hơn {days} ngày "
+                     f"({retention.fmt_size(st['plan_bytes'])}) vào Thùng rác? Khôi phục được; trận ghim ★ được giữ.")
+            if not self.clean_btns.winfo_manager():
+                self.clean_btns.pack(side="top", fill="x", pady=(0, 10), before=self.table)
         else:
             self.clean_btns.pack_forget()
         self.var_clean_usage.set(f"{used}; trận cũ nhất: "
@@ -940,8 +946,10 @@ class App:
             drive = os.path.splitdrive(os.path.abspath(cfg.raw_dir()))[0] or cfg.raw_dir()
             msg = (f"⚠ Ổ {drive} sắp đầy: chỉ còn {retention.fmt_size(free)} trống. Trận mới có thể không ghi được — "
                    f"hãy xoá bớt trận / giảm ngưỡng tự dọn trong Cài đặt, hoặc đổi thư mục lưu sang ổ khác.")
-            self.disk_msg.configure(text=msg)
-            self.disk_msg.pack(fill="x", padx=12, pady=(0, 8))
+            self.disk_text = msg
+            self.disk_msg.configure(text=f"⚠ Ổ {drive} sắp đầy")
+            if not self.disk_msg.winfo_manager():
+                self.disk_msg.pack(side="right", padx=(0, 14), before=self.table.dir_label)
             if not self._low_disk:
                 self._append("cảnh báo: " + msg)
         else:

@@ -272,3 +272,73 @@ def gradient_photo(w, h, left, right, glow_at=0.85, spread=1 / 3):
     if len(_images) > 64:
         del _images[:16]
     return ph
+
+
+class Tip:
+    """Chú thích hiện khi rê chuột lên widget (sau `delay` ms), ẩn khi rời / bấm. `text` là chuỗi hoặc hàm trả chuỗi
+    (đọc lúc hiện, nên luôn mới); chuỗi rỗng thì không hiện."""
+
+    def __init__(self, widget, text="", delay=350, width=440):
+        self.widget, self.text, self.delay, self.width = widget, text, delay, width
+        self._after = None
+        self.win = None
+        for w in (widget, *getattr(widget, "_tip_extra", ())):
+            w.bind("<Enter>", self._enter, add="+")
+            w.bind("<Leave>", self._leave, add="+")
+            w.bind("<ButtonPress>", self._leave, add="+")
+
+    def get(self):
+        return self.text() if callable(self.text) else (self.text or "")
+
+    def _enter(self, _e=None):
+        self._cancel()
+        self._after = self.widget.after(self.delay, self.show)
+
+    def _leave(self, _e=None):
+        self._cancel()
+        self.hide()
+
+    def _cancel(self):
+        if self._after:
+            try:
+                self.widget.after_cancel(self._after)
+            except tk.TclError:
+                pass
+            self._after = None
+
+    def show(self):
+        self._after = None
+        text = self.get()
+        if not text or self.win is not None:
+            return
+        w = self.widget
+        win = tk.Toplevel(w)
+        win.withdraw()                      # đặt vị trí trước khi hiện (hiện rồi mới đặt có lúc Tk bỏ qua, nằm ở 0,0)
+        win.wm_overrideredirect(True)
+        try:
+            win.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        box = tk.Frame(win, bg=C["panel2"], highlightthickness=1, highlightbackground=C["gold"])
+        box.pack()
+        tk.Label(box, text=text, bg=C["panel2"], fg=C["text"], font=F(10), justify="left", anchor="w",
+                 wraplength=self.width).pack(padx=10, pady=7)
+        win.update_idletasks()
+        x = w.winfo_rootx()
+        y = w.winfo_rooty() + w.winfo_height() + 4
+        sw, sh = w.winfo_screenwidth(), w.winfo_screenheight()
+        tw, th = win.winfo_reqwidth(), win.winfo_reqheight()
+        x = max(0, min(x, sw - tw - 4))
+        if y + th > sh - 40:
+            y = max(0, w.winfo_rooty() - th - 4)
+        win.wm_geometry(f"+{x}+{y}")
+        win.deiconify()
+        self.win = win
+
+    def hide(self):
+        if self.win is not None:
+            try:
+                self.win.destroy()
+            except tk.TclError:
+                pass
+            self.win = None

@@ -1,4 +1,4 @@
-"""Tự dọn trận cũ (mapcap/retention.py, v19) + dòng thông báo trên trang Trận đã ghi.
+"""Tự dọn trận cũ (mapcap/retention.py, v28) + ô Tự dọn trận cũ trên trang Trận đã ghi (mô tả khi rê chuột).
 
     python tests/test_retention.py
 
@@ -117,6 +117,24 @@ def gui():
             root.update()
             time.sleep(0.02)
 
+    def shot(root, name):
+        try:
+            from PIL import ImageGrab
+            root.lift()
+            root.attributes("-topmost", True)
+            for t in (app.clean_tip, app.disk_tip):
+                if t.win is not None:
+                    t.win.attributes("-topmost", False)     # đặt lại để nổi trên cửa sổ app vừa ghim trên cùng
+                    t.win.attributes("-topmost", True)
+                    t.win.lift()
+            pump(root, 0.5)
+            x, y = root.winfo_rootx(), root.winfo_rooty()
+            ImageGrab.grab((x, y, x + root.winfo_width(), y + root.winfo_height())).save(
+                os.path.join(out, name))
+            root.attributes("-topmost", False)
+        except Exception as e:  # noqa: BLE001
+            print("không chụp được:", e)
+
     def until(root, cond, s=10):
         t0 = time.time()
         while not cond():
@@ -129,30 +147,38 @@ def gui():
     app._clean_check()
     until(root, lambda: app._clean_st is not None)
     pump(root, 0.3)
-    txt = app.clean_msg.cget("text")
-    assert "sẽ chuyển 3 trận" in txt and app.clean_btns.winfo_ismapped(), txt
+    # ô bật / tắt nằm trên hàng Thư mục / Tìm tên của bảng, không có dải riêng
+    assert app.clean_cb.master is app.table.bar and app.clean_cb.winfo_ismapped()
+    assert app.clean_cb.winfo_width() >= app.clean_cb.winfo_reqwidth(), "ô Tự dọn trận cũ bị cắt"
+    txt = app.clean_ask.cget("text")
+    assert "chuyển 3 trận" in txt and app.clean_btns.winfo_ismapped(), txt
     assert len([n for n in os.listdir(raw) if n.endswith(".aoerec")]) == 6, "chưa đồng ý thì chưa dọn"
-    try:
-        from PIL import ImageGrab
-        root.lift()
-        root.attributes("-topmost", True)
-        pump(root, 0.5)
-        x, y = root.winfo_rootx(), root.winfo_rooty()
-        ImageGrab.grab((x, y, x + root.winfo_width(), y + root.winfo_height())).save(os.path.join(out, "hoi.png"))
-        root.attributes("-topmost", False)
-    except Exception as e:  # noqa: BLE001
-        print("không chụp được:", e)
-    print("lần đầu: dòng thông báo hỏi (sẽ chuyển 3 trận ...), chưa xoá gì: OK")
+    h_ask = app.table.winfo_height()
+    shot(root, "hoi.png")
+    print("lần đầu: một dòng hỏi (chuyển 3 trận ...) phía trên bảng, chưa xoá gì: OK")
 
     app._clean_agree()
-    until(root, lambda: not app._clean_busy and "Vừa dọn" in app.clean_msg.cget("text"))
+    until(root, lambda: not app._clean_busy and "Lần dọn gần nhất" in app.clean_text)
     left = sorted(n for n in os.listdir(raw) if n.endswith(".aoerec"))
     assert left == sorted([names[0], names[4], names[5]]), left
     assert E.load_config(cfg.settings_path()).clean_agreed
     assert not app.clean_btns.winfo_ismapped()
+    pump(root, 0.3)
+    assert app.table.winfo_height() > h_ask, (app.table.winfo_height(), h_ask)
+    # mô tả chỉ hiện khi rê chuột
+    assert app.clean_tip.win is None
+    app.clean_cb.event_generate("<Enter>")
+    until(root, lambda: app.clean_tip.win is not None, 3)
+    tip = app.clean_tip.win.winfo_children()[0].winfo_children()[0].cget("text")
+    assert "đang BẬT" in tip and "Hiện có 3 trận" in tip and "Lần dọn gần nhất" in tip, tip
+    shot(root, "ro_chuot.png")
+    app.clean_cb.event_generate("<Leave>")
+    pump(root, 0.2)
+    assert app.clean_tip.win is None
     log = app.txt.get("1.0", "end")
     assert "đã chuyển 3 trận" in log, log[-500:]
-    print("Đồng ý dọn: chuyển 3 trận cũ nhất (giữ trận ghim ★ + trận mới), ghi Nhật ký, lần sau tự dọn không hỏi: OK")
+    print("Đồng ý dọn: chuyển 3 trận cũ nhất (giữ trận ghim ★ + trận mới), ghi Nhật ký, dòng hỏi mất (bảng cao lại), "
+          "mô tả khi rê chuột, lần sau tự dọn không hỏi: OK")
 
     # ghim từ bảng: dấu ★
     pump(root, 1.0)
@@ -168,7 +194,7 @@ def gui():
     # tắt ngay trên dòng thông báo
     app.var_clean.set(False)
     app._clean_toggled()
-    until(root, lambda: not app._clean_busy and app.clean_msg.cget("text").startswith("TẮT"))
+    until(root, lambda: not app._clean_busy and "đang TẮT" in app.clean_text)
     assert E.load_config(cfg.settings_path()).auto_clean is False
     print("tắt tự dọn ngay trên dòng thông báo (lưu cấu hình): OK")
 
@@ -176,18 +202,18 @@ def gui():
     RT.LOW_DISK_BYTES = 1 << 60
     app._clean_check()
     until(root, lambda: not app._clean_busy and app.disk_msg.winfo_ismapped())
-    assert "sắp đầy" in app.disk_msg.cget("text") and "sắp đầy" in app.txt.get("1.0", "end")
-    try:
-        from PIL import ImageGrab
-        root.lift()
-        root.attributes("-topmost", True)
-        pump(root, 0.5)
-        x, y = root.winfo_rootx(), root.winfo_rooty()
-        ImageGrab.grab((x, y, x + root.winfo_width(), y + root.winfo_height())).save(os.path.join(out, "o_day.png"))
-        root.attributes("-topmost", False)
-    except Exception as e:  # noqa: BLE001
-        print("không chụp được:", e)
-    print("ổ đĩa sắp đầy: cảnh báo đỏ trên trang + Nhật ký: OK")
+    assert app.disk_msg.master is app.table.bar and "sắp đầy" in app.disk_msg.cget("text")
+    assert "chỉ còn" in app.disk_text and "sắp đầy" in app.txt.get("1.0", "end")
+    pump(root, 0.3)
+    app.disk_tip.show()
+    assert app.disk_tip.win is not None
+    pump(root, 0.3)
+    w = app.disk_tip.win
+    pos = (w.winfo_rootx(), w.winfo_rooty())
+    assert abs(pos[0] - app.disk_msg.winfo_rootx()) < 600 and pos[1] > app.disk_msg.winfo_rooty(), pos   # dưới chữ đỏ
+    shot(root, "o_day.png")
+    app.disk_tip.hide()
+    print("ổ đĩa sắp đầy: chữ đỏ ngắn cùng hàng (chi tiết khi rê chuột) + Nhật ký: OK")
 
     # Cài đặt: ngưỡng / thời hạn lưu được
     app.show_page("settings")

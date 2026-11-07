@@ -98,6 +98,19 @@ def main():
         key(v, k); assert getattr(h, attr) == before, attr
     m0 = h.score_mode
     key(v, pygame.K_x); assert h.score_mode != m0
+    # bảng người chơi: thanh dưới không cao hơn ảnh thanh của game (5-8 người: bảng chia 2 cột), bấm hàng nào chọn
+    # đúng người đó
+    v._hud_dirty = True
+    v._tick(1 / 60, True)
+    rows = list(h.score_rows)
+    assert rows and len({i for _r, i in rows}) == len(rows), rows
+    if v.sel_unit is None:
+        assert h.bottom - h.bar_top <= h._sb_max_h + int(10 * h.u) + 1, (h.bottom - h.bar_top, h._sb_max_h)
+    for r, idx in rows:
+        assert not any(r.colliderect(r2) for r2, i2 in rows if i2 != idx), "hai hàng người chơi chồng nhau"
+        click(v, r.center)
+        assert v.selected == idx, (v.selected, idx)
+    print(f"bảng người chơi: {len(rows)} hàng, thanh dưới cao {h.bottom - h.bar_top} px, bấm hàng chọn đúng người: OK")
     key(v, pygame.K_SLASH, pygame.KMOD_SHIFT, "?"); assert h.show_help
     key(v, pygame.K_ESCAPE); assert not h.show_help
     key(v, pygame.K_ESCAPE); assert h.show_help            # Esc bật bảng phím tắt
