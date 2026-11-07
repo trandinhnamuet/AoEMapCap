@@ -102,7 +102,9 @@ class App:
     PAGES = (("matches", "", "Trận đã ghi", "Xem lại trận: tua, đổi góc nhìn, xuất video khi cần"),
              ("phone", "", "Điện thoại", "Xem lại trận trên điện thoại Android ở bất kỳ mạng nào: quét mã QR để kết nối"),
              ("settings", "", "Cài đặt", "Ghi trận, thư mục lưu, xuất video, thống kê sử dụng"),
-             ("log", "", "Nhật ký", "Hoạt động của bộ ghi, xuất video và cập nhật"))
+             ("log", "", "Nhật ký", "Hoạt động của bộ ghi, xuất video và cập nhật"),
+             ("feedback", "\ue939", "Góp ý", "Gửi ý kiến, báo lỗi cho tác giả trên trang Thảo luận (GitHub Discussions)"))
+    FEEDBACK_URL = "https://github.com/trandinhnamuet/AoEMapCap/discussions"
 
     def __init__(self, root):
         self.root = root
@@ -252,6 +254,7 @@ class App:
         self._build_phone()
         self._build_settings()
         self._build_log()
+        self._build_feedback()
         self.show_page("matches")
         self._refresh_status()
         self.root.after(500, self._tick)
@@ -681,6 +684,99 @@ class App:
         ttk.Button(bot, text="Lưu cài đặt", style="Accent.TButton", command=self._save_settings).pack(side="left")
         ttk.Label(bot, text="Cài đặt có hiệu lực từ lần Bắt đầu ghi tiếp theo.", style="Muted.TLabel").pack(
             side="left", padx=14)
+
+    def _build_feedback(self):
+        """Trang Góp ý (người dùng 07/11): ý kiến / báo lỗi đăng ở GitHub Discussions của dự án, tác giả xem danh sách và
+        trả lời ở đó. Nút mở sẵn trang viết bài đúng mục (Q&A = báo lỗi, Ideas = góp ý), điền sẵn phiên bản app +
+        Windows; nút sao chép Nhật ký để dán vào bài."""
+        C = theme.C
+        tab = tk.Frame(self.content, bg=C["bg"])
+        self.pages["feedback"] = tab
+
+        def para(parent, text, fg, pady):
+            """Đoạn chữ xuống dòng theo bề rộng thật của thẻ (cửa sổ nhỏ không bị cắt)."""
+            lbl = tk.Label(parent, text=text, bg=C["panel"], fg=fg, font=theme.F(10), justify="left", anchor="w",
+                           wraplength=760)
+            lbl.bind("<Configure>", lambda e: lbl.configure(wraplength=max(200, e.width - 4)))
+            lbl.pack(fill="x", pady=pady)
+
+        body = self._card(tab, "Gửi ý kiến / báo lỗi")
+        para(body, "Ý kiến và báo lỗi được đăng ở trang Thảo luận của AoE-MapCap trên GitHub. Tác giả đọc và trả lời ở "
+                   "đó; bạn cũng xem được lỗi người khác đã báo, ý kiến tương tự để bình luận thêm.", C["text"], 0)
+        steps = ("1.  Bấm Báo lỗi hoặc Góp ý bên dưới: trình duyệt mở sẵn trang viết bài, đã điền phiên bản app và Windows.",
+                 "2.  Đăng nhập GitHub (chưa có tài khoản thì bấm Sign up, miễn phí, chỉ cần email).",
+                 "3.  Viết tiêu đề và mô tả (tiếng Việt thoải mái), kéo thả ảnh chụp màn hình vào ô viết nếu có, rồi bấm "
+                 "Start discussion.")
+        for t in steps:
+            para(body, t, C["muted"], (6, 0))
+        row = tk.Frame(body, bg=C["panel"])
+        row.pack(fill="x", pady=(16, 0))
+        self.btn_bug = ttk.Button(row, text="Báo lỗi", style="Accent.TButton", width=14,
+                                  command=lambda: self._feedback_open("bug"))
+        self.btn_bug.pack(side="left")
+        self.btn_idea = ttk.Button(row, text="Góp ý", width=14, command=lambda: self._feedback_open("idea"))
+        self.btn_idea.pack(side="left", padx=(10, 0))
+        self.btn_fb_list = ttk.Button(row, text="Xem các ý kiến đã gửi", command=lambda: self._feedback_open("list"))
+        self.btn_fb_list.pack(side="left", padx=(10, 0))
+        self.btn_copy_log = ttk.Button(row, text="Sao chép Nhật ký", command=self._feedback_copy_log)
+        self.btn_copy_log.pack(side="left", padx=(10, 0))
+        self.fb_msg = tk.Label(body, text="", bg=C["panel"], fg=C["gold_hi"], font=theme.F(10), anchor="w")
+        self.fb_msg.pack(fill="x", pady=(8, 0))
+
+        tips = self._card(tab, "Báo lỗi dễ sửa hơn khi có")
+        for t in ("•  Lỗi xảy ra lúc nào, bạn đã bấm gì, mong đợi điều gì.",
+                  "•  Ảnh chụp màn hình (Win + Shift + S rồi dán thẳng vào ô viết).",
+                  "•  Nhật ký của app: bấm Sao chép Nhật ký rồi dán vào bài.",
+                  "•  Lỗi khi xem lại một trận: đính kèm file trận (.aoerec, nén .zip nếu lớn; nút Mở thư mục ở trang Trận "
+                  "đã ghi)."):
+            para(tips, t, C["muted"], (0, 4))
+
+    @staticmethod
+    def _system_info():
+        import platform
+        win = platform.version()                                   # vd 10.0.26200
+        try:
+            build = int(win.split(".")[2])
+            name = "Windows 11" if build >= 22000 else f"Windows {platform.release()}"
+        except (IndexError, ValueError):
+            name = f"Windows {platform.release()}"
+        return f"AoE-MapCap v{APP_VERSION}, {name} ({win})"
+
+    def _feedback_url(self, kind):
+        """Đường dẫn trang Thảo luận: list = danh sách; bug / idea = trang viết bài đúng mục, điền sẵn tiêu đề + mẫu."""
+        from urllib.parse import urlencode
+        if kind == "list":
+            return self.FEEDBACK_URL
+        info = self._system_info()
+        if kind == "bug":
+            q = {"category": "q-a", "title": "[Lỗi] ",
+                 "body": "**Lỗi gì:**\n\n\n**Các bước để gặp lỗi:**\n1. \n2. \n\n**Mong đợi:**\n\n\n"
+                         "**Nhật ký** (trang Góp ý > Sao chép Nhật ký, dán vào đây):\n\n\n---\n" + info}
+        else:
+            q = {"category": "ideas", "title": "[Góp ý] ",
+                 "body": "**Ý kiến / tính năng mong muốn:**\n\n\n**Vì sao hữu ích:**\n\n\n---\n" + info}
+        return self.FEEDBACK_URL + "/new?" + urlencode(q)
+
+    def _feedback_open(self, kind):
+        import webbrowser
+        url = self._feedback_url(kind)
+        try:
+            ok = webbrowser.open(url)
+        except Exception:  # noqa: BLE001
+            ok = False
+        if not ok:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(url)
+            self.fb_msg.configure(text="Không mở được trình duyệt: đã sao chép đường dẫn, dán vào trình duyệt.")
+        self._append(f"góp ý: mở {self.FEEDBACK_URL}" + ("" if kind == "list" else f" ({kind})"))
+
+    def _feedback_copy_log(self):
+        log = self.txt.get("1.0", "end").strip()
+        lines = log.splitlines()[-300:]                       # đủ ngữ cảnh, vừa một bài viết
+        text = self._system_info() + "\n```\n" + "\n".join(lines) + "\n```"
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.fb_msg.configure(text=f"Đã sao chép {len(lines)} dòng Nhật ký: dán (Ctrl+V) vào bài viết.")
 
     def _build_log(self):
         tab = tk.Frame(self.content, bg=theme.C["bg"])
