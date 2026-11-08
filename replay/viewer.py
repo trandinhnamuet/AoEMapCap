@@ -86,6 +86,7 @@ def message_box(text, title=APP_NAME):
 class Viewer:
     def __init__(self, path, game_dir=None, log=None, selftest=None):
         self.selftest = selftest     # thư mục ảnh: chạy kịch bản tự kiểm tra trên cửa sổ ẩn (không đụng chuột/phím)
+        self.should_close = None     # hàm: có trình xem mới mở lên -> thoát (replay/single.py, mỗi lúc một trận)
         self.path = os.path.abspath(path)
         self.log = log or (lambda m: None)
         self.data = ReplayData(self.path)
@@ -1389,6 +1390,9 @@ class Viewer:
             ready = self._tick(dt, ready)
             pygame.display.flip()
             clock.tick(240)
+            if self.should_close is not None and self.should_close():
+                self.log("mở trận khác: đóng trận đang xem")
+                running = False
         self.data.close()
         pygame.quit()
 
@@ -1645,11 +1649,16 @@ def main(path, game_dir=None, selftest=None):
                 print(msg, flush=True)
             except Exception:  # noqa: BLE001
                 pass
+    slot = None
     try:
+        if not selftest:                          # mỗi lúc một trận: đóng trận đang xem trước khi nạp trận mới
+            from .single import take_over
+            slot = take_over(log=log)
         v = Viewer(path, game_dir, log, selftest=selftest)
         if selftest:
             v.run_selftest()
         else:
+            v.should_close = slot.should_close
             v.run()
     except Exception as e:  # noqa: BLE001
         log("lỗi: " + traceback.format_exc())
@@ -1657,4 +1666,7 @@ def main(path, game_dir=None, selftest=None):
             return 1
         message_box(f"Không mở được replay:\n{e}\n\nChi tiết trong {log_path}")
         return 1
+    finally:
+        if slot is not None:
+            slot.release()
     return 0

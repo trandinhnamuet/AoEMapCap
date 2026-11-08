@@ -41,7 +41,7 @@ html,body{margin:0;background:var(--bg-soft);color:var(--ink-2);font-family:var(
 .an-chip[aria-pressed=true]{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:600}
 .an-filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}
 .an-banner{background:#fff6f5;border:1px solid #f3c8c2;color:#8c2f22;border-radius:var(--r-md);padding:14px 18px;margin-bottom:18px;font-size:14px}
-.an-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:14px}
+.an-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:14px}
 .an-kpi{background:#fff;border:1px solid var(--line);border-radius:var(--r-md);padding:20px;box-shadow:var(--shadow-sm)}
 .an-kpi .l{font-size:13px;color:var(--muted)}
 .an-kpi .v{font-family:var(--f-display);font-size:30px;letter-spacing:-.01em;margin:6px 0 4px;color:var(--ink)}
@@ -49,7 +49,16 @@ html,body{margin:0;background:var(--bg-soft);color:var(--ink-2);font-family:var(
 .an-card{background:#fff;border:1px solid var(--line);border-radius:var(--r-md);padding:22px;box-shadow:var(--shadow-sm);margin-bottom:14px;min-width:0}
 .an-card h2{font-family:var(--f-display);font-size:17px;margin:0 0 2px;color:var(--ink)}
 .an-hint{font-size:12.5px;color:var(--muted-2);margin-bottom:18px}
-.an-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;margin-bottom:0}
+.an-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));gap:14px;margin-bottom:0}
+details.an-card{padding:0}
+details.an-card>summary{list-style:none;cursor:pointer;padding:22px;display:flex;justify-content:space-between;align-items:center;gap:12px}
+details.an-card>summary::-webkit-details-marker{display:none}
+details.an-card>summary .an-hint{margin-bottom:0}
+details.an-card>summary:hover h2{color:var(--blue-700)}
+.an-caret{flex:none;width:32px;height:32px;border:1px solid var(--line);border-radius:var(--r-pill);display:grid;place-items:center;
+  color:var(--muted);font-size:14px;transition:transform .15s}
+details[open] .an-caret{transform:rotate(180deg)}
+details.an-card .an-fold{padding:0 22px 22px}
 .an-legend{display:flex;gap:18px;font-size:13px;color:var(--ink-3);margin-bottom:10px}
 .an-legend i{display:inline-block;width:12px;height:3px;border-radius:2px;vertical-align:middle;margin-right:6px}
 .an-chart{position:relative;height:300px}
@@ -86,7 +95,54 @@ td small{display:block;font-size:11.5px;color:var(--muted-2)}
 .an-err{color:#c0392b;font-size:13.5px;margin-top:10px;min-height:1em}
 .sk{height:120px;border-radius:var(--r-md);margin-bottom:14px;background:linear-gradient(90deg,var(--line-2) 25%,#f7f7f7 50%,var(--line-2) 75%);background-size:200% 100%;animation:sh 1.4s infinite}
 @keyframes sh{0%{background-position:200% 0}100%{background-position:-200% 0}}
-@media (max-width:640px){.an-head h1{font-size:26px}.an-kpi .v{font-size:26px}.an-chart{height:240px}.an-wrap{padding:0 16px}}
+@media (max-width:640px){
+  .an-root{padding:18px 0 48px}
+  .an-wrap{padding:0 16px}
+  .an-head{margin-bottom:16px;align-items:flex-start}
+  .an-head h1{font-size:24px}
+  .an-head p{font-size:13px}
+  .an-btn,.an-chip{padding:8px 14px;font-size:13.5px}
+  .an-filters{flex-wrap:nowrap;overflow-x:auto;margin:0 -16px 14px;padding:0 16px 2px;scrollbar-width:none}
+  .an-filters::-webkit-scrollbar{display:none}
+  .an-chip{flex:none}
+  .an-kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .an-kpi{padding:14px}
+  .an-kpi .l{font-size:12.5px}
+  .an-kpi .v{font-size:24px;margin:4px 0 2px}
+  .an-kpi .h{font-size:11.5px}
+  .an-card{padding:16px}
+  details.an-card>summary{padding:16px}
+  details.an-card .an-fold{padding:0 16px 16px}
+  .an-chart{height:230px}
+  .an-legend{flex-wrap:wrap;gap:6px 14px;font-size:12.5px}
+  .an-search{max-width:none;flex-basis:100%}
+  .an-pager{justify-content:space-between}
+  .an-kpis .an-kpi:last-child:nth-child(odd){grid-column:1/-1}
+  /* bảng thành thẻ: mỗi hàng một khối, không cuộn ngang */
+  .an-tablewrap{overflow:visible}
+  table,tbody,tr,td{display:block;width:auto}
+  thead{display:none}
+  table{white-space:normal}
+  tr{padding:10px 0;border-bottom:1px solid var(--line)}
+  tr:hover td{background:none}
+  td{padding:0;border:0}
+  td small{display:inline;margin-left:6px}
+  td.an-empty{text-align:center;padding:14px 0}
+  td.lead{font-weight:600;font-size:14.5px;color:var(--ink)}
+  /* Máy dùng nhiều nhất: tên trên cùng, các ô còn lại 2 cột (nhãn nhỏ trên giá trị) */
+  .an-top tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px}
+  .an-top td::before{content:attr(data-l);display:block;color:var(--muted-2);font-size:11.5px;margin-bottom:1px;
+    font-family:var(--f-body);font-weight:400}
+  .an-top td.lead,.an-top td.an-empty{grid-column:1/-1}
+  .an-top td.lead::before,.an-top td.an-empty::before{content:none}
+  /* Từng lượt: dòng 1 tên + mã máy + nhãn, dòng 2 thời điểm · IP · phiên bản · sự kiện · quốc gia */
+  .an-recent tr{display:flex;flex-wrap:wrap;align-items:baseline;gap:3px 12px}
+  .an-recent td{font-size:12.5px}
+  .an-recent td.lead{flex-basis:100%;font-size:14px}
+  .an-recent td.an-empty{flex-basis:100%}
+  .an-recent td[data-l="Ứng dụng"]{display:none}
+  .an-state{margin:24px 16px;padding:24px}
+}
 </style>
 </head>
 <body>
@@ -96,7 +152,7 @@ td small{display:block;font-size:11.5px;color:var(--muted-2)}
 <script>
 (function () {
   var KEY = "aoe_stats_pw";
-  var state = { range: "7d", page: 1, q: "", data: null, loading: false, chart: null };
+  var state = { range: "7d", page: 1, q: "", data: null, loading: false, chart: null, topOpen: false };
   var app = document.getElementById("app");
   var fmt = new Intl.NumberFormat("vi-VN");
   var TZ = "Asia/Ho_Chi_Minh";
@@ -163,7 +219,7 @@ td small{display:block;font-size:11.5px;color:var(--muted-2)}
   function render() {
     var d = state.data;
     var ranges = [["today", "Hôm nay"], ["7d", "7 ngày"], ["28d", "28 ngày"], ["90d", "90 ngày"], ["all", "Tất cả"]];
-    var h = '<div class="an-head"><div><h1>Thống kê sử dụng AoE-MapCap</h1><p>Mỗi lần mở app có mạng gửi một lượt ' +
+    var h = '<div class="an-head"><div><h1>Thống kê sử dụng <span style="white-space:nowrap">AoE-MapCap</span></h1><p>Mỗi lần mở app có mạng gửi một lượt ' +
       '(mã máy ngẫu nhiên, tên người chơi, phiên bản, IP) · lưu trên Cloudflare D1' +
       (d ? ' · cập nhật ' + new Intl.DateTimeFormat("vi-VN", { timeZone: TZ, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date(d.updatedAt)) : '') +
       '</p></div><div class="an-actions"><button class="an-btn" id="rf">Làm mới</button>' +
@@ -177,6 +233,7 @@ td small{display:block;font-size:11.5px;color:var(--muted-2)}
       h += '<div class="an-kpis">' +
         kpi("Lượt mở app", s.opens, "tổng số lần mở AoE-MapCap / AoE-Replay") +
         kpi("Máy duy nhất", s.installs, "đếm theo mã máy") +
+        kpi("Tên trong game", s.names, "nickname khác nhau") +
         kpi("Địa chỉ IP", s.ips, "số IP khác nhau") +
         kpi("Trận đã ghi", s.matches, "AoE-MapCap ghi xong") +
         kpi("Máy mới", s.newInstalls, "lần đầu dùng app") +
@@ -193,29 +250,34 @@ td small{display:block;font-size:11.5px;color:var(--muted-2)}
         barList("Phiên bản", "Số máy theo phiên bản", d.versions, "máy", function (n) { return "v" + n; }) + '</div>';
       h += '<div class="an-grid">' + barList("Quốc gia", "Số máy, theo Cloudflare", d.countries, "máy") +
         barList("Loại sự kiện", "Mở app / ghi xong trận", d.kinds, "lượt", evName) + '</div>';
-      h += '<div class="an-card"><h2>Máy dùng nhiều nhất</h2><div class="an-hint">Xếp theo số lượt mở trong kỳ · top 20</div>' +
-        '<div class="an-tablewrap"><table><thead><tr><th>Người chơi</th><th>Mã máy</th><th>Lượt mở</th><th>Trận ghi</th><th>IP gần nhất</th>' +
+      // xếp theo số trận ghi (chỉ số quan trọng nhất), mặc định gập; mở / gập được nhớ qua các lần tải lại
+      h += '<details class="an-card" id="top"' + (state.topOpen ? ' open' : '') + '><summary><div><h2>Máy dùng nhiều nhất</h2>' +
+        '<div class="an-hint">Xếp theo số trận ghi trong kỳ, rồi số lượt mở · top 20 · bấm để ' +
+        (state.topOpen ? 'gập' : 'mở') + '</div></div><span class="an-caret">▾</span></summary>' +
+        '<div class="an-fold"><div class="an-tablewrap"><table class="an-top"><thead><tr><th>Người chơi</th><th>Trận ghi</th><th>Lượt mở</th><th>Mã máy</th><th>IP gần nhất</th>' +
         '<th>Phiên bản</th><th>Lần đầu</th><th>Lần cuối</th></tr></thead><tbody>' +
         (d.topInstalls.length ? d.topInstalls.map(function (r) {
-          return '<tr><td>' + (r.name ? esc(r.name) : '<span class="dim">(chưa biết)</span>') +
-            '</td><td class="mono" title="' + esc(r.install) + '">' + esc(r.install.slice(0, 8)) + '</td><td>' + fmt.format(r.opens) +
-            '</td><td>' + fmt.format(r.matches) + '</td><td class="mono">' + esc(r.lastIp) +
-            (r.ipCount > 1 ? '<small>' + r.ipCount + ' IP khác nhau</small>' : '') + '</td><td>v' + esc(r.version) +
-            '<small>' + esc(appName(r.app)) + (r.country ? ' · ' + esc(r.country) : '') + '</small></td><td class="dim">' +
-            dt(r.firstSeen, true) + '</td><td class="dim">' + dt(r.lastSeen, true) + '</td></tr>';
-        }).join("") : '<tr><td colspan="8" class="an-empty">Chưa có dữ liệu trong kỳ này</td></tr>') + '</tbody></table></div></div>';
+          return '<tr><td class="lead" data-l="Người chơi">' + (r.name ? esc(r.name) : '<span class="dim">(chưa biết)</span>') +
+            '</td><td data-l="Trận ghi"><b>' + fmt.format(r.matches) + '</b></td><td data-l="Lượt mở">' + fmt.format(r.opens) +
+            '</td><td class="mono" data-l="Mã máy" title="' + esc(r.install) + '">' + esc(r.install.slice(0, 8)) +
+            '</td><td class="mono" data-l="IP gần nhất"><span>' + esc(r.lastIp) +
+            (r.ipCount > 1 ? '<small>' + r.ipCount + ' IP khác nhau</small>' : '') + '</span></td><td data-l="Phiên bản"><span>v' + esc(r.version) +
+            '<small>' + esc(appName(r.app)) + (r.country ? ' · ' + esc(r.country) : '') + '</small></span></td><td class="dim" data-l="Lần đầu">' +
+            dt(r.firstSeen, true) + '</td><td class="dim" data-l="Lần cuối">' + dt(r.lastSeen, true) + '</td></tr>';
+        }).join("") : '<tr><td colspan="8" class="an-empty">Chưa có dữ liệu trong kỳ này</td></tr>') + '</tbody></table></div></div></details>';
       var pages = Math.max(1, Math.ceil(d.recentTotal / d.pageSize));
       h += '<div class="an-card"><div class="an-tablehead"><div><h2>Từng lượt</h2><div class="an-hint">Mới nhất trước · ' +
         fmt.format(d.recentTotal) + ' bản ghi</div></div><input class="an-search" id="sq" placeholder="Tìm theo tên người chơi, IP, mã máy hoặc phiên bản…" value="' +
-        esc(state.q) + '"></div><div class="an-tablewrap"><table><thead><tr><th>Thời điểm</th><th>IP</th><th>Máy</th>' +
+        esc(state.q) + '"></div><div class="an-tablewrap"><table class="an-recent"><thead><tr><th>Thời điểm</th><th>IP</th><th>Máy</th>' +
         '<th>Ứng dụng</th><th>Phiên bản</th><th>Sự kiện</th><th>Quốc gia</th></tr></thead><tbody>' +
         (d.recent.length ? d.recent.map(function (r) {
           var tag = r.ev === "match" ? '<span class="an-tag match">trận</span>' :
                     r.isNew ? '<span class="an-tag new">mới</span>' : '<span class="an-tag back">quay lại</span>';
-          return '<tr><td class="dim">' + dt(r.ts) + '</td><td class="mono">' + esc(r.ip) + '</td><td>' +
-            (r.name ? esc(r.name) + ' ' : '') + '<span class="mono dim" title="' +
-            esc(r.install) + '">' + esc(r.install.slice(0, 8)) + '</span>' + tag + '</td><td>' + esc(appName(r.app)) +
-            '</td><td>v' + esc(r.version) + '</td><td>' + esc(evName(r.ev)) + '</td><td class="dim">' + esc(r.country) + '</td></tr>';
+          return '<tr><td class="dim" data-l="Thời điểm">' + dt(r.ts) + '</td><td class="mono" data-l="IP">' + esc(r.ip) +
+            '</td><td class="lead" data-l="Máy"><span>' + (r.name ? esc(r.name) + ' ' : '') + '<span class="mono dim" title="' +
+            esc(r.install) + '">' + esc(r.install.slice(0, 8)) + '</span>' + tag + '</span></td><td data-l="Ứng dụng">' +
+            esc(appName(r.app)) + '</td><td data-l="Phiên bản">v' + esc(r.version) + '</td><td data-l="Sự kiện">' +
+            esc(evName(r.ev)) + '</td><td class="dim" data-l="Quốc gia">' + esc(r.country) + '</td></tr>';
         }).join("") : '<tr><td colspan="7" class="an-empty">Không có bản ghi nào khớp</td></tr>') +
         '</tbody></table></div><div class="an-pager"><button class="an-btn" id="pv"' + (state.page <= 1 ? ' disabled' : '') +
         '>← Trước</button><span>Trang ' + state.page + ' / ' + pages + '</span><button class="an-btn" id="nx"' +
@@ -228,6 +290,12 @@ td small{display:block;font-size:11.5px;color:var(--muted-2)}
       b.onclick = function () { state.range = b.getAttribute("data-r"); state.page = 1; load(); };
     });
     if (!d) return;
+    var top = document.getElementById("top");
+    top.addEventListener("toggle", function () {
+      state.topOpen = top.open;
+      var hint = top.querySelector("summary .an-hint");
+      hint.textContent = hint.textContent.replace(/bấm để (mở|gập)$/, "bấm để " + (top.open ? "gập" : "mở"));
+    });
     var sq = document.getElementById("sq"), timer = null;
     sq.oninput = function () {
       clearTimeout(timer);

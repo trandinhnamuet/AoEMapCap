@@ -293,7 +293,8 @@ class App:
                 "Bật: mở máy là AoE-MapCap tự chạy ngầm ở khay hệ thống (góc phải thanh tác vụ) và bật ghi sẵn, vào trận "
                 "là tự ghi. Không sợ quên mở app mà mất trận.\n"
                 "Ngoài trận app không làm gì nên không tốn tài nguyên, không nặng máy, chỉ nhẹ như Vietkey.\n"
-                "Bật / tắt ở đây hoặc trong Task Manager > Startup apps.")
+                "Bật / tắt ngay tại ô này (Windows chạy app bằng tác vụ AoE-MapCap trong Task Scheduler, có quyền quản trị để "
+                "đọc được game, không hỏi UAC).")
 
     def _winstart_toggled(self):
         from . import winstartup
@@ -322,7 +323,7 @@ class App:
                 self._save_cfg()
                 self._append("khởi động cùng Windows: BẬT (mặc định; tắt bằng ô ở góc dưới thanh bên)")
             elif winstartup.refresh():
-                self._append("khởi động cùng Windows: cập nhật đường dẫn app")
+                self._append("khởi động cùng Windows: đăng ký lại tác vụ khởi động (đường dẫn app mới / chuyển từ cách cũ)")
         except OSError as e:
             self._append(f"khởi động cùng Windows: không ghi được ({e})")
         self.var_winstart.set(winstartup.is_enabled())

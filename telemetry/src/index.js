@@ -106,7 +106,7 @@ async function stats(request, env, url) {
   const like = "%" + q.replace(/[%_]/g, "") + "%";
   const qWhere = q ? " AND (e.ip LIKE ?2 OR e.install LIKE ?2 OR e.version LIKE ?2 OR e.name LIKE ?2 OR i.name LIKE ?2)" : "";
 
-  const [summary, newInstalls, daily, versions, apps, countries, kinds, top, recent, recentTotal, players] = await db.batch([
+  const [summary, newInstalls, daily, versions, apps, countries, kinds, top, recent, recentTotal, players, names] = await db.batch([
     db.prepare(`SELECT SUM(ev = 'open') AS opens, SUM(ev = 'match') AS matches, COUNT(DISTINCT install) AS installs,
                        COUNT(DISTINCT ip) AS ips FROM events WHERE ts >= ?1`).bind(from),
     db.prepare("SELECT COUNT(*) AS n FROM installs WHERE first_ts >= ?1").bind(from),
@@ -125,7 +125,7 @@ async function stats(request, env, url) {
                        COUNT(DISTINCT e.ip) AS ipCount, i.last_ip AS lastIp, i.version AS version, i.app AS app,
                        i.country AS country, i.first_ts AS firstSeen, i.last_ts AS lastSeen, i.name AS name
                 FROM events e JOIN installs i ON i.install = e.install WHERE e.ts >= ?1
-                GROUP BY e.install ORDER BY opens DESC, lastSeen DESC LIMIT 20`).bind(from),
+                GROUP BY e.install ORDER BY matches DESC, opens DESC, lastSeen DESC LIMIT 20`).bind(from),
     db.prepare(`SELECT e.id, e.ts, e.install, e.app, e.version, e.ev, e.ip, e.country,
                        COALESCE(e.name, i.name) AS name, (e.ts = i.first_ts) AS isNew
                 FROM events e JOIN installs i ON i.install = e.install
@@ -137,6 +137,10 @@ async function stats(request, env, url) {
                   SELECT COALESCE(NULLIF(i.name, ''), '(chưa biết)') AS pname
                   FROM events e JOIN installs i ON i.install = e.install WHERE e.ts >= ?1 AND e.ev = 'open')
                 GROUP BY pname ORDER BY value DESC LIMIT 10`).bind(from),
+    // tên trong game khác nhau: tên của lượt (trận ghi) hoặc tên đã biết của máy; rỗng = chưa biết, không đếm
+    db.prepare(`SELECT COUNT(DISTINCT pname) AS n FROM (
+                  SELECT NULLIF(TRIM(COALESCE(e.name, i.name)), '') AS pname
+                  FROM events e JOIN installs i ON i.install = e.install WHERE e.ts >= ?1)`).bind(from),
   ]);
   const s = summary.results[0] || {};
   const opens = s.opens || 0;
@@ -144,6 +148,7 @@ async function stats(request, env, url) {
   return json({
     range,
     summary: { opens, installs: s.installs || 0, ips: s.ips || 0, matches: s.matches || 0, newInstalls: fresh,
+               names: names.results[0].n || 0,
                returningOpens: Math.max(0, opens - fresh) },
     daily: daily.results,
     versions: versions.results,

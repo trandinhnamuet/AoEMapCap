@@ -4,8 +4,10 @@ nhẹ như Vietkey".
 
     python tests/test_side_opts.py
 
-Không đụng khởi động thật của Windows: winstartup.KEY trỏ sang khoá thử HKCU\\Software\\AoE-MapCap-test\\Run (xoá khi
-xong). Engine giả (không dò / đọc game), cấu hình + ảnh chụp ở Video\\_test\\side_opts, mutex riêng, không gửi thống kê.
+Không đụng khởi động thật của Windows: tác vụ Task Scheduler tên riêng AoE-MapCap-test-<pid> (quyền thường vì test không
+chạy admin; xoá khi xong, xoá cả tác vụ test sót lại), dòng Run cũ (v30-v31) ở khoá thử HKCU\\Software\\AoE-MapCap-test\\Run;
+kiểm tác vụ thật "AoE-MapCap" và dòng Run thật không đổi. Engine giả (không dò / đọc game), cấu hình + ảnh chụp ở
+Video\\_test\\side_opts, mutex riêng, không gửi thống kê.
 """
 import os
 import shutil
@@ -33,8 +35,10 @@ from mapcap import winstartup as WS  # noqa: E402
 
 OUT = os.path.join(ROOT, "Video", "_test", "side_opts")
 TEST_KEY = r"Software\AoE-MapCap-test\Run"
-REAL_KEY = WS.KEY
-WS.KEY = TEST_KEY
+REAL_KEY = WS.LEGACY_KEY
+REAL_TASK = WS.TASK
+WS.LEGACY_KEY = TEST_KEY
+WS.TASK = f"AoE-MapCap-test-{os.getpid()}"
 
 
 class FakeEngine:
@@ -117,16 +121,29 @@ def clear_test_key():
             winreg.DeleteKey(winreg.HKEY_CURRENT_USER, k)
         except OSError:
             pass
+    # tác vụ test (cả lần chạy trước bị ngắt giữa chừng)
+    r = WS._schtasks("/Query", "/FO", "CSV", "/NH")
+    for line in r.stdout.decode("mbcs", "replace").splitlines():
+        name = line.split(",")[0].strip('"').lstrip("\\")
+        if name.startswith("AoE-MapCap-test-"):
+            WS._schtasks("/Delete", "/TN", name, "/F")
+
+
+def real_state():
+    """Dòng Run thật + XML tác vụ thật (để kiểm test không đụng tới)."""
+    run_val = None
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REAL_KEY) as k:
+            run_val = winreg.QueryValueEx(k, WS.LEGACY_NAME)[0]
+    except OSError:
+        pass
+    r = WS._schtasks("/Query", "/TN", REAL_TASK, "/XML")
+    return run_val, (r.stdout if r.returncode == 0 else None)
 
 
 def main():
-    assert REAL_KEY == r"Software\Microsoft\Windows\CurrentVersion\Run"
-    real_before = None
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REAL_KEY) as k:
-            real_before = winreg.QueryValueEx(k, WS.NAME)[0]
-    except OSError:
-        pass
+    assert REAL_KEY == r"Software\Microsoft\Windows\CurrentVersion\Run" and REAL_TASK == "AoE-MapCap"
+    real_before = real_state()
     shutil.rmtree(OUT, ignore_errors=True)
     os.makedirs(OUT)
     clear_test_key()
@@ -164,14 +181,44 @@ def run(real_before):
         sys.executable = old_exe
         if old_frozen is None:
             del sys.frozen
-    assert not WS.is_enabled()
+    assert not WS.is_enabled() and WS.get() is None
     assert WS.set_enabled(True) and WS.get() == cmd
-    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, TEST_KEY, 0, winreg.KEY_SET_VALUE) as k:   # app bị chuyển chỗ
-        winreg.SetValueEx(k, WS.NAME, 0, winreg.REG_SZ, r'"D:\cu\AoE-MapCap.exe" --tray --autostart')
-    assert WS.refresh() and WS.get() == cmd and not WS.refresh()
+    xml = WS._query()
+    for need in ("<LogonTrigger>", "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
+                 "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>",
+                 "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>", "<Priority>4</Priority>",
+                 "<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>", WS._tag()):
+        assert need in xml, need
+    level = "HighestAvailable" if WS._elevated() else "LeastPrivilege"
+    # LeastPrivilege là mặc định nên XML xuất ra bỏ hẳn dòng RunLevel
+    assert ("<RunLevel>HighestAvailable</RunLevel>" in xml) == (level == "HighestAvailable"), xml
+    assert not WS.refresh(), "đúng đường dẫn thì không đăng ký lại"
+    # app bị chuyển chỗ: tác vụ trỏ đường dẫn cũ -> refresh đăng ký lại
+    real_argv = WS._argv
+    WS._argv = lambda: (r"D:\cu\AoE-MapCap.exe", WS.ARGS)
+    WS.set_enabled(True)
+    WS._argv = real_argv
+    assert WS.get() != cmd and WS.refresh() and WS.get() == cmd and not WS.refresh()
+    # cách cũ v30-v31 (dòng Run, Windows không chạy app cần quyền admin) -> chuyển sang tác vụ, xoá dòng Run
     assert not WS.set_enabled(False) and WS.get() is None
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, TEST_KEY, 0, winreg.KEY_SET_VALUE) as k:
+        winreg.SetValueEx(k, WS.LEGACY_NAME, 0, winreg.REG_SZ, cmd)
+    assert WS.refresh() and WS.get() == cmd and not WS._legacy_exists()
+    # tác vụ bị tắt trong Task Scheduler: coi là tắt, refresh không tự bật lại
+    WS._schtasks("/Change", "/TN", WS.TASK, "/DISABLE")
+    assert not WS.is_enabled() and WS.get() is None and not WS.refresh() and not WS.is_enabled()
+    assert not WS.set_enabled(False) and WS._query() is None
     WS.set_enabled(False)                                   # tắt khi đã tắt: không lỗi
-    print("winstartup: dòng lệnh exe / mã nguồn, bật / tắt, sửa đường dẫn khi app chuyển chỗ: OK")
+    # đường dẫn có dấu: tạo bằng tệp XML UTF-16 nên tác vụ giữ đúng chữ (dấu vân tay ASCII khớp)
+    WS._argv = lambda: (r"C:\Trò chơi\Bản ghi ổ\AoE-MapCap.exe", WS.ARGS)
+    try:
+        WS.set_enabled(True)
+        assert WS._tag() in WS._query() and not WS.refresh()
+    finally:
+        WS._argv = real_argv
+        WS.set_enabled(False)
+    print(f"winstartup: tác vụ đăng nhập ({level}, không giới hạn giờ, chạy cả khi dùng pin), bật / tắt, đăng ký lại khi "
+          "app chuyển chỗ, chuyển dòng Run cũ sang tác vụ, tác vụ bị tắt thì giữ tắt, đường dẫn có dấu: OK")
 
     # ---- thanh bên: hai ô trên thẻ Trạng thái, (i) sau chữ, không bị cắt ----------------------------------------------
     root, app, cfg = make_app()
@@ -269,15 +316,10 @@ def run(real_before):
     print("bản exe: lần mở đầu tự bật khởi động cùng Windows, người dùng tắt thì lần sau giữ tắt: OK")
     close(root, app)
 
-    # khoá thật của Windows không bị đụng
-    real_after = None
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REAL_KEY) as k:
-            real_after = winreg.QueryValueEx(k, WS.NAME)[0]
-    except OSError:
-        pass
-    assert real_after == real_before, (real_before, real_after)
-    print("khởi động thật của Windows không đổi: OK")
+    # khởi động thật của Windows (dòng Run, tác vụ AoE-MapCap) không bị đụng
+    real_after = real_state()
+    assert real_after == real_before, "test đã đổi khởi động thật"
+    print("khởi động thật của Windows (dòng Run, tác vụ AoE-MapCap) không đổi: OK")
     print("OK test_side_opts")
 
 
