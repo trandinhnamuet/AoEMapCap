@@ -1649,6 +1649,13 @@ def main(path, game_dir=None, selftest=None):
                 print(msg, flush=True)
             except Exception:  # noqa: BLE001
                 pass
+    if not selftest:                              # ván chưa xong lúc dừng ghi: chưa cho xem (replay/lock.py)
+        from .lock import check
+        msg = check(path)
+        if msg:
+            log("trận đang khoá: " + msg.splitlines()[0])
+            message_box(msg)
+            return 2
     slot = None
     try:
         if not selftest:                          # mỗi lúc một trận: đóng trận đang xem trước khi nạp trận mới

@@ -220,6 +220,52 @@ def run(real_before):
     print(f"winstartup: tác vụ đăng nhập ({level}, không giới hạn giờ, chạy cả khi dùng pin), bật / tắt, đăng ký lại khi "
           "app chuyển chỗ, chuyển dòng Run cũ sang tác vụ, tác vụ bị tắt thì giữ tắt, đường dẫn có dấu: OK")
 
+    # ---- trình khởi chạy (không màn hình chờ): giải nén theo SHA, sửa khi bị đổi, xoá bản cũ, tác vụ trỏ vào nó --------
+    import hashlib
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="aoelaunch_")
+    old_local = os.environ.get("LOCALAPPDATA")
+    os.environ["LOCALAPPDATA"] = tmp
+    try:
+        src = os.path.join(tmp, "AoE-MapCap-start.exe")
+        open(src, "wb").write(b"MZ launcher v1")
+        sha = hashlib.sha256(b"MZ launcher v1").hexdigest()
+        p1 = WS.launcher_path(src)
+        assert p1 == os.path.join(tmp, "AoE-MapCap", "autostart", f"AoE-MapCap-start-{sha[:12]}.exe"), p1
+        assert open(p1, "rb").read() == b"MZ launcher v1"
+        open(p1, "wb").write(b"MZ bad")                          # bị sửa -> ghi lại
+        assert WS.launcher_path(src) == p1 and open(p1, "rb").read() == b"MZ launcher v1"
+        open(src, "wb").write(b"MZ launcher v2")                 # bản mới: tên mới, bản cũ bị xoá
+        p2 = WS.launcher_path(src)
+        assert p2 != p1 and os.path.isfile(p2) and not os.path.exists(p1)
+        real_bundled = WS._bundled_launcher
+        WS._bundled_launcher = lambda: src
+        old_frozen, old_exe = getattr(sys, "frozen", None), sys.executable
+        sys.frozen, sys.executable = True, r"C:\Trò chơi\AoE-MapCap\AoE-MapCap.exe"
+        try:
+            prog, args = WS._argv()
+            assert prog == p2 and args == [r"C:\Trò chơi\AoE-MapCap\AoE-MapCap.exe", "--tray", "--autostart"], (prog, args)
+            assert WS._workdir() == r"C:\Trò chơi\AoE-MapCap"
+            xml = WS._xml()
+            assert f"<Command>{p2}</Command>" in xml and "<WorkingDirectory>C:\\Trò chơi\\AoE-MapCap</WorkingDirectory>" in xml
+            assert "&quot;C:\\Trò chơi\\AoE-MapCap\\AoE-MapCap.exe&quot; --tray --autostart" in xml or \
+                '"C:\\Trò chơi\\AoE-MapCap\\AoE-MapCap.exe" --tray --autostart' in xml, xml
+            WS._bundled_launcher = lambda: None                   # exe không mang launcher: chạy exe trực tiếp
+            assert WS._argv() == (r"C:\Trò chơi\AoE-MapCap\AoE-MapCap.exe", WS.ARGS)
+        finally:
+            WS._bundled_launcher = real_bundled
+            sys.executable = old_exe
+            if old_frozen is None:
+                del sys.frozen
+    finally:
+        if old_local is None:
+            os.environ.pop("LOCALAPPDATA", None)
+        else:
+            os.environ["LOCALAPPDATA"] = old_local
+        shutil.rmtree(tmp, ignore_errors=True)
+    print("trình khởi chạy: giải nén theo SHA, ghi lại khi bị sửa, xoá bản cũ; tác vụ chạy launcher với dòng lệnh exe, "
+          "thư mục làm việc = thư mục exe: OK")
+
     # ---- thanh bên: hai ô trên thẻ Trạng thái, (i) sau chữ, không bị cắt ----------------------------------------------
     root, app, cfg = make_app()
     side = app.lbl_state.master.master.master                # row -> thẻ Trạng thái -> thanh bên

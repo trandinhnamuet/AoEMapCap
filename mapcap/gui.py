@@ -928,7 +928,18 @@ class App:
             d = self._ask_game_dir()
         return d
 
+    def _locked(self, path):
+        """Trận dừng ghi khi ván chưa phân thắng bại: báo và không mở / xuất (replay/lock.py, chống gian lận)."""
+        from replay.lock import check
+        msg = check(path)
+        if msg:
+            self._append(f"trận {os.path.basename(path)} đang khoá (ván chưa xong lúc dừng ghi)")
+            messagebox.showinfo(APP_TITLE, msg)
+        return bool(msg)
+
     def _launch_replay(self, path):
+        if self._locked(path):
+            return
         gd = self._game_dir_for(path)
         if gd is None:
             return
@@ -1136,10 +1147,14 @@ class App:
         if not p:
             messagebox.showinfo(APP_TITLE, "Chọn một trận trong bảng trước.")
             return
+        if self._locked(p):
+            return
         ExportDialog(self, p)
 
     def export_video(self, path):
         """Dựng video từ file .aoerec với cài đặt xuất video hiện tại (chạy nền, tiến độ ở thanh trạng thái)."""
+        if self._locked(path):
+            return
         cfg = self.cfg
         out = os.path.join(cfg.resolved_out_dir(),
                            f"{os.path.splitext(os.path.basename(path))[0]}_{cfg.render_width}px_{int(cfg.fps)}fps"
@@ -1428,15 +1443,20 @@ def main():
             messagebox.showinfo(APP_TITLE, "AoE-MapCap đang chạy (biểu tượng ở khay hệ thống, góc phải thanh tác vụ).")
             r.destroy()
         return
+    tray_start = "--tray" in sys.argv         # khởi động cùng Windows / tự cập nhật lúc đang ẩn ở khay
+    if tray_start:
+        _close_splash()                       # chạy ngầm: không màn hình chờ
     root = tk.Tk()
+    if tray_start:
+        root.withdraw()                       # ẩn ngay từ đầu: không nháy cửa sổ lúc dựng giao diện (người dùng 09/11)
     try:
         root.tk.call("tk", "scaling", 1.25)
     except Exception:  # noqa: BLE001
         pass
     app = App(root)
     inst.watch(lambda: app.q.put(("__tray__", "open")))
-    if "--tray" in sys.argv and app.tray is not None:
-        root.withdraw()                       # tự cập nhật lúc đang ẩn ở khay: bản mới cũng ẩn
+    if tray_start and app.tray is None:
+        root.deiconify()                      # không có khay hệ thống: phải hiện cửa sổ, không thì app vô hình
     schedule_autostart(app, sys.argv)
     root.update_idletasks()
     _close_splash()                           # cửa sổ chính đã dựng xong: tắt màn hình chờ của exe

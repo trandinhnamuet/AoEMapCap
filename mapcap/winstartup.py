@@ -11,6 +11,13 @@ admin) mà Windows bỏ qua mọi lệnh trong Run cần nâng quyền: nhật k
 schtasks in ra theo bảng mã của console (chữ Việt trong đường dẫn thành "?"), nên không so đường dẫn đọc lại: mô tả của
 tác vụ mang dấu vân tay ASCII của dòng lệnh (_tag) để biết thư mục app đã chuyển chỗ hay chưa. Tạo tác vụ bằng tệp XML
 UTF-16 nên đường dẫn có dấu vẫn đúng.
+
+Không nháy màn hình chờ (người dùng 09/11: "nháy 1 lần trên màn hình rồi biến mất"): bộ nạp exe một file (PyInstaller)
+hiện màn hình chờ trước cả khi mã Python chạy, chỉ tắt được bằng biến môi trường PYINSTALLER_SUPPRESS_SPLASH_SCREEN=1
+mà tác vụ không đặt được. Nên tác vụ chạy trình khởi chạy nhỏ AoE-MapCap-start.exe (launcher/autostart.c, đóng gói trong
+exe như ffmpeg, giải nén ra %LOCALAPPDATA%\\AoE-MapCap\\autostart\\AoE-MapCap-start-<sha12>.exe, kiểm SHA-256 mỗi lần mở
+app): đặt biến đó rồi chạy "<AoE-MapCap.exe>" --tray --autostart. Đổi bản launcher -> tên mới -> dấu vân tay đổi ->
+refresh() đăng ký lại. Cùng mức tin cậy với exe chính (cả hai nằm trong thư mục người dùng ghi được).
 """
 import ctypes
 import hashlib
@@ -21,9 +28,21 @@ import sys
 import tempfile
 from xml.sax.saxutils import escape
 
-TASK = "AoE-MapCap"                                          # tác vụ ở thư mục gốc của Task Scheduler
+
+
+def _test_name(var, default):
+    """Tên thay khi kiểm thử (chạy từ mã nguồn, hoặc exe có file cờ aoemapcap-test.flag cạnh bên - như updater): exe thử
+    không được đăng ký lại / xoá tác vụ thật của người dùng."""
+    try:
+        from .updater import env_override
+        return env_override(var) or default
+    except Exception:  # noqa: BLE001
+        return default
+
+
+TASK = _test_name("AOEMAPCAP_STARTUP_TASK", "AoE-MapCap")    # tác vụ ở thư mục gốc của Task Scheduler
 ARGS = ["--tray", "--autostart"]
-LEGACY_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"   # cách cũ v30-v31 (Windows không chạy app cần admin)
+LEGACY_KEY = _test_name("AOEMAPCAP_STARTUP_RUNKEY", r"Software\Microsoft\Windows\CurrentVersion\Run")  # cách cũ v30-v31
 LEGACY_NAME = "AoE-MapCap"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _NO_WINDOW = 0x08000000                                     # CREATE_NO_WINDOW: không chớp cửa sổ console
@@ -33,10 +52,54 @@ def supported():
     return sys.platform == "win32"
 
 
+LAUNCHER = "AoE-MapCap-start.exe"
+
+
+def _bundled_launcher():
+    meipass = getattr(sys, "_MEIPASS", None)
+    p = os.path.join(meipass, "autostart", LAUNCHER) if meipass else None
+    return p if p and os.path.isfile(p) else None
+
+
+def launcher_path(src=None):
+    """Trình khởi chạy đã giải nén (kiểm SHA-256, thiếu / sai thì ghi lại; xoá bản cũ khác SHA). None nếu exe không
+    mang theo (chạy từ mã nguồn, bản build thiếu) hoặc không ghi được."""
+    src = src or _bundled_launcher()
+    if not src:
+        return None
+    data = open(src, "rb").read()
+    sha = hashlib.sha256(data).hexdigest()
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or os.path.expanduser("~")
+    folder = os.path.join(base, "AoE-MapCap", "autostart")
+    dst = os.path.join(folder, f"AoE-MapCap-start-{sha[:12]}.exe")
+    try:
+        ok = os.path.isfile(dst) and hashlib.sha256(open(dst, "rb").read()).hexdigest() == sha
+        if not ok:
+            os.makedirs(folder, exist_ok=True)
+            with open(dst + ".part", "wb") as f:
+                f.write(data)
+            os.replace(dst + ".part", dst)
+        for n in os.listdir(folder):                         # bản launcher cũ (tác vụ đã trỏ sang bản mới)
+            if n.startswith("AoE-MapCap-start-") and os.path.join(folder, n) != dst:
+                try:
+                    os.remove(os.path.join(folder, n))
+                except OSError:
+                    pass
+    except OSError:
+        return None
+    return dst
+
+
+def _workdir():
+    return os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else ROOT
+
+
 def _argv():
-    """Chương trình + tham số chạy lúc đăng nhập: exe (bản phát hành) hoặc pythonw run_app.py (chạy từ mã nguồn)."""
+    """Chương trình + tham số chạy lúc đăng nhập: bản phát hành = trình khởi chạy (không màn hình chờ) với dòng lệnh
+    exe chính (không có trình khởi chạy thì exe trực tiếp); chạy từ mã nguồn = pythonw run_app.py."""
     if getattr(sys, "frozen", False):
-        return sys.executable, ARGS
+        la = launcher_path()
+        return (la, [sys.executable] + ARGS) if la else (sys.executable, ARGS)
     pyw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
     return (pyw if os.path.isfile(pyw) else sys.executable), [os.path.join(ROOT, "run_app.py")] + ARGS
 
@@ -98,7 +161,7 @@ def _xml():
   </Settings>
   <Actions Context="Author">
     <Exec><Command>{escape(prog)}</Command><Arguments>{escape(subprocess.list2cmdline(args))}</Arguments>
-      <WorkingDirectory>{escape(os.path.dirname(prog) if getattr(sys, "frozen", False) else ROOT)}</WorkingDirectory></Exec>
+      <WorkingDirectory>{escape(_workdir())}</WorkingDirectory></Exec>
   </Actions>
 </Task>
 '''

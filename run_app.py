@@ -35,8 +35,8 @@ CHILD_FLAGS = ("--replay", "--render-chunk", "--render-raw", "--render-still", "
 
 
 def main():
-    if any(a.startswith(CHILD_FLAGS) for a in sys.argv[1:]):
-        close_splash()                        # không phải cửa sổ chính: tắt màn hình chờ ngay
+    if any(a.startswith(CHILD_FLAGS) for a in sys.argv[1:]) or "--tray" in sys.argv:
+        close_splash()                        # không phải cửa sổ chính / chạy ngầm ở khay: tắt màn hình chờ ngay
     import multiprocessing
     multiprocessing.freeze_support()          # tiến trình ghi (recproc) khi đóng gói PyInstaller
     if "--replay" in sys.argv:
