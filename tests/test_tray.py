@@ -83,9 +83,12 @@ def test_app_close_to_tray():
     shutil.rmtree(out, ignore_errors=True)
     stopped = []
 
+    started = []
+
     class FakeEngine:
         def __init__(self, cfg, logger, stop_event, status=None, progress=None):
             self.stop_event, self.state, self.current_rec_path = stop_event, "đang ghi", None
+            started.append(self)
 
         def run(self):
             self.stop_event.wait(30)
@@ -96,6 +99,8 @@ def test_app_close_to_tray():
     E.save_config(cfg)
     gui.load_config = lambda: E.load_config(cfg.settings_path())
     gui.Engine = FakeEngine
+    infos = []
+    gui.messagebox.showinfo = lambda title, msg: infos.append(msg)
     root = tk.Tk()
     app = gui.App(root)
 
@@ -105,40 +110,71 @@ def test_app_close_to_tray():
             root.update()
             time.sleep(0.02)
 
+    import inspect
+    from mapcap.tray import Tray
+    assert "toggle_label" not in inspect.getsource(Tray._menu), "menu khay không còn mục Bắt đầu / Dừng ghi (v34)"
+    assert not hasattr(app, "btn_rec") and not hasattr(app, "_toggle"), "không còn nút Bắt đầu / Dừng ghi"
     assert app.tray is not None and app.tray.ok
-    app._start()
+    assert gui.schedule_autostart(app, [], delay_ms=50)       # mở app: luôn bật bộ ghi
+    pump(0.4)
+    assert len(started) == 1 and app.engine is started[0]
     app.state_text = "đang ghi"
     pump(0.6)
-    assert app.tray.kind == "rec" and "Đang ghi trận" in app.tray.tip and app.tray.toggle_label == "Dừng ghi", \
-        (app.tray.kind, app.tray.tip)
+    assert app.tray.kind == "rec" and "Đang ghi trận" in app.tray.tip, (app.tray.kind, app.tray.tip)
+    app.tray.on_action("toggle")                         # mục cũ (bản trước): không còn tác dụng
+    pump(0.4)
+    assert app.engine is started[0] and not app.stop_event.is_set()
     app._on_close()                                      # bấm X
     pump(0.3)
-    assert root.state() == "withdrawn" and app.thread.is_alive() and not app.stop_event.is_set(), \
-        "bấm X: ẩn cửa sổ, vẫn ghi"
+    assert root.state() == "withdrawn" and app.thread.is_alive() and not app.stop_event.is_set(),         "bấm X: ẩn cửa sổ, vẫn ghi"
     app.tray.on_action("open")                           # bấm biểu tượng ở khay (từ luồng khay)
     pump(0.5)
     assert root.state() == "normal"
-    app._on_close()
-    pump(0.2)
-    app.tray.on_action("toggle")                         # menu khay: Dừng ghi
-    pump(0.8)
-    assert app.stop_event.is_set() and app.engine is None and stopped
-    assert app.tray.kind is None and app.tray.toggle_label == "Bắt đầu ghi"
-    app.tray.on_action("toggle")                         # menu khay: Bắt đầu ghi
-    pump(0.3)
-    assert app.engine is not None and app.thread.is_alive()
-    app.engine.state = "chờ game"
+    app.tray.on_action("quit")                           # menu khay: Thoát khi đang ghi trận -> không cho
+    pump(0.4)
+    assert infos and "chỉ thoát được khi trận kết thúc" in infos[-1], infos
+    assert app.engine is started[0] and not app.stop_event.is_set() and root.winfo_exists()
+    print("App: luôn ghi (không nút / mục khay bật tắt), bấm X ẩn xuống khay vẫn ghi, đang ghi trận không cho thoát: OK")
+
+    # hết trận + lưu cài đặt: bật lại bộ ghi ngay để áp dụng
+    app.engine.state = app.state_text = "chờ game"
     app.q.put(("__status__", "chờ game"))
-    pump(0.7)
+    pump(0.5)
     assert app.tray.kind == "armed"
     app.var_tray.set(False)                              # tắt trong Cài đặt: bấm X là thoát như cũ
     app._save_settings()
+    pump(1.2)
     assert E.load_config(cfg.settings_path()).close_to_tray is False
+    assert len(started) == 2 and app.engine is started[1] and app.thread.is_alive(), "lưu cài đặt: bật lại bộ ghi"
+    assert "áp dụng cài đặt mới" in app.txt.get("1.0", "end")
+    # đang ghi trận thì chờ hết trận mới bật lại
+    app.engine.state = app.state_text = "đang ghi"
+    app.q.put(("__status__", "đang ghi"))
+    pump(0.3)
+    app._save_settings()
+    pump(0.6)
+    assert len(started) == 2 and not app.stop_event.is_set(), "đang ghi trận: chưa bật lại"
+    app.engine.state = app.state_text = "chờ game"
+    app.q.put(("__status__", "chờ game"))
+    pump(1.2)
+    assert len(started) == 3, "hết trận: áp dụng cài đặt"
+    print("App: lưu cài đặt -> bật lại bộ ghi ngay (ngoài trận) / khi hết trận (trong trận): OK")
+
+    # bộ ghi dừng ngoài ý muốn: tự bật lại
+    app.engine.state = "chờ game"
+    app.stop_event.set()                                 # giả bộ ghi tự kết thúc (lỗi)
+    pump(4.0)
+    assert len(started) == 4 and app.engine is started[3], "bộ ghi dừng ngoài ý muốn phải tự bật lại"
+    assert "bật lại sau 3 giây" in app.txt.get("1.0", "end")
+    print("App: bộ ghi dừng ngoài ý muốn -> tự bật lại sau 3 giây: OK")
+
+    app.engine.state = app.state_text = "chờ game"
     destroyed = []
     root.bind("<Destroy>", lambda e: destroyed.append(1) if e.widget is root else None, add="+")
-    app._on_close()
-    assert destroyed and app.tray._thread is None or not app.tray._thread.is_alive()
-    print("App: bấm X ẩn xuống khay vẫn ghi, mở lại, menu bắt đầu/dừng ghi, tắt tuỳ chọn thì thoát: OK")
+    app._on_close()                                      # ngoài trận, tuỳ chọn khay tắt: thoát hẳn, không bật lại
+    assert destroyed and (app.tray._thread is None or not app.tray._thread.is_alive())
+    assert len(started) == 4
+    print("App: ngoài trận, tắt tuỳ chọn khay thì bấm X thoát hẳn (không tự bật lại bộ ghi): OK")
 
 
 if __name__ == "__main__":

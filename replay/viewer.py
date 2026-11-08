@@ -1649,13 +1649,6 @@ def main(path, game_dir=None, selftest=None):
                 print(msg, flush=True)
             except Exception:  # noqa: BLE001
                 pass
-    if not selftest:                              # ván chưa xong lúc dừng ghi: chưa cho xem (replay/lock.py)
-        from .lock import check
-        msg = check(path)
-        if msg:
-            log("trận đang khoá: " + msg.splitlines()[0])
-            message_box(msg)
-            return 2
     slot = None
     try:
         if not selftest:                          # mỗi lúc một trận: đóng trận đang xem trước khi nạp trận mới
@@ -1667,6 +1660,12 @@ def main(path, game_dir=None, selftest=None):
         else:
             v.should_close = slot.should_close
             v.run()
+    except PermissionError:                       # bộ ghi đang giữ file (trận còn đang đánh)
+        log("file đang được ghi: " + path)
+        if selftest:
+            return 1
+        message_box("Trận này đang được ghi: xem lại được khi trận kết thúc.")
+        return 2
     except Exception as e:  # noqa: BLE001
         log("lỗi: " + traceback.format_exc())
         if selftest:

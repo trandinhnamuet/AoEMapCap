@@ -11,10 +11,9 @@ import time
 
 from mapcap.rawrec import FORMAT_VERSION, MAGIC, file_version, read_end, read_header, scan_ages
 from mapcap import safeload
-from replay.lock import until_from as lock_until_from
 
 CACHE_NAME = "_matches.json"
-CACHE_VERSION = 6                 # 3: tên quân tiếng Anh; 4: đội có người bỏ cuộc đầu tiên là đội thua
+CACHE_VERSION = 5                 # 3: tên quân tiếng Anh; 4: đội có người bỏ cuộc đầu tiên là đội thua
 
 CIV_NAMES = {1: "Egyptian", 2: "Greek", 3: "Babylonian", 4: "Assyrian", 5: "Minoan", 6: "Hittite", 7: "Phoenician",
              8: "Sumerian", 9: "Persian", 10: "Shang", 11: "Yamato", 12: "Choson", 13: "Roman", 14: "Carthaginian",
@@ -191,14 +190,12 @@ def match_info(path):
         status = {int(k): tuple(v) for k, v in (end.get("status") or {}).items()}
         reason = end.get("reason")
         game_over = end.get("game_over", 0)
-        last_at = end.get("at")
     elif file_version(hdr) > FORMAT_VERSION:
-        n_frames, t_end, game_over, last_at = 0, 0, None, 0
+        n_frames, t_end, game_over = 0, 0, None
     else:
         last, n_frames = _scan_last_frame(path)
         t_end = last.get("t", 0) if last else 0
         game_over = None
-        last_at = (last or {}).get("at") or os.path.getmtime(path)
     out = None
     if file_version(hdr) > FORMAT_VERSION:
         result = "Cần bản mới"                    # file của bản mới hơn: không đoán nội dung, chỉ báo cập nhật
@@ -259,8 +256,6 @@ def match_info(path):
         "players": players,
         "reason": reason,
         "game_over": game_over,
-        # trận dừng ghi khi ván chưa phân thắng bại: khoá tới lúc này (replay/lock.py); bảng chỉ để hiện, mở thì tính lại
-        "lock_until": lock_until_from(hdr, end, last_at),
         "new_format": "format" in hdr,
         "first_out": None if out is None else {"index": out[0], "name": names.get(out[0], "?"), "t_ms": out[1],
                                                 "kind": "đầu hàng" if out[2] else "rớt mạng / bị loại"},
@@ -309,6 +304,9 @@ class Library:
             return c
         try:
             info = match_info(path)
+        except PermissionError:                     # bộ ghi đang giữ file độc quyền (rawrec.open_exclusive): đang ghi
+            return {"file": os.path.basename(path), "error": "đang ghi trận này", "recording": True,
+                    "created": os.path.getmtime(path)}
         except Exception as e:  # noqa: BLE001
             info = {"file": os.path.basename(path), "error": str(e), "created": os.path.getmtime(path)}
         try:

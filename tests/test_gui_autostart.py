@@ -1,9 +1,9 @@
-"""Mở AoE-MapCap là tự bắt đầu ghi (Config.auto_start, mặc định bật), tắt được trong Cài đặt; không tự chạy khi bản này
-đã bị chặn vì quá cũ.
+"""Mở AoE-MapCap là luôn bật bộ ghi (v34: không còn nút / tuỳ chọn bật tắt ghi - người dùng 09/11, chống dừng ghi giữa
+trận để xem bản đồ); không bật khi bản này đã bị chặn vì quá cũ.
 
     python tests/test_gui_autostart.py
 
-Engine giả (chỉ chờ lệnh dừng): không dò, không đọc game thật. Cấu hình ghi vào Video\\_test\\gui_autostart.
+Engine giả (chỉ chờ lệnh dừng): không dò, không đọc game thật. Cấu hình ghi vào Video\_test\gui_autostart.
 Hiện cửa sổ AoE-MapCap vài giây.
 """
 import os
@@ -66,53 +66,36 @@ def close(root, app):
 
 def main():
     shutil.rmtree(OUT, ignore_errors=True)
-    assert E.Config().auto_start is True, "mặc định phải tự bắt đầu ghi"
-    # cấu hình cũ chưa có khoá auto_start -> bật
-    os.makedirs(OUT, exist_ok=True)
-    p = os.path.join(OUT, "_settings.ini")
-    with open(p, "w", encoding="utf-8") as f:
-        f.write("[mapcap]\nconfig_version = 3\nout_dir = %s\n" % OUT)
-    assert E.load_config(p).auto_start is True
-
-    root, app = make_app(True)
-    assert gui.schedule_autostart(app, [], delay_ms=50)
-    pump(root, 1.0)
-    assert len(STARTED) == 1 and app.engine is STARTED[0], "mở app phải tự bắt đầu ghi"
-    assert app.btn_rec["text"].endswith("Dừng ghi") and str(app.btn_rec["state"]) == "normal"
-    assert app.var_auto.get() is True
-    app._auto_start()                                      # gọi lại khi đang ghi: không chạy engine thứ hai
-    assert len(STARTED) == 1
-    app.var_auto.set(False)                                # người dùng tắt trong Cài đặt rồi Lưu
-    app._save_settings()
-    assert E.load_config(p).auto_start is False
-    close(root, app)
-    print("bật: mở app tự bắt đầu ghi, không chạy trùng; tắt trong Cài đặt được lưu: OK")
-
-    STARTED.clear()
-    root, app = make_app(False)
-    assert not gui.schedule_autostart(app, [], delay_ms=50)
-    pump(root, 0.6)
-    assert not STARTED and app.engine is None
-    assert gui.schedule_autostart(app, ["AoE-MapCap.exe", "--autostart"], delay_ms=50)   # sau khi tự cập nhật
-    pump(root, 0.6)
-    assert len(STARTED) == 1
-    close(root, app)
-    print("tắt: không tự ghi; --autostart (sau cập nhật) vẫn bật lại: OK")
+    for auto in (True, False):                             # auto_start cũ (kể cả đã tắt) không còn tác dụng
+        STARTED.clear()
+        root, app = make_app(auto)
+        assert not hasattr(app, "var_auto"), "Cài đặt không còn ô Tự bắt đầu ghi"
+        assert gui.schedule_autostart(app, [], delay_ms=50)
+        pump(root, 1.0)
+        assert len(STARTED) == 1 and app.engine is STARTED[0], f"mở app phải luôn bật bộ ghi (auto_start={auto})"
+        app._auto_start()                                  # gọi lại khi đang ghi: không chạy engine thứ hai
+        assert len(STARTED) == 1
+        close(root, app)
+    print("mở app luôn bật bộ ghi (cấu hình cũ tắt tự ghi cũng vậy), không chạy trùng: OK")
 
     STARTED.clear()
     root, app = make_app(True)
     app.updater.block_win = object()                       # bản đã bị chặn vì quá cũ
     gui.schedule_autostart(app, [], delay_ms=50)
     pump(root, 0.6)
-    assert not STARTED, "bản bị chặn không được tự ghi"
+    assert not STARTED, "bản bị chặn không được ghi"
     app.updater.block_win = None
     app._auto_start()
     pump(root, 0.3)
     assert len(STARTED) == 1 and not app.stop_event.is_set()
+    app.updater.block_win = object()
     app._on_update_block()                                 # hiện cửa sổ chặn khi đang chờ game -> dừng bộ ghi
     assert app.stop_event.is_set()
+    pump(root, 4.0)
+    assert len(STARTED) == 1 and app.engine is None, "bị chặn: không tự bật lại"
+    assert "ngừng hỗ trợ" in app.chip_sub.cget("text"), app.chip_sub.cget("text")
     close(root, app)
-    print("bản bị chặn: không tự ghi, đang chờ game thì dừng: OK")
+    print("bản bị chặn: không ghi, đang chờ game thì dừng, không tự bật lại, báo cần cập nhật: OK")
     print("OK")
 
 

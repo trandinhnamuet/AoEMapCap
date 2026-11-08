@@ -200,18 +200,16 @@ class MatchTable(ttk.Frame):
 
     @staticmethod
     def _row(info):
+        if info.get("recording"):                  # file đang bị bộ ghi giữ: trận đang đánh
+            return (time.strftime("%d/%m/%Y %H:%M", time.localtime(info.get("created", 0))), info["file"], "",
+                    "● Đang ghi", "", "xem được khi hết trận", ""), "muted"
         if "error" in info:
             return (time.strftime("%d/%m/%Y %H:%M", time.localtime(info.get("created", 0))), info["file"], "",
                     "lỗi đọc file", "", info["error"][:40], ""), "muted"
-        result = info["result"]
-        locked = (info.get("lock_until") or 0) > time.time()
-        if locked:                                 # dừng ghi khi ván chưa xong: chưa xem được (replay/lock.py)
-            from .lock import short
-            result = "🔒 " + short(info["lock_until"])
         vals = (time.strftime("%d/%m/%Y %H:%M", time.localtime(info["created"])), info["recorder"],
-                info["recorder_civ"], result, f"{info['format']} {info['civ_mode']}", info["map"],
+                info["recorder_civ"], info["result"], f"{info['format']} {info['civ_mode']}", info["map"],
                 fmt_duration(info["duration_ms"]))
-        return vals, "muted" if locked else RESULT_TAG.get(info["result"], "")
+        return vals, RESULT_TAG.get(info["result"], "")
 
     def _refill(self):
         sel_path = self.selected_path()

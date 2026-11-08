@@ -362,10 +362,6 @@ def render_raw(rec_path, out_mp4, width=1920, fps=25.0, speed=1.0, fog_dim=0.43,
     """Dựng toàn bộ video: chia đoạn, chạy song song bằng chính exe/python này, nối bằng ffmpeg.
     Đếm số lần dựng đang chạy để giao diện biết khi nào thoát sẽ làm mất video."""
     global _ACTIVE
-    from replay.lock import check                 # ván chưa xong lúc dừng ghi: chưa cho xuất (chống gian lận)
-    msg = check(rec_path)
-    if msg:
-        raise RuntimeError(msg.splitlines()[0] + " (trận dừng ghi khi ván chưa phân thắng bại)")
     with _ACTIVE_LOCK:
         _ACTIVE += 1
     try:

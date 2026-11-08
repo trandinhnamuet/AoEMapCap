@@ -69,7 +69,7 @@ Mã băm SHA-256 nằm trong `SHA256SUMS.txt` (trong zip) và `AoE-MapCap-win64.
 
 `dist\AoE-MapCap.exe` là bản đóng gói một file, không cần cài gì thêm.
 
-- Mở exe (hộp UAC hiện một lần vì game chạy từ XArena có quyền Administrator): tool tự bắt đầu ghi, không cần bấm **● Bắt đầu ghi** (tắt được trong thẻ Cài đặt). Tool chờ
+- Mở exe (hộp UAC hiện một lần vì game chạy từ XArena có quyền Administrator): tool luôn ghi khi đang mở (từ v34 không có nút bật / tắt ghi, và đang ghi trận thì không thoát được: để không ai dừng ghi giữa trận rồi xem bản đồ đối thủ). Tool chờ
   game; mỗi trận được ghi thành dữ liệu `Video\Raw\*.aoerec` (25 lần đọc/giây, ~10-40 MB một trận từ 12/10/2026). Hết trận (rời
   ra menu, thoát game, đồng hồ game đứng 3 phút) tự chốt file. **Không tự dựng video** (từ 09/10/2026).
 - Thẻ **Trận đã ghi** (mặc định) là bảng các trận: bấm đúp một trận hoặc **▶ Xem replay** để xem lại như replay LMHT

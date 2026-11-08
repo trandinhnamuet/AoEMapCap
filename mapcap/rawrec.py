@@ -29,6 +29,7 @@ import lzma
 import os
 import pickle
 import struct
+import sys
 import time
 import zlib
 
@@ -139,6 +140,25 @@ def scan_ages(path):
     return tr.result()
 
 
+def open_exclusive(path):
+    """Mở file ghi KHÔNG chia sẻ (Windows: dwShareMode = 0): trong lúc đang ghi trận, tiến trình khác (trình xem, chép
+    file, AoE-Replay) không đọc / chép / đổi tên được -> không mở được trận khi ván còn đang đánh (v34, chống dùng replay
+    gian lận). Đóng file (hết trận) là mở được bình thường. Không phải Windows / lỗi lạ: mở thường."""
+    if sys.platform == "win32":
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes as wt
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateFileW.restype = wt.HANDLE
+        k32.CreateFileW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD, wt.LPVOID, wt.DWORD, wt.DWORD, wt.HANDLE]
+        GENERIC_WRITE, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL = 0x40000000, 2, 0x80
+        h = k32.CreateFileW(os.path.abspath(path), GENERIC_WRITE, 0, None, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, None)
+        if h and h != ctypes.c_void_p(-1).value:
+            fd = msvcrt.open_osfhandle(h, os.O_WRONLY | getattr(os, "O_BINARY", 0))
+            return os.fdopen(fd, "wb")
+    return open(path, "wb")
+
+
 def _pack(tag, payload):
     data = zlib.compress(pickle.dumps(payload, protocol=4), 6)
     return tag + struct.pack("<I", len(data)) + data
@@ -147,7 +167,7 @@ def _pack(tag, payload):
 class RawWriter:
     def __init__(self, path):
         self.path = path
-        self.f = open(path, "wb")
+        self.f = open_exclusive(path)
         self.f.write(MAGIC)
         self.def_index = {}          # def addr -> index
         self.prev_vis = None

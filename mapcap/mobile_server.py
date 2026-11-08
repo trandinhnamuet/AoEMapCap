@@ -128,9 +128,6 @@ class Exporter:
             return None
         if best is None or time.time() - best[0] < 60 or best[1] in self.state or self.ready(best[1]):
             return None
-        from replay.lock import lock_until
-        if lock_until(os.path.join(self.folder, best[1])) > time.time():
-            return None                                   # trận đang khoá: không chuyển sẵn
         return best[1]
 
     def _tick(self, name, st, f):
@@ -256,10 +253,6 @@ def make_handler(token, folder, exporter, log):
                     name = self._match_name(qs)
                     if name is None:
                         return self._send(404, {"error": "không thấy trận"})
-                    from replay.lock import check
-                    msg = check(os.path.join(folder, name))
-                    if msg:                                   # ván chưa xong lúc dừng ghi: chưa gửi (chống gian lận)
-                        return self._send(200, {"ready": False, "error": msg.replace("\n\n", " ").replace("\n", " ")})
                     if exporter.ready(name):
                         if "check" in qs:
                             return self._send(200, {"ready": True})
@@ -290,7 +283,6 @@ def make_handler(token, folder, exporter, log):
 
 def list_matches(folder):
     from replay.library import Library
-    from replay.lock import LOCK_SECONDS, lock_until
     lib = Library(folder)
     out = []
     for p in lib.files():
@@ -299,11 +291,6 @@ def list_matches(folder):
                 continue                                  # trận đang ghi
             info = lib.info(p)
         except Exception:  # noqa: BLE001
-            continue
-        # ván chưa xong lúc dừng ghi: chưa cho điện thoại (replay/lock.py). File sửa gần đây thì tính lại từ chính file
-        # (không tin _matches.json); file cũ hơn 2 lần thời gian khoá thì không thể còn khoá, dùng đệm cho nhanh.
-        recent = time.time() - os.path.getmtime(p) < 2 * LOCK_SECONDS
-        if (lock_until(p) if recent else (info.get("lock_until") or 0)) > time.time():
             continue
         if info and "error" not in info and info.get("frames", 0) > 0:
             out.append({"file": os.path.basename(p), "info": info})

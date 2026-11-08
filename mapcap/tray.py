@@ -1,7 +1,7 @@
 """Biểu tượng ở khay hệ thống (góc phải thanh tác vụ) bằng Win32 Shell_NotifyIcon qua ctypes, không cần thư viện thêm.
 
 Bấm X trên cửa sổ AoE-MapCap -> ẩn cửa sổ, app vẫn chạy và ghi trận; biểu tượng có chấm màu theo trạng thái (đỏ = đang
-ghi, vàng = sẵn sàng), rê chuột thấy trạng thái + đồng hồ. Bấm trái: mở lại cửa sổ; bấm phải: menu Mở / Bắt đầu-Dừng ghi
+ghi, vàng = sẵn sàng), rê chuột thấy trạng thái + đồng hồ. Bấm trái: mở lại cửa sổ; bấm phải: menu Mở / Điện thoại / Thoát (từ v34 không còn mục Bắt đầu-Dừng ghi: app luôn ghi)
 / Bật-Tắt cho điện thoại / Thoát. Cửa sổ ẩn + vòng nhận tin nhắn chạy ở luồng riêng; lệnh từ menu đưa về luồng Tk qua hàm on_action (hàng đợi).
 """
 import ctypes
@@ -198,7 +198,7 @@ class Tray:
             return bool(shell32.Shell_NotifyIconW(op, ctypes.byref(nid)))
 
     def update(self, tooltip=None, kind=None, toggle_label=None):
-        """Đổi dòng rê chuột / chấm màu biểu tượng ('rec', 'armed', None) / chữ mục Bắt đầu-Dừng ghi của menu."""
+        """Đổi dòng rê chuột / chấm màu biểu tượng ('rec', 'armed', None) / toggle_label: giữ cho tương thích, menu không còn dùng (v34)."""
         if toggle_label:
             self.toggle_label = toggle_label
         changed = False
@@ -242,7 +242,6 @@ class Tray:
     def _menu(self):
         m = user32.CreatePopupMenu()
         user32.AppendMenuW(m, MF_STRING, ID_OPEN, "Mở AoE-MapCap")
-        user32.AppendMenuW(m, MF_STRING, ID_TOGGLE, self.toggle_label)
         user32.AppendMenuW(m, MF_STRING, ID_PHONE, self.phone_label)
         user32.AppendMenuW(m, MF_SEPARATOR, 0, None)
         user32.AppendMenuW(m, MF_STRING, ID_QUIT, "Thoát")
