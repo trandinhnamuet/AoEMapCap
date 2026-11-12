@@ -84,7 +84,7 @@ def main():
 
     # mục Góp ý trên thanh bên, mở trang
     item, _bar, _ic, tx = app.nav["feedback"]
-    assert tx.cget("text") == "Góp ý"
+    assert tx.cget("text") == "Góp ý / Báo lỗi"
     item.event_generate("<Button-1>")
     pump(root, 0.4)
     assert app.page == "feedback" and app.pages["feedback"].winfo_ismapped()

@@ -1321,8 +1321,8 @@ class Viewer:
             rows[p.index] = {"index": p.index, "name": p.name, "civ": civ_name(p.civ) if p.civ and p.civ > 0 else "",
                              "rgb": self.world.player_rgb(p.index), "attrs": p.attrs or (), "pop": a(11),
                              "room": a(4), "age": a(6), "vill": int(vill[p.index]), "army": a(40), "kills": kills,
-                             "deaths": (kills - ratio) if kills is not None and ratio is not None else None,
-                             "razings": a(43), "ntech": ntech, "gold_mined": a(49),
+                             "deaths": int(st.lost.get(p.index, 0)), "conv": int(st.conv.get(p.index, 0)),
+                             "ntech": ntech, "gold_mined": a(49),
                              "tribute": max(a(53), 0) if a(53) is not None else None,
                              "hotkey": self._hotkey_of.get(p.index),
                              "status": {1: "thắng", 2: "đầu hàng" if p.resigned else "thua"}.get(p.ptype)}
@@ -1336,8 +1336,6 @@ class Viewer:
                 cards.append({"key": ("pl", p["index"]), "name": p["name"], "civ": p["civ"], "rgb": p["rgb"],
                               "active": act, "team": k})
         sub = None
-        if self.persp is None:
-            sub = "chỗ tối: không người chơi nào nhìn thấy"
         m.settings = self._settings_model() if self.hud.show_settings else None
         m.persp_card = {"title": "Góc nhìn" + ("  ·  máy quay tự động (A)" if self.auto_cam else ""), "sub": sub,
                         "cards": cards}
@@ -1660,6 +1658,9 @@ class Viewer:
                         self.set_persp(None)
                     else:
                         self.set_persp_player(key[1])
+                        self._take_camera()
+                        self.select_player(key[1])        # như bấm tên ở bảng chỉ số dưới: tới nhà người đó
+                        self.set_toast(self.persp_label())
                     self._hud_dirty = True
                     return
             if hud.r_help is not None and hud.r_help.collidepoint(pos):
@@ -1810,6 +1811,8 @@ class Viewer:
         if not ready and self.world is not None and self.data.n_frames > 0:
             self._on_world_ready()
             ready = True
+        if self.hud.advance(dt):
+            self._hud_dirty = True                     # đang trượt ẩn / hiện (H, U, O, C)
         if ready:
             self._advance(dt)
             self._update_camera(dt)

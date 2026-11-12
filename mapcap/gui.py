@@ -302,10 +302,10 @@ class App:
     PAGES = (("matches", "", "Trận đã ghi", "Xem lại trận: tua, đổi góc nhìn, xuất video khi cần"),
              ("phone", "", "Điện thoại", "Xem lại trận trên điện thoại Android ở bất kỳ mạng nào: quét mã QR để kết nối"),
              ("settings", "", "Cài đặt", "Ghi trận, thư mục lưu, xuất video, thống kê sử dụng"),
-             ("reports", "\ue7c1", "Lịch sử báo cáo", "Các trận bạn đã báo cáo hack từ máy này"),
              ("keys", "\ue765", "Phím tắt", "Phím điều khiển khi xem replay"),
              ("log", "", "Nhật ký", "Hoạt động của bộ ghi, xuất video và cập nhật"),
-             ("feedback", "\ue939", "Góp ý", "Gửi ý kiến, báo lỗi cho tác giả trên trang Thảo luận (GitHub Discussions)"))
+             ("reports", "\ue7c1", "Lịch sử báo cáo", "Các trận bạn đã báo cáo hack từ máy này"),
+             ("feedback", "\ue939", "Góp ý / Báo lỗi", "Gửi ý kiến, báo lỗi cho tác giả trên trang Thảo luận (GitHub Discussions)"))
     FEEDBACK_URL = "https://github.com/trandinhnamuet/AoEMapCap/discussions"
 
     def __init__(self, root):

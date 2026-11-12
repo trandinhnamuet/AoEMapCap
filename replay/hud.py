@@ -73,6 +73,8 @@ class Hud:
         self.cmd_hits = []           # [(Rect, chữ gợi ý)] các nút bảng lệnh công trình vừa vẽ
         self.hover_cmd = None        # chỉ số nút đang rê chuột
         self.persp_hits = []         # (Rect, khoá) các thẻ góc nhìn góc phải trên
+        # ẩn / hiện có hiệu ứng (người dùng 12/11): mỗi phần trượt ra cạnh màn hình gần nó và mờ dần; 1 = hiện hẳn
+        self.anim = {"top": 1.0, "persp": 1.0, "bar": 1.0, "tl": 1.0, "score": 1.0, "techs": 0.0}
 
     # ---- chữ --------------------------------------------------------------------------
     def font(self, size, bold=False):
@@ -127,7 +129,52 @@ class Hud:
         self.bottom = bottom
 
     def minimap_rect(self):
-        return self.r_minimap if (self.show_hud and self.show_minimap) else None
+        return self.r_minimap if (self.anim["bar"] > 0.001 and self.show_minimap and self.r_minimap is not None) else None
+
+    ANIM_S = 0.25                 # giây cho một lần trượt ẩn / hiện
+
+    def anim_targets(self):
+        h = self.show_hud
+        return {"top": h, "persp": h, "bar": h, "tl": h and self.show_timeline, "score": self.show_score,
+                "techs": h and self.show_techs}
+
+    def advance(self, dt):
+        """Bước hiệu ứng ẩn / hiện theo dt (giây). Trả True nếu có phần đang chuyển động (cần vẽ lại HUD)."""
+        moving = False
+        step = dt / self.ANIM_S
+        for k, on in self.anim_targets().items():
+            a, want = self.anim[k], (1.0 if on else 0.0)
+            if a != want:
+                self.anim[k] = min(want, a + step) if want > a else max(want, a - step)
+                moving = True
+        return moving
+
+    def snap_anim(self):
+        """Bỏ hiệu ứng: mọi phần về ngay trạng thái đích (ảnh so sánh / tự kiểm thử)."""
+        for k, on in self.anim_targets().items():
+            self.anim[k] = 1.0 if on else 0.0
+
+    @staticmethod
+    def _ease(a):
+        return a * a * (3 - 2 * a)
+
+    def _layer(self, surf, key, fn, off):
+        """Vẽ một phần với hiệu ứng: hiện hẳn -> vẽ thẳng; đang chuyển -> vẽ lên lớp riêng rồi dán lệch về phía cạnh
+        màn hình (off(): (dx, dy) khi ẩn hẳn, tính sau khi vẽ) và mờ theo độ hiện. Trả (dx, dy) đã lệch."""
+        a = self.anim[key]
+        if a <= 0.001:
+            return None
+        if a >= 0.999:
+            fn(surf)
+            return (0, 0)
+        tmp = pygame.Surface(self.size, pygame.SRCALPHA)
+        fn(tmp)
+        e = self._ease(a)
+        dx, dy = off()
+        d = (int(round(dx * (1 - e))), int(round(dy * (1 - e))))
+        tmp.set_alpha(int(255 * e))
+        surf.blit(tmp, d)
+        return d
 
     # ---- vẽ ---------------------------------------------------------------------------
     def render(self, m):
@@ -142,17 +189,23 @@ class Hud:
         if m.loading is not None:
             self._loading(surf, m)
             return surf
-        if self.show_hud:
-            self._top(surf, m)
-            self._bottom_bar(surf, m)
-            if self.show_timeline:
-                self._timeline(surf, m)
-            if getattr(m, "persp_card", None):
-                self._persp_card(surf, m.persp_card)
-            if self.show_techs:
-                self._techs(surf, m)
-            if self.show_settings and self.show_timeline and getattr(m, "settings", None):
-                self._settings(surf, m.settings)
+        u = self.u
+        A = self.anim
+        # đáy vùng thanh dưới đi theo hiệu ứng thanh thời gian (U): thanh dưới hạ dần xuống chứ không nhảy
+        self.bottom = H - int(8 * u) - int(round((self.tl_h * self._ease(A["tl"])))) if A["tl"] < 0.999 else \
+            H - self.tl_h - int(8 * u)
+        self._layer(surf, "top", lambda s: self._top(s, m), lambda: (0, -int(90 * u)))
+        d = self._layer(surf, "bar", lambda s: self._bottom_bar(s, m), lambda: (0, H - getattr(self, "bar_top", H)))
+        if d and d != (0, 0) and self.r_minimap is not None:
+            self.r_minimap = self.r_minimap.move(0, d[1])     # minimap vẽ bằng GPU: trượt cùng thanh
+        self._layer(surf, "tl", lambda s: self._timeline(s, m), lambda: (0, self.tl_h + int(10 * u)))
+        if getattr(m, "persp_card", None):
+            self._layer(surf, "persp", lambda s: self._persp_card(s, m.persp_card),
+                        lambda: ((W - self.r_persp.x) if self.r_persp is not None else int(300 * u), 0))
+        self._layer(surf, "techs", lambda s: self._techs(s, m),
+                    lambda: (-(self.r_techs.right if getattr(self, "r_techs", None) else int(420 * u)), 0))
+        if self.show_settings and A["tl"] >= 0.999 and getattr(m, "settings", None):
+            self._settings(surf, m.settings)
         if m.toast:
             t = self.text(m.toast, int(22 * self.u), GOLD, bold=True)
             y = int(96 * self.u) if self.show_hud else int(20 * self.u)
@@ -399,8 +452,8 @@ class Hud:
 
     ECO_COLS = [("Đời", "age"), ("Dân", "vill"), ("Time", "popcap"), ("food", O.ATTR_FOOD),
                 ("wood", O.ATTR_WOOD), ("gold", O.ATTR_GOLD), ("stone", O.ATTR_STONE)]
-    MIL_COLS = [("Quân", "army"), ("Kill", "kills"), ("Chết", "deaths"), ("Phá nhà", "razings"),
-                ("Công nghệ", "ntech"), ("Vàng KT", "gold_mined"), ("Bơm", "tribute")]
+    MIL_COLS = [("Quân", "army"), ("Kill", "kills"), ("Chết", "deaths"), ("Phù được", "conv"),
+                ("Công nghệ", "ntech"), ("Đào vàng", "gold_mined"), ("Bơm", "tribute")]
     RES_LABEL = {O.ATTR_FOOD: "Thực", O.ATTR_WOOD: "Gỗ", O.ATTR_GOLD: "Vàng", O.ATTR_STONE: "Đá"}
 
     BAR_BG = (12, 12, 14, 232)
@@ -427,7 +480,7 @@ class Hud:
             sb_right = W - mm.w - 2 * pad - int(4 * u)
         self._sb_span = (int(self.UNIT_RESERVE * u), sb_right)
         self._sb_max_h = int(round(126 * W / 1920)) - 2 * pad
-        sb = self._scoreboard(surf, m, measure=True) if self.show_score and m.teams else None
+        sb = self._scoreboard(surf, m, measure=True) if self.anim["score"] > 0.001 and m.teams else None
         base_h = int(round(126 * W / 1920)) if art is not None else 0      # cao như thanh dưới của game
         self.bar_inner_h = base_h - 2 * pad                                 # thẻ unit cố vừa chiều cao này
         ui = self._unit_info(surf, m, measure=True) if m.unit_info else None
@@ -490,8 +543,12 @@ class Hud:
             x = l_res + max(0, (right_end - l_res - sw) // 2)
             x = max(x, left_end) if ui and left_end > l_res else x     # (thẻ quá rộng: tránh đè, hiếm)
             self.sb_x = x
-            self.panel(surf, pygame.Rect(x - pad, top + pad // 2, sb[0] + 2 * pad, bar_h - pad), (8, 10, 14, 170), radius=4)
-            self._scoreboard(surf, m, pos=(x, y))
+
+            def draw_sb(s):
+                self.panel(s, pygame.Rect(x - pad, top + pad // 2, sb[0] + 2 * pad, bar_h - pad), (8, 10, 14, 170),
+                           radius=4)
+                self._scoreboard(s, m, pos=(x, y))
+            self._layer(surf, "score", draw_sb, lambda: (0, H - top))     # O: trượt xuống cạnh dưới + mờ dần
         if ui:
             self._unit_info(surf, m, pos=(pad, y))
 
@@ -720,8 +777,8 @@ class Hud:
         resg = getattr(m, "researching", []) or []
         res_h = len(resg) * int(40 * u) + (int(8 * u) if resg else 0)
         h = int(36 * u) + res_h + n_rows * cell_h + int(8 * u)
-        top = int(76 * u) if self.r_persp is None else max(int(76 * u), self.r_persp.bottom + int(6 * u))
-        r = pygame.Rect(W - w - int(10 * u), top, w, h)      # dưới thẻ góc nhìn
+        r = pygame.Rect(int(10 * u), int(6 * u), w, h)      # góc trái trên (người dùng 12/11)
+        self.r_techs = r
         self.panel(surf, r, border=(120, 110, 80))
         surf.blit(self.text(f"Công nghệ · {m.sel_player['name']}", int(16 * u), m.sel_player["rgb"], bold=True),
                   (r.x + int(10 * u), r.y + int(6 * u)))

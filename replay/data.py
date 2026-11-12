@@ -50,9 +50,13 @@ def _apply_static_delta(arr, changed, removed):
 
 
 class KeyState:
-    __slots__ = ("frame", "t", "at", "units", "vis", "pstate", "tech_times", "pstat", "go", "prs", "prod", "pav", "ptr")
+    __slots__ = ("frame", "t", "at", "units", "vis", "pstate", "tech_times", "pstat", "go", "prs", "prod", "pav", "ptr",
+                 "lost", "conv")
 
-    def __init__(self, frame, t, at, units, vis, pstate, tech_times, pstat, go, prs=None, prod=None, pav=None, ptr=None):
+    def __init__(self, frame, t, at, units, vis, pstate, tech_times, pstat, go, prs=None, prod=None, pav=None, ptr=None,
+                 lost=None, conv=None):
+        self.lost = lost or {}
+        self.conv = conv or {}
         self.prs = prs or {}
         self.prod = prod or {}
         self.pav = pav or {}
@@ -77,6 +81,12 @@ class FrameState:
         self.prs = {}                # index -> {id công nghệ đang nghiên cứu: giây đã chạy}
         self.pav = {}                # index -> frozenset id công nghệ "có thể nghiên cứu" (trạng thái 1) — file từ 2026-10-13
         self.ptr = {}                # index -> frozenset (dat id, nhà sinh, nút) unit đã mở — file từ 2026-10-13
+        # đếm từ dữ liệu unit (người dùng 12/11): game chỉ có kill / tỉ lệ kill nên unit tự xoá, bị thú giết không
+        # vào số chết. lost: unit (loại 70) của người chơi chuyển sang trạng thái chết (status >= 3 hoặc máu <= 0) -
+        # mọi nguyên nhân; conv: unit đang sống đổi chủ sang người chơi này = phù được (trận 2v2 12/11: số chết mỗi đội
+        # = số kill của đội kia + 1)
+        self.lost = {}
+        self.conv = {}
         self.frame = -1
         self.t = 0
         self.at = 0.0
@@ -119,8 +129,8 @@ class FrameState:
                         valid[i] = False
                         free.append(i)
             if len(ch):
-                idx = []
-                for uid in ch["uid"].tolist():
+                idx, old_i, new_k = [], [], []
+                for k, uid in enumerate(ch["uid"].tolist()):
                     i = pos.get(uid)
                     if i is None:
                         if not free:
@@ -129,7 +139,12 @@ class FrameState:
                         i = self.free.pop()
                         pos[uid] = i
                         valid[i] = True
+                    else:
+                        old_i.append(i)
+                        new_k.append(k)
                     idx.append(i)
+                if old_i:
+                    self._count_losses(self.arr[old_i], ch[new_k])
                 self.arr[idx] = ch
         for idx, (attrs, techs) in p.get("pstate", {}).items():
             self.pstate[idx] = (tuple(attrs), None if techs is None else frozenset(techs))
@@ -156,6 +171,20 @@ class FrameState:
         self.t = p["t"]
         self.at = p["at"]
 
+    def _count_losses(self, o, u):
+        """o: bản cũ, u: bản mới của cùng các unit -> cộng số chết (chủ cũ) và phù được (chủ mới)."""
+        m = (o["kind"] == 70) & (o["owner"] > 0)
+        if not m.any():
+            return
+        o, u = o[m], u[m]
+        dead_o = (o["status"] >= 3) | (o["hp"] <= 0)
+        dead_u = (u["status"] >= 3) | (u["hp"] <= 0)
+        for ow in o["owner"][dead_u & ~dead_o].tolist():
+            self.lost[ow] = self.lost.get(ow, 0) + 1
+        cv = (u["owner"] != o["owner"]) & (u["owner"] > 0) & ~dead_o & ~dead_u
+        for ow in u["owner"][cv].tolist():
+            self.conv[ow] = self.conv.get(ow, 0) + 1
+
     def units(self):
         """Mảng unit đang sống (bản sao gọn)."""
         return self.arr[self.valid]
@@ -163,7 +192,8 @@ class FrameState:
     def snapshot(self):
         return KeyState(self.frame, self.t, self.at, self.units(), self.vis.copy(), dict(self.pstate),
                         {k: dict(v) for k, v in self.tech_times.items()}, dict(self.pstat), self.go,
-                        {k: dict(v) for k, v in self.prs.items()}, dict(self.prod), dict(self.pav), dict(self.ptr))
+                        {k: dict(v) for k, v in self.prs.items()}, dict(self.prod), dict(self.pav), dict(self.ptr),
+                        dict(self.lost), dict(self.conv))
 
     def restore(self, k: KeyState):
         self._reset_units(k.units)
@@ -175,6 +205,8 @@ class FrameState:
         self.prod = dict(getattr(k, "prod", {}) or {})
         self.pav = dict(getattr(k, "pav", {}) or {})
         self.ptr = dict(getattr(k, "ptr", {}) or {})
+        self.lost = dict(getattr(k, "lost", {}) or {})
+        self.conv = dict(getattr(k, "conv", {}) or {})
         self.frame, self.t, self.at = k.frame, k.t, k.at
 
 

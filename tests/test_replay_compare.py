@@ -41,6 +41,7 @@ def main():
     v.cx, v.cy = home
     v.zoom = v.zoom_target = zoom
     v.hud.show_hud = False
+    v.hud.snap_anim()                 # ẩn ngay, không chờ hiệu ứng trượt
     v.toast = None
     v._hud_dirty = True
     for _ in range(20):

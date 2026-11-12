@@ -949,7 +949,7 @@ class VideoRenderer:
                     self.deaths.setdefault(u.owner_index, set()).add(u.uid)   # game không có thuộc tính 'đã mất'
                 elif u.udef.cls == 4 and u.owner_index in vill:
                     vill[u.owner_index] += 1
-            cols = ["Dân", "Dân số", "Kill", "Dead", "Vàng KT", "Bơm"]
+            cols = ["Dân", "Dân số", "Kill", "Dead", "Đào vàng", "Bơm"]
             name_w = max([self._tw(small, p.name) for p in rows] + [60]) + small.size + pad
             col_w = max(self._tw(small, c) for c in cols) + 2 * pad
             w = name_w + col_w * len(cols) + pad
