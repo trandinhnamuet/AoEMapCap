@@ -74,14 +74,30 @@ assert v.persp_pl == target and v.selected == target
 assert abs(v.cx - home[0]) < 40 and abs(v.cy - home[1]) < 40, ((v.cx, v.cy), home)
 print("bấm thẻ người chơi: xem tầm nhìn người đó + máy quay tới nhà chính: OK")
 
-# ---- bảng công nghệ góc trái trên -----------------------------------------------------------------
+# ---- bảng công nghệ góc trái trên: mặc định bật, thẻ theo tầm nhìn đang xem ---------------------------------
+assert hud.show_techs, "bảng công nghệ mặc định bật"
+allp = [i for t in d.teams for i in t]
+v.set_persp(None)
+v._settle(5)
+m = v._hud_model()
+assert [p["name"] for p in m.tech_panels] == [d.players[i].name for i in allp], "toàn bản đồ: mọi người chơi"
+assert hud.r_techs is not None and hud.r_techs.x < W * 0.1 and hud.r_techs.y < H * 0.1, hud.r_techs
+assert hud.r_techs.bottom <= hud.bar_top, ("bảng công nghệ đè thanh dưới", hud.r_techs, hud.bar_top)
+v._shot("t0_cong_nghe_toan_ban_do")
+v.set_persp(1)
+v._settle(5)
+assert [p["name"] for p in v._hud_model().tech_panels] == [d.players[i].name for i in d.teams[1]], "một đội: cả đội"
+v._shot("t1_cong_nghe_doi_2")
+v.set_persp_player(d.teams[0][0])
+v._settle(5)
+assert len(v._hud_model().tech_panels) == 1
 v._key(SimpleNamespace(key=pygame.K_c, mod=0, unicode="c"))
 v._settle(30)
-assert hud.show_techs and hud.r_techs is not None and hud.r_techs.x < W * 0.1 and hud.r_techs.y < H * 0.1, hud.r_techs
-v._shot("t1_cong_nghe_trai_tren")
-print("bảng công nghệ: góc trái trên", hud.r_techs, ": OK")
+assert not hud.show_techs and hud.r_techs is None
 v._key(SimpleNamespace(key=pygame.K_c, mod=0, unicode="c"))
 v._settle(30)
+assert hud.show_techs and hud.r_techs is not None
+print("bảng công nghệ: mặc định bật, góc trái trên, toàn bản đồ 4 thẻ / đội 2 thẻ / một người 1 thẻ, C tắt bật: OK")
 
 
 # ---- H / U / O: trượt + mờ dần --------------------------------------------------------------------

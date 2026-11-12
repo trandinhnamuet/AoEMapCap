@@ -431,8 +431,6 @@ class Viewer:
             hud.show_minimap = not hud.show_minimap
         elif kind == "techs":
             hud.show_techs = not hud.show_techs
-            if hud.show_techs and self.selected is None and self.data.teams:
-                self.selected = self.data.teams[self.rec_team or 0][0]
         elif kind == "fullscreen":
             self.toggle_fullscreen()
         elif kind == "help":
@@ -1346,20 +1344,30 @@ class Viewer:
         m.bar_style = getattr(self, "_civ_style", {}).get(int(pc)) if pc else None
         m.sel_player = rows.get(self.selected)
         m.game_over = bool(st.go)
-        m.techs = []
-        m.researching = []
-        if self.selected is not None:
-            p = players[self.selected]
+        # bảng công nghệ góc trái trên (người dùng 12/11): mỗi người chơi trong tầm nhìn đang xem một thẻ - xem riêng
+        # một người: người đó; xem một đội: cả đội; toàn bản đồ: mọi người chơi
+        if self.persp is not None and self.persp_pl is not None:
+            who = [self.persp_pl]
+        elif self.persp is not None and 0 <= self.persp < len(d.teams):
+            who = list(d.teams[self.persp])
+        else:
+            who = [i for t in d.teams for i in t]
+        m.tech_panels = []
+        for idx in who:
+            if not (0 <= idx < len(players)) or idx not in rows:
+                continue
+            p = players[idx]
+            resg = []
             for tid, sec in sorted((p.researching or {}).items()):
                 if 0 <= tid < len(research) and research[tid].time > 0:
-                    m.researching.append((rv._tech_label(research[tid]), max(0.0, min(1.0, sec / research[tid].time)),
-                                          research[tid].icon))
-            if p.techs is not None:
-                items = []
-                for tid in p.techs:
-                    if tid < len(research) and research[tid].researchable:
-                        items.append((p.tech_times.get(tid, m.time_ms), rv._tech_label(research[tid]), research[tid].icon))
-                m.techs = sorted(items)
+                    resg.append((rv._tech_label(research[tid]), max(0.0, min(1.0, sec / research[tid].time)),
+                                 research[tid].icon))
+            items = []
+            for tid in (p.techs or ()):
+                if tid < len(research) and research[tid].researchable:
+                    items.append((p.tech_times.get(tid, m.time_ms), rv._tech_label(research[tid]), research[tid].icon))
+            m.tech_panels.append({"name": rows[idx]["name"], "rgb": rows[idx]["rgb"], "techs": sorted(items),
+                                  "researching": resg})
         m.unit_info = self._unit_info()
         return m
 
@@ -1601,8 +1609,6 @@ class Viewer:
             hud.show_score = True
         elif k == pygame.K_c:
             hud.show_techs = not hud.show_techs
-            if hud.show_techs and self.selected is None and self.data.teams:
-                self.selected = self.data.teams[self.rec_team or 0][0]
         elif k == pygame.K_u:
             hud.show_timeline = not hud.show_timeline
             self._on_resize()

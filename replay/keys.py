@@ -12,7 +12,7 @@ KEYS_HELP = [
     ("1–5  /  Q–T", "chọn người chơi đội 1 / đội 2 (đưa máy quay tới nhà chính)"),
     ("Space", "đưa máy quay về người chơi đang chọn"),
     ("O  /  X", "bảng tỉ số  /  đổi cột kinh tế ↔ quân sự"),
-    ("C", "bảng công nghệ của người chơi đang chọn"),
+    ("C", "bảng công nghệ góc trái trên (mặc định bật): người chơi trong tầm nhìn đang xem - một đội / toàn bản đồ: mọi người"),
     ("U  /  H  /  M", "thanh thời gian  /  ẩn toàn bộ HUD  /  minimap"),
     ("Lăn chuột", "zoom quanh con trỏ;  Home / bấm chuột giữa: xem cả bản đồ"),
     ("Chuột ra mép, mũi tên, kéo chuột", "di chuyển máy quay"),

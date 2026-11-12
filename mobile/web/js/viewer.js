@@ -134,9 +134,14 @@ export class Viewer {
       const ak = m.pSlp[p] * 65536 + m.pFrame[p];
       let e = atlas.map.get(ak);
       if (e === undefined) {
-        if (performance.now() > deadline) { this.deferred++; return n; }
+        // ngân sách giải mã tính bằng thời gian GIẢI MÃ THẬT của khung này (trước: hạn chót tính từ đầu khung -> máy chậm
+        // duyệt hết vật thể tĩnh đã quá hạn, hình chưa giải mã ở cuối danh sách không bao giờ được giải mã, khung nào
+        // cũng dựng lại toàn bộ vật thể tĩnh - đo 12/11: ~20 ms mỗi khung khi CPU chậm 4 lần)
+        if (this.decodeLeft <= 0) { this.deferred++; return n; }
+        const td = performance.now();
         const slp = this.pack.slp(m.pSlp[p]);
         const img = slp ? slp.decode(m.pFrame[p]) : null;
+        this.decodeLeft -= performance.now() - td;
         e = img ? atlas.add(ak, img) : null;
         if (e === undefined) {                               // atlas đầy: xoá, dựng lại cả hai lô
           atlas.clear(); this.dirtyStatics = true; this.deferred++;
@@ -312,6 +317,7 @@ export class Viewer {
     }
     const t0 = performance.now();
     const deadline = t0 + DECODE_BUDGET_MS;
+    this.decodeLeft = DECODE_BUDGET_MS;
     this.deferred = 0;
     let rebuilt = false;
     if (this.dirtyFog) { this._buildFog(); this.dirtyFog = false; rebuilt = true; }
@@ -866,6 +872,7 @@ export class Viewer {
       for (let k = 0; k < 40 && (this.dirtyUnits || this.dirtyStatics || this.dirtyFog); k++) {
         const t1 = performance.now();
         this.deferred = 0;
+        this.decodeLeft = Infinity;
         if (this.dirtyFog) { this._buildFog(); this.dirtyFog = false; }
         this._rebuildStatics(t1 + 1e9);
         this._rebuildUnits(t1 + 1e9);

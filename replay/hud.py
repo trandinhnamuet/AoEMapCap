@@ -47,7 +47,7 @@ class Hud:
         self.show_score = True
         self.score_mode = 0          # 0 kinh tế, 1 quân sự
         self.show_timeline = True
-        self.show_techs = False
+        self.show_techs = True           # bảng công nghệ góc trái trên: mặc định bật (người dùng 12/11)
         self.show_help = False
         self.show_minimap = True
         self.size = (0, 0)
@@ -74,7 +74,7 @@ class Hud:
         self.hover_cmd = None        # chỉ số nút đang rê chuột
         self.persp_hits = []         # (Rect, khoá) các thẻ góc nhìn góc phải trên
         # ẩn / hiện có hiệu ứng (người dùng 12/11): mỗi phần trượt ra cạnh màn hình gần nó và mờ dần; 1 = hiện hẳn
-        self.anim = {"top": 1.0, "persp": 1.0, "bar": 1.0, "tl": 1.0, "score": 1.0, "techs": 0.0}
+        self.anim = {"top": 1.0, "persp": 1.0, "bar": 1.0, "tl": 1.0, "score": 1.0, "techs": 1.0}
 
     # ---- chữ --------------------------------------------------------------------------
     def font(self, size, bold=False):
@@ -186,6 +186,7 @@ class Hud:
         self.r_settings_panel = None
         self.persp_hits = []
         self.settings_hits = []
+        self.r_techs = None
         if m.loading is not None:
             self._loading(surf, m)
             return surf
@@ -763,54 +764,82 @@ class Hud:
             x += col_w
 
     def _techs(self, surf, m):
-        W, _H = self.size
-        u = self.u
-        if m.sel_player is None:
+        """Bảng công nghệ góc trái trên (người dùng 12/11): mỗi người chơi trong tầm nhìn đang xem một thẻ xếp dọc
+        (đang nghiên cứu: icon + tên + % + thanh; đã xong: lưới icon + giờ xong). Thẻ đầu ghi "Bấm C để bật tắt".
+        Không vừa chiều cao tới thanh dưới thì thu nhỏ icon, rồi chỉ giữ các hàng công nghệ mới nhất."""
+        _W, H = self.size
+        u0 = self.u
+        panels = getattr(m, "tech_panels", None) or []
+        self.r_techs = None
+        if not panels:
             return
-        cols = 6
-        icon = int(44 * u)
-        cell_w = icon + int(18 * u)
-        cell_h = icon + int(22 * u)
-        techs = m.techs[-cols * 7:]
-        n_rows = max(1, (len(techs) + cols - 1) // cols)
+        bottom_lim = (getattr(self, "bar_top", None) or (H - int(60 * u0))) - int(10 * u0)
+        top0 = int(6 * u0)
+        cols = 8
+
+        def layout(sc, max_rows):
+            u = u0 * sc
+            icon = int(36 * u)
+            cell_w, cell_h = icon + int(12 * u), icon + int(18 * u)
+            head = int(28 * u)
+            res_h = int(30 * u)
+            hs = []
+            for pn in panels:
+                n = len(pn["techs"])
+                rows_ = max(1, -(-n // cols)) if n else 1
+                rows_ = min(rows_, max_rows)
+                hs.append(head + len(pn["researching"]) * res_h + rows_ * cell_h + int(8 * u))
+            return u, icon, cell_w, cell_h, head, res_h, hs
+        for sc, mr in ((1.0, 9), (0.85, 9), (0.72, 9), (0.62, 9), (0.62, 3), (0.55, 2), (0.5, 1)):
+            u, icon, cell_w, cell_h, head, res_h, hs = layout(sc, mr)
+            gap = int(6 * u)
+            if top0 + sum(hs) + gap * (len(hs) - 1) <= bottom_lim:
+                break
         w = cols * cell_w + int(20 * u)
-        resg = getattr(m, "researching", []) or []
-        res_h = len(resg) * int(40 * u) + (int(8 * u) if resg else 0)
-        h = int(36 * u) + res_h + n_rows * cell_h + int(8 * u)
-        r = pygame.Rect(int(10 * u), int(6 * u), w, h)      # góc trái trên (người dùng 12/11)
-        self.r_techs = r
-        self.panel(surf, r, border=(120, 110, 80))
-        surf.blit(self.text(f"Công nghệ · {m.sel_player['name']}", int(16 * u), m.sel_player["rgb"], bold=True),
-                  (r.x + int(10 * u), r.y + int(6 * u)))
-        yy = r.y + int(34 * u)
-        for name, frac, icon_id in resg:                 # đang nghiên cứu: icon + tên + % + thanh tiến độ
-            ic = self.tech_icon(icon_id, int(32 * u)) if self.tech_icon else None
-            cx = r.x + int(10 * u)
-            if ic is not None:
-                surf.blit(ic, (cx, yy))
-                cx += ic.get_width() + int(8 * u)
-            t = self.text(f"{name}  {int(frac * 100)}%", int(14 * u), GOLD, True)
-            surf.blit(t, (cx, yy))
-            bar = pygame.Rect(cx, yy + t.get_height() + int(2 * u), r.right - cx - int(10 * u), int(7 * u))
-            pygame.draw.rect(surf, (50, 50, 50), bar)
-            b2 = bar.copy(); b2.width = int(bar.width * frac)
-            pygame.draw.rect(surf, GOLD, b2)
-            yy += int(40 * u)
-        if resg:
-            yy += int(8 * u)
-        if not techs and not resg:
-            surf.blit(self.text("(chưa có)", int(15 * u), GREY), (r.x + int(10 * u), yy + int(2 * u)))
-        for k, (t, name, icon_id) in enumerate(techs):
-            cx = r.x + int(10 * u) + (k % cols) * cell_w
-            cy = yy + (k // cols) * cell_h
-            ic = self.tech_icon(icon_id, icon) if self.tech_icon else None
-            if ic is not None:
-                surf.blit(ic, (cx + (cell_w - icon) // 2, cy))
-            else:
-                pygame.draw.rect(surf, GREY, (cx + (cell_w - icon) // 2, cy, icon, icon), 1)
-                surf.blit(self.text(name[:7], int(11 * u)), (cx + 4, cy + 4))
-            ts = self.text(fmt_ms(t), int(12 * u), GREY)
-            surf.blit(ts, ts.get_rect(midtop=(cx + cell_w // 2, cy + icon + 1)))
+        y = top0
+        x = int(10 * u0)
+        union = None
+        for k, (pn, h) in enumerate(zip(panels, hs)):
+            r = pygame.Rect(x, y, w, h)
+            union = r if union is None else union.union(r)
+            self.panel(surf, r, border=(120, 110, 80))
+            title = self.text(f"Công nghệ · {pn['name']}", int(15 * u), pn["rgb"], bold=True)
+            surf.blit(title, (r.x + int(10 * u), r.y + int(5 * u)))
+            if k == 0:
+                hint = self.text("Bấm C để bật tắt", int(12 * u), GREY)
+                surf.blit(hint, hint.get_rect(topright=(r.right - int(10 * u), r.y + int(7 * u))))
+            yy = r.y + head
+            for name, frac, icon_id in pn["researching"]:      # đang nghiên cứu: icon + tên + % + thanh tiến độ
+                ic = self.tech_icon(icon_id, int(22 * u)) if self.tech_icon else None
+                cx = r.x + int(10 * u)
+                if ic is not None:
+                    surf.blit(ic, (cx, yy))
+                    cx += ic.get_width() + int(6 * u)
+                t = self.text(f"{name}  {int(frac * 100)}%", int(13 * u), GOLD, True)
+                surf.blit(t, (cx, yy - int(2 * u)))
+                bar = pygame.Rect(cx, yy + t.get_height(), r.right - cx - int(10 * u), max(2, int(5 * u)))
+                pygame.draw.rect(surf, (50, 50, 50), bar)
+                b2 = bar.copy(); b2.width = int(bar.width * frac)
+                pygame.draw.rect(surf, GOLD, b2)
+                yy += res_h
+            techs = pn["techs"]
+            max_n = cols * max(1, (h - head - len(pn["researching"]) * res_h - int(8 * u)) // cell_h)
+            techs = techs[-max_n:] if len(techs) > max_n else techs       # thiếu chỗ: giữ công nghệ mới nhất
+            if not techs and not pn["researching"]:
+                surf.blit(self.text("(chưa có)", int(13 * u), GREY), (r.x + int(10 * u), yy + int(2 * u)))
+            for j, (t, name, icon_id) in enumerate(techs):
+                cx = r.x + int(10 * u) + (j % cols) * cell_w
+                cy = yy + (j // cols) * cell_h
+                ic = self.tech_icon(icon_id, icon) if self.tech_icon else None
+                if ic is not None:
+                    surf.blit(ic, (cx + (cell_w - icon) // 2, cy))
+                else:
+                    pygame.draw.rect(surf, GREY, (cx + (cell_w - icon) // 2, cy, icon, icon), 1)
+                    surf.blit(self.text(name[:6], int(10 * u)), (cx + 3, cy + 3))
+                ts = self.text(fmt_ms(t), int(11 * u), GREY)
+                surf.blit(ts, ts.get_rect(midtop=(cx + cell_w // 2, cy + icon + 1)))
+            y = r.bottom + gap
+        self.r_techs = union
 
     # icon chỉ số của game (interfac.drs 50731): 7 kiếm = công, 8 áo giáp = giáp, 9 đồng hồ cát = tốc đánh,
     # 10 khiên = giáp xuyên; khung 6 (bia tầm bắn) kích cỡ lạ 319x192 nên tầm dùng chữ
