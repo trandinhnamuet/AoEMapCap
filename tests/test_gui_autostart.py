@@ -32,7 +32,7 @@ STARTED = []
 
 
 class FakeEngine:
-    def __init__(self, cfg, logger, stop_event, status=None, progress=None):
+    def __init__(self, cfg, logger, stop_event, status=None, progress=None, **kw):
         self.cfg, self.stop_event, self.state, self.current_rec_path = cfg, stop_event, "chờ game", None
         STARTED.append(self)
 

@@ -13,7 +13,7 @@ from mapcap.rawrec import FORMAT_VERSION, MAGIC, file_version, read_end, read_he
 from mapcap import safeload
 
 CACHE_NAME = "_matches.json"
-CACHE_VERSION = 5                 # 3: tên quân tiếng Anh; 4: đội có người bỏ cuộc đầu tiên là đội thua
+CACHE_VERSION = 7                 # 3: tên quân tiếng Anh; 4: đội có người bỏ cuộc đầu tiên là đội thua; 6: "hack"; 7: "age3"
 
 CIV_NAMES = {1: "Egyptian", 2: "Greek", 3: "Babylonian", 4: "Assyrian", 5: "Minoan", 6: "Hittite", 7: "Phoenician",
              8: "Sumerian", 9: "Persian", 10: "Shang", 11: "Yamato", 12: "Choson", 13: "Roman", 14: "Carthaginian",
@@ -241,7 +241,7 @@ def match_info(path):
                     st = 1
             players.append({"index": i, "name": names.get(i, "?"), "civ": civ_name(civs.get(i)), "team": k + 1,
                             "status": st, "resigned": res})
-    return {
+    info = {
         "file": os.path.basename(path),
         "created": hdr.get("created") or os.path.getmtime(path),
         "recorder": names.get(rec, "?"),
@@ -259,7 +259,27 @@ def match_info(path):
         "new_format": "format" in hdr,
         "first_out": None if out is None else {"index": out[0], "name": names.get(out[0], "?"), "t_ms": out[1],
                                                 "kind": "đầu hàng" if out[2] else "rớt mạng / bị loại"},
+        # vi phạm phát hiện trong trận (mapcap/hackcheck, ghi ở 'E' từ 2026-11-11): [{player, name, rule, label, t, ...}]
+        "hack": list((end or {}).get("hack") or []),
+        "cmds": int((end or {}).get("cmds") or 0),
+        "rec_index": rec,
     }
+    if end is not None and "ages" in end:          # file từ khi 'E' có "ages": giờ kích đời 3 có ngay (cột Kích 3)
+        info["age3"] = age3_of(end["ages"], rec)
+    return info
+
+
+def age3_of(ages, index):
+    """Giờ game (ms) người chơi index kích đời 3, None nếu không lên."""
+    return ((ages or {}).get(str(index), {}).get("3") or {}).get("click")
+
+
+def hack_text(info):
+    """'Tên (loại; loại), Tên2 (...)' cho trận có người hack; '' nếu không."""
+    by = {}
+    for e in info.get("hack") or []:
+        by.setdefault(e.get("name") or f"P{e.get('player')}", []).append(e.get("label", ""))
+    return ", ".join(f"{n} ({'; '.join(dict.fromkeys(ls))})" for n, ls in by.items())
 
 
 class Library:
@@ -301,6 +321,9 @@ class Library:
         """Thông tin của file (từ đệm nếu còn đúng); lỗi -> dict có 'error'."""
         c = self.cached(path)
         if c is not None:
+            e = self.cache.get(os.path.basename(path)) or {}
+            if "age3" not in c and "ages" in e and "rec_index" in c:     # file cũ đã quét đời trước đây
+                c["age3"] = age3_of(e["ages"], c["rec_index"])
             return c
         try:
             info = match_info(path)

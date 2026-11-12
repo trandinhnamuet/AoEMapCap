@@ -23,6 +23,9 @@ Bộ đọc cũ gặp đuôi coi như bản ghi cụt và dừng đúng chỗ; g
   'Q' statics delta: {"version", "units": vật thể tĩnh mới/đổi, "removed": uid đã mất}; 'S' toàn bộ chỉ ghi lần đầu và
                mỗi 60 s (điểm bắt đầu khi tua). Trước đây mỗi lần một cây bớt gỗ là ghi lại cả ~4 400 vật thể.
   'E' thêm "pstat_log" [(t, index, trạng thái, đầu hàng)] để danh sách trận không phải đọc cả file.
+Từ 2026-11-11 (vẫn định dạng 3, bộ đọc cũ bỏ qua khoá lạ): 'F' thêm 'cmd' [(lượt thực thi, người gửi, số thứ tự,
+  bytes lệnh)] = lệnh mới đọc từ hàng đợi lệnh của game (mapcap/commands.py), 'turn' = lượt hiện tại khi có lệnh;
+  'E' thêm "hack" (vi phạm phát hiện trong trận, mapcap/hackcheck.py) và "cmds" (số lệnh đã ghi).
 Dùng iter_records() để đọc tuần tự (tự mở khối 'B'); file định dạng 1-2 vẫn đọc bình thường.
 """
 import lzma
@@ -191,6 +194,8 @@ class RawWriter:
         self.prev_statics = None     # mảng vật thể tĩnh đã ghi (để chỉ ghi phần đổi)
         self.static_full_at = 0.0
         self.pstat_log = []          # [(t, index, trạng thái, đầu hàng)] — ghi vào 'E'
+        self.hack = None             # tổng hợp vi phạm (hackcheck.Detector.summary) — người gọi gán, ghi vào 'E'
+        self.cmds = 0                # số lệnh người chơi đã ghi
         self.ages = AgeTracker()     # kích / lên đời -> 'E'["ages"] (bảng trận mở rộng)
         self.raw_bytes = 0           # cỡ pickle trước khi nén (thống kê)
 
@@ -397,6 +402,11 @@ class RawWriter:
                 self.pstat_log.append((snap.time_ms, p.index) + cur)
         if pstat:
             rec["pstat"] = pstat
+        cmds = getattr(snap, "cmds", None)
+        if cmds:                                       # lệnh người chơi mới đọc từ hàng đợi (mapcap/commands.py)
+            rec["cmd"] = [(int(a), int(b), int(c), bytes(d)) for a, b, c, d in cmds]
+            rec["turn"] = int(getattr(snap, "turn", 0) or 0)
+            self.cmds += len(cmds)
         go = int(getattr(snap, "game_over", 0) or 0)
         if go != self.prev_go:
             rec["go"] = go
@@ -415,7 +425,8 @@ class RawWriter:
                 self._write(b"E", {"t": self.last_t, "at": self.last_at, "frames": self.frames,
                                    "status": dict(self.prev_pstat), "game_over": self.prev_go, "reason": reason,
                                    "closed": time.time(), "pstat_log": list(self.pstat_log),
-                                   "ages": self.ages.result()})
+                                   "ages": self.ages.result(), "cmds": self.cmds,
+                                   **({"hack": list(self.hack)} if self.hack is not None else {})})
                 self.f.write(END_MAGIC + struct.pack("<Q", pos))
                 self.bytes += 16
         except Exception:  # noqa: BLE001
@@ -567,6 +578,11 @@ class RawReader:
                         units.pop(int(u), None)
                     for r in payload["units"]:
                         units[int(r["uid"])] = r
+                for key, attr, conv in (("pav", "available", frozenset), ("ptr", "trainable", frozenset),
+                                        ("prs", "researching", dict)):
+                    for idx, v in (payload.get(key) or {}).items():
+                        if 0 <= idx < len(players):
+                            setattr(players[idx], attr, conv(v))
                 for idx, (attrs, techs) in payload.get("pstate", {}).items():
                     if 0 <= idx < len(players):
                         players[idx].attrs = tuple(attrs)
@@ -586,6 +602,9 @@ class RawReader:
                                 tile_border=hdr["tile_border"])
                 snap.static_units = self.statics
                 snap.static_version = self.static_version
+                snap.cmds = payload.get("cmd") or []          # lệnh người chơi đọc được trong mẫu này (từ 2026-11-11)
+                snap.turn = payload.get("turn", 0)
+                snap.match = hdr.get("match")
                 for p in players:
                     p.unit_count = 0
                 for u in snap.units:

@@ -28,6 +28,17 @@ ZOOM_MAX = 4.0
 ZOOM_STEP = 1.25           # mỗi nấc lăn chuột
 ZOOM_TAU = 0.07            # hằng số thời gian của zoom mượt (s)
 FLY_TAU = 0.12
+# máy quay tự động (phím A, người dùng 12/11: như replay LMHT): tới chỗ giao tranh / sự kiện lớn nhất trong tầm nhìn
+DIR_CELL = 6               # ô lưới gom sự kiện (ô bản đồ)
+DIR_DECAY_MS = 6000        # độ "nóng" một chỗ giảm e lần sau chừng này ms giờ game
+DIR_DEATH = 40.0           # một unit chết = chừng này máu mất; công trình bị phá x3
+DIR_MIN = 30.0             # dưới ngưỡng này không coi là có giao tranh
+DIR_HOLD_S = 2.5           # giữ một chỗ ít nhất chừng này giây thật trước khi nhảy sang chỗ khác
+DIR_ZOOM = 0.75            # zoom tối thiểu khi máy quay tự động nhảy tới chỗ mới
+DIR_IDLE_HOLD_S = 8.0      # không có giao tranh: xem một nhóm chừng này giây thật rồi đổi nhóm khác
+DIR_BUILD_MS = 4000        # công trình được coi là "đang xây" nếu máu tăng trong chừng này ms giờ game
+HOUSE_DAT, FARM_DAT = 70, 50
+DIR_RANK = {"other": 0, "work": 1, "house": 2, "build": 3, "fight": 4}
 FOLLOW_TAU = 0.06          # máy quay bám unit đang khoá (s)
 JUMP_MS = 15000            # Backspace / J: 15 giây giờ game
 HUD_PERIOD = 0.1           # làm mới HUD khi đang phát (s)
@@ -108,6 +119,9 @@ class Viewer:
         self.rec_team = next((k for k, t in enumerate(teams) if rec in t), 0 if teams else None)
         self.persp = self.rec_team         # mở replay theo góc nhìn đội của người ghi (F3 để xem toàn bản đồ)
         self.last_team = self.rec_team
+        self.persp_pl = None               # xem tầm nhìn riêng một người chơi (bấm thẻ người chơi góc phải trên)
+        self.auto_cam = False              # máy quay tự động (phím A)
+        self._dir_reset()
         self.selected = None
         self.sel_unit = None         # uid unit đang xem thông tin
         self.group = []              # uid các unit khoanh bằng chuột phải (hiện thanh máu, không khoá máy quay)
@@ -316,6 +330,7 @@ class Viewer:
             elif my >= H - 1 - EDGE_PX:
                 vy += 1
         if vx or vy:
+            self._take_camera()
             self.unfollow()
             sp = PAN_SPEED * (2.0 if (pygame.key.get_mods() & pygame.KMOD_SHIFT) else 1.0)
             self.cx += max(-1, min(1, vx)) * sp * dt / self.zoom
@@ -333,7 +348,10 @@ class Viewer:
             u = self._selected_row() if self.sel_unit is not None else None
             if u is None:
                 self.follow = False
-                self.set_toast("Unit đã mất: bỏ khoá máy quay")
+                if self.auto_cam:
+                    self._dir_ver = -1                    # máy quay tự động chọn unit khác ngay
+                else:
+                    self.set_toast("Unit đã mất: bỏ khoá máy quay")
             else:
                 ax, ay = self.world.anchors(np.array([u], dtype=u.dtype))
                 a = 1.0 - math.exp(-dt / FOLLOW_TAU)
@@ -358,6 +376,306 @@ class Viewer:
             self.follow = False
             if toast:
                 self.set_toast("Bỏ khoá máy quay (Y để khoá lại)")
+
+    # ---- bảng Cài đặt replay (nút ⚙ trên thanh thời gian; người dùng 12/11) ---------------------------
+    def _settings_model(self):
+        hud = self.hud
+        d = self.data
+
+        def it(text, active, act):
+            return {"text": text, "active": bool(active), "act": act}
+        persp = [it("Toàn bản đồ (F3)", self.persp is None, ("persp", None))]
+        for k, team in enumerate(d.teams):
+            name = d.players[team[0]].name if len(team) == 1 else f"Đội {k + 1}"
+            persp.append(it(name, self.persp == k and self.persp_pl is None, ("persp", k)))
+        if self.persp is not None and self.persp_pl is not None:
+            persp.append(it(d.players[self.persp_pl].name, True, ("persp_pl", self.persp_pl)))
+        rows = [
+            {"label": "Máy quay tự động (A)", "items": [it("Bật", self.auto_cam, ("auto", True)),
+                                                        it("Tắt", not self.auto_cam, ("auto", False))]},
+            {"label": "Tầm nhìn", "items": persp},
+            {"label": "Tốc độ  (- / =)", "items": [it(f"x{v:g}".replace(".", ","), i == self.speed_i, ("speed", i))
+                                                   for i, v in enumerate(SPEEDS)]},
+        ]
+        snd = self.audio is not None and self.audio.ok
+        rows.append({"label": "Âm thanh (S)", "items": [it("Bật", snd and self.audio.enabled, ("sound", True)),
+                                                        it("Tắt", not (snd and self.audio.enabled), ("sound", False))]})
+        rows.append({"label": "Hiện", "items": [it("Bảng chỉ số (O)", hud.show_score, ("score",)),
+                                                it("Bản đồ nhỏ (M)", hud.show_minimap, ("minimap",)),
+                                                it("Công nghệ (C)", hud.show_techs, ("techs",))]})
+        rows.append({"label": "Màn hình", "items": [it("Toàn màn hình (F11)", self.fullscreen, ("fullscreen",))]})
+        rows.append({"label": "Trợ giúp", "items": [it("Bảng phím tắt (Esc)", False, ("help",))]})
+        return rows
+
+    def _settings_action(self, act):
+        hud = self.hud
+        kind = act[0]
+        if kind == "auto":
+            if act[1] != self.auto_cam:
+                self.set_auto_cam(act[1])
+        elif kind == "persp":
+            self.set_persp(act[1])
+        elif kind == "persp_pl":
+            pass                                   # đang xem riêng người này: giữ nguyên
+        elif kind == "speed":
+            self.speed_i = int(act[1])
+            self.set_toast(f"Tốc độ {self.speed_label()}")
+        elif kind == "sound":
+            if self.audio is None or not self.audio.ok:
+                self.set_toast("Không có âm thanh (máy không có thiết bị âm thanh hoặc thiếu data\\sound.drs)")
+            elif self.audio.enabled != act[1]:
+                self.set_toast("Âm thanh: " + ("bật" if self.audio.toggle() else "tắt"))
+        elif kind == "score":
+            hud.show_score = not hud.show_score
+        elif kind == "minimap":
+            hud.show_minimap = not hud.show_minimap
+        elif kind == "techs":
+            hud.show_techs = not hud.show_techs
+            if hud.show_techs and self.selected is None and self.data.teams:
+                self.selected = self.data.teams[self.rec_team or 0][0]
+        elif kind == "fullscreen":
+            self.toggle_fullscreen()
+        elif kind == "help":
+            hud.show_settings = False
+            hud.show_help = True
+        self._hud_dirty = True
+
+    def toggle_settings(self, on=None):
+        self.hud.show_settings = (not self.hud.show_settings) if on is None else bool(on)
+        self._hud_dirty = True
+
+    # ---- máy quay tự động -------------------------------------------------------------------
+    def set_auto_cam(self, on):
+        self.auto_cam = bool(on)
+        self._dir_reset()
+        if on:
+            self.unfollow(toast=False)
+            self.set_toast("Máy quay tự động: BẬT (giao tranh -> xây nhà -> dân làm việc; A hoặc tự kéo máy quay để tắt)", 3.0)
+            self._dir_ver = -1
+        else:
+            self.set_toast("Máy quay tự động: tắt (A để bật)")
+        self._hud_dirty = True
+
+    def _take_camera(self):
+        """Người xem tự di chuyển máy quay: tắt máy quay tự động (như replay LMHT)."""
+        if self.auto_cam:
+            self.set_auto_cam(False)
+
+    def _dir_reset(self):
+        self._dir_prev = None
+        self._dir_heat = None
+        self._dir_cell = None
+        self._dir_since = 0.0
+        self._dir_ver = -1
+        self._dir_mode = None
+        self._dir_key = None
+        self._dir_built = {}             # uid công trình -> giờ game lần cuối thấy tăng máu (đang xây)
+        self._dir_recent = []            # các nhóm / công trình vừa xem (đổi sang nhóm khác)
+
+    def _director(self):
+        """Máy quay tự động (phím A). Luôn khoá theo một unit (người dùng 12/11: không bao giờ đứng yên).
+        Có giao tranh: gom máu mất / unit chết giữa hai mẫu vào lưới DIR_CELL ô (nguội dần theo giờ game), chỉ tính
+        sự kiện trong tầm nhìn đang xem; chọn chỗ nóng nhất (giữ ít nhất DIR_HOLD_S giây, chỗ mới phải nóng hơn hẳn)
+        và khoá theo unit gần trọng tâm trận đánh nhất. Không có giao tranh: công trình lớn đang xây -> nhà (BE) đang xây
+        -> nhóm dân đang làm việc đông nhất, đổi nhóm sau DIR_IDLE_HOLD_S giây."""
+        self._dir_ver = self.cursor.version
+        st = self.cursor.state
+        d = self.data
+        w = self.world
+        fi = st.frame
+        if fi < 0 or w is None or not d.n_frames:
+            return
+        t = float(d.f_t[fi])
+        U = st.units()
+        A = U[(U["kind"] != 25) & (U["owner"] > 0)]
+        o = np.argsort(A["uid"], kind="stable")
+        A = A[o]
+        cur = (t, A["uid"], A["hp"].astype(np.float32), A["x"].astype(np.float32), A["y"].astype(np.float32),
+               A["status"], A["def"])
+        prev, self._dir_prev = self._dir_prev, cur
+        gw, gh = -(-w.map_w // DIR_CELL), -(-w.map_h // DIR_CELL)
+        if self._dir_heat is None or self._dir_heat.shape[1:] != (gh, gw):
+            self._dir_heat = np.zeros((3, gh, gw), np.float64)           # độ nóng, tổng x, tổng y
+        _, defs = d.def_arrays()
+        vm = self._team_masks(self.persp)[0] if self.persp is not None else None
+        if prev is not None:
+            pt, puid, php, px, py, pst, pdef = prev
+            dt = t - pt
+            if dt < 0 or dt > 5000:                                      # tua: bắt đầu lại
+                self._dir_heat[:] = 0
+                self._dir_cell = None
+                self._dir_built.clear()
+            elif dt > 0:
+                self._dir_events(cur, prev, dt, defs, vm, st, w)
+        if prev is None or t == prev[0]:
+            if self.follow:
+                return
+        H = self._dir_heat
+        S = np.zeros((3,) + H.shape[1:])                                # tổng 3x3 ô lưới
+        for oy in (-1, 0, 1):
+            for ox in (-1, 0, 1):
+                S += np.roll(np.roll(H, oy, 1), ox, 2)
+        best = np.unravel_index(int(np.argmax(S[0])), S[0].shape)
+        sb = S[0][best]
+        now = time.time()
+        cell = self._dir_cell
+        sc = S[0][cell] if cell is not None else 0.0
+        lost = not self.follow
+        if sb >= DIR_MIN:
+            switch = (cell is None or self._dir_mode != "fight" or sc < DIR_MIN * 0.5 or
+                      (now - self._dir_since > DIR_HOLD_S and sb > 1.6 * sc))
+            if switch and cell != best:
+                cell = best
+            elif not (switch or lost):
+                return
+            self._dir_cell = cell
+            x, y = S[1][cell] / max(S[0][cell], 1e-9), S[2][cell] / max(S[0][cell], 1e-9)
+            uid = self._dir_pick_near(A, defs, vm, st, x, y, prefer_army=True)
+            if uid is not None and (lost or switch):
+                self._dir_lock(uid, "fight", now, toast="giao tranh")
+            return
+        # không có giao tranh: công trình đang xây (ưu tiên cao hơn) thì chuyển sau DIR_HOLD_S, không thì đổi nhóm
+        # sau DIR_IDLE_HOLD_S
+        held = now - self._dir_since
+        if not lost and held < DIR_HOLD_S:
+            return
+        avoid = held >= DIR_IDLE_HOLD_S or self._dir_mode == "fight"
+        pick = self._dir_idle_pick(A, defs, vm, st, t, avoid)
+        if pick is None:
+            return
+        uid, mode, label, rank, key = pick
+        cur_rank = DIR_RANK.get(self._dir_mode, -1)
+        done = self._dir_mode in ("build", "house") and not self._dir_building_alive(A, t)   # nhà đã xây xong
+        if lost or avoid or rank > cur_rank or done:
+            self._dir_cell = None
+            self._dir_lock(uid, mode, now, toast=label, key=key)
+
+    def _dir_events(self, cur, prev, dt, defs, vm, st, w):
+        """Máu mất / unit chết giữa hai mẫu -> lưới độ nóng; công trình tăng máu -> đang xây."""
+        self._dir_heat *= math.exp(-dt / DIR_DECAY_MS)
+        t, uid, hp = cur[0], cur[1], cur[2]
+        _pt, puid, php, px, py, pst, pdef = prev
+        if not len(puid):
+            return
+        pos = np.clip(np.searchsorted(uid, puid), 0, max(len(uid) - 1, 0))
+        found = (uid[pos] == puid) if len(uid) else np.zeros(len(puid), bool)
+        now_hp = np.where(found, hp[pos] if len(uid) else 0, 0)
+        was_alive = (pst < 3) & (php > 0)
+        bld = defs["utype"][np.clip(pdef, 0, defs["n"] - 1)] == 80
+        up = found & bld & (pst == 0) & (now_hp > php)                   # công trình đang được xây
+        for u in puid[up].tolist():
+            self._dir_built[int(u)] = t
+        dmg = np.where(found, np.maximum(php - now_hp, 0), 0)
+        dmg = np.where(bld & (pst == 0), 0, dmg)                         # (móng nhà không tính)
+        died = was_alive & (~found | (now_hp <= 0))
+        wgt = dmg * was_alive + died * DIR_DEATH * np.where(bld, 3.0, 1.0)
+        hit = wgt > 0
+        if not hit.any():
+            return
+        ex, ey, wgt = px[hit], py[hit], wgt[hit]
+        tx = np.clip(ex.astype(np.int32), 0, w.map_w - 1)
+        ty = np.clip(ey.astype(np.int32), 0, w.map_h - 1)
+        if vm is not None and st.vis is not None:                        # chỉ sự kiện góc nhìn đang xem thấy
+            wgt = wgt * ((st.vis[ty, tx] & np.uint32(vm)) != 0)
+        gx, gy = tx // DIR_CELL, ty // DIR_CELL
+        for k, v in enumerate((wgt, wgt * ex, wgt * ey)):
+            np.add.at(self._dir_heat[k], (gy, gx), v)
+
+    def _dir_seen(self, A, vm, st):
+        """Unit sống, góc nhìn đang xem thấy (toàn bản đồ: mọi unit)."""
+        ok = (A["status"] < 3) & (A["hp"] > 0)
+        if vm is not None and st.vis is not None and len(A):
+            tx = np.clip(A["x"].astype(np.int32), 0, self.world.map_w - 1)
+            ty = np.clip(A["y"].astype(np.int32), 0, self.world.map_h - 1)
+            ok &= (st.vis[ty, tx] & np.uint32(vm)) != 0
+        return ok
+
+    def _dir_pick_near(self, A, defs, vm, st, x, y, prefer_army=False):
+        di = np.clip(A["def"], 0, defs["n"] - 1)
+        ut = defs["utype"][di]
+        # chỉ unit / công trình thật: không khoá xác, di tích / đồ cổ (Artifact, Ruins: nhóm 1)
+        ok = self._dir_seen(A, vm, st) & ((ut == 70) | (ut == 80)) & (defs["cls"][di] != 1)
+        mobile = ok & (ut == 70)
+        cand = mobile if mobile.any() else ok
+        if not cand.any():
+            return None
+        dist = np.hypot(A["x"] - x, A["y"] - y)
+        if prefer_army:
+            dist = dist + np.where(defs["cls"][di] == 4, 3.0, 0.0)          # trong trận đánh ưu tiên lính hơn dân
+        dist = np.where(cand, dist, np.inf)
+        k = int(np.argmin(dist))
+        return int(A["uid"][k]) if np.isfinite(dist[k]) else None
+
+    def _dir_building_alive(self, A, t):
+        """Công trình đang xem còn đang được xây."""
+        k = self._dir_key
+        return isinstance(k, int) and t - self._dir_built.get(k, -1e18) <= DIR_BUILD_MS
+
+    def _dir_idle_pick(self, A, defs, vm, st, t, avoid=True):
+        """(uid, chế độ, chữ) khi không có giao tranh: công trình lớn đang xây -> BE đang xây -> dân đang làm việc
+        (nhóm đông nhất, khác nhóm vừa xem nếu có) -> unit bất kì thấy được."""
+        di = np.clip(A["def"], 0, defs["n"] - 1)
+        ut, dat, cls = defs["utype"][di], defs["dat_id"][di], defs["cls"][di]
+        ok = self._dir_seen(A, vm, st) & ((ut == 70) | (ut == 80)) & (cls != 1)
+        if not ok.any():
+            return None
+        recent = self._dir_recent if avoid else []
+        building = ok & (ut == 80) & (A["status"] == 0)
+        bi = np.nonzero(building)[0]
+        if len(bi):
+            bt = np.array([self._dir_built.get(int(u), -1e18) for u in A["uid"][bi]], np.float64)
+            building[bi[(t - bt) > DIR_BUILD_MS]] = False
+        for mask, mode, label in ((building & (dat != HOUSE_DAT) & (dat != FARM_DAT), "build", "đang xây nhà lớn"),
+                                  (building & ((dat == HOUSE_DAT) | (dat == FARM_DAT)), "house", "đang xây nhà")):
+            idx = np.nonzero(mask)[0]
+            if len(idx):
+                fresh = [i for i in idx.tolist() if int(A["uid"][i]) not in recent]
+                i = (fresh or idx.tolist())[0]
+                # khoá theo người đang xây (dân gần công trình nhất), không có thì theo chính công trình
+                vil = ok & (ut == 70) & (cls == 4)
+                dist = np.where(vil, np.hypot(A["x"] - A["x"][i], A["y"] - A["y"][i]), np.inf)
+                k = int(np.argmin(dist)) if vil.any() else i
+                if not np.isfinite(dist[k]) or dist[k] > 4:
+                    k = i
+                return int(A["uid"][k]), mode, label, DIR_RANK[mode], int(A["uid"][i])
+        working = ok & (ut == 70) & (cls == 4) & (A["ramount"] > 0)
+        idx = np.nonzero(working)[0]
+        if len(idx):
+            cells = (A["x"][idx] // DIR_CELL).astype(np.int64) * 10000 + (A["y"][idx] // DIR_CELL).astype(np.int64)
+            uniq, cnt = np.unique(cells, return_counts=True)
+            order = [int(c) for c in uniq[np.argsort(-cnt, kind="stable")]]
+            fresh = [c for c in order if ("cell", c) not in recent]
+            c = (fresh or order)[0]
+            grp = idx[cells == c]
+            cx, cy = A["x"][grp].mean(), A["y"][grp].mean()
+            k = grp[int(np.argmin(np.hypot(A["x"][grp] - cx, A["y"][grp] - cy)))]
+            return int(A["uid"][k]), "work", f"{len(grp)} dân đang làm việc", DIR_RANK["work"], ("cell", c)
+        mobile = np.nonzero(ok & (ut == 70))[0]
+        idx = mobile if len(mobile) else np.nonzero(ok)[0]
+        fresh = [i for i in idx.tolist() if int(A["uid"][i]) not in recent]
+        i = (fresh or idx.tolist())[0]
+        return int(A["uid"][i]), "other", "unit", DIR_RANK["other"], int(A["uid"][i])
+
+    def _dir_recent_add(self, key):
+        self._dir_recent.append(key)
+        del self._dir_recent[:-4]
+
+    def _dir_lock(self, uid, mode, now, toast=None, key=None):
+        changed = self.sel_unit != ("u", uid) or not self.follow
+        if key is not None:
+            self._dir_recent_add(key)
+        self._dir_key = key
+        self.group = []
+        self.sel_unit = ("u", uid)
+        self.lock_on_selected(toast=False)
+        self._dir_mode, self._dir_since = mode, now
+        if changed:
+            self.zoom_target = max(self.zoom_target, DIR_ZOOM)
+            self.zoom_anchor = None
+            if toast:
+                info = self._unit_info()
+                self.set_toast(f"Máy quay tự động: {toast} · {info['name'] if info else 'unit'}", 2.0)
+        self._hud_dirty = True
 
     def fly_to(self, wx, wy, zoom=None):
         self.fly = (wx, wy)
@@ -400,15 +718,35 @@ class Viewer:
         self._hud_dirty = True
 
     def persp_label(self):
+        if self.persp is not None and self.persp_pl is not None:
+            return f"Tầm nhìn: {self.data.players[self.persp_pl].name}"
         if self.persp is None:
             return "Tầm nhìn: toàn bản đồ"
         team = self.data.teams[self.persp]
         names = ", ".join(self.data.players[i].name for i in team[:3]) + ("…" if len(team) > 3 else "")
         return f"Tầm nhìn: Đội {self.persp + 1} ({names})"
 
+    def team_of(self, idx):
+        return next((k for k, t in enumerate(self.data.teams) if idx in t), None)
+
+    def set_persp_player(self, idx):
+        """Thẻ người chơi: xem đúng tầm nhìn người đó; bấm lại người đang xem thì về tầm nhìn cả đội."""
+        k = self.team_of(idx)
+        if k is None:
+            return
+        if self.persp == k and self.persp_pl == idx:
+            self.set_persp(k)
+            return
+        self.persp, self.persp_pl, self.last_team = k, idx, k
+        self.set_toast(self.persp_label())
+
+    def _persp_key(self):
+        return (self.persp, self.persp_pl)
+
     def set_persp(self, p):
         if p is not None and not (0 <= p < len(self.data.teams)):
             return
+        self.persp_pl = None
         self.persp = p
         if p is not None:
             self.last_team = p
@@ -457,9 +795,20 @@ class Viewer:
         self.cursor.seek(fi)
 
     # ---- dựng lại dữ liệu vẽ -------------------------------------------------------------
+    def _all_mask(self):
+        """Tầm nhìn của mọi người chơi trong các đội (không tính Gaia)."""
+        vm = 0
+        for team in self.data.teams:
+            for i in team:
+                vm |= self.data.players[i].visible_mask
+        return vm
+
     def _team_masks(self, k):
         vm = em = 0
-        for i in self.data.teams[k]:
+        team = self.data.teams[k]
+        if self.persp_pl is not None and self.persp_pl in team:
+            team = [self.persp_pl]                    # tầm nhìn riêng một người (chưa chia sẻ tầm nhìn đồng minh)
+        for i in team:
             p = self.data.players[i]
             vm |= p.visible_mask
             em |= p.explored_mask
@@ -474,8 +823,11 @@ class Viewer:
         _, defs = d.def_arrays()
         V = st.vis
         if self.persp is None:
-            fog = np.full(V.shape, 255, np.uint8)
-            visT = expT = None
+            # toàn bản đồ (người dùng 11/11, sửa 12/11): thấy hết unit; sáng chỗ có tầm nhìn của BẤT KỲ người chơi nào
+            # (trước chỉ đội vừa xem -> trận 2v2 nhà đội kia tối dù quân vẫn chạy), chỗ không ai thấy thì tối
+            vm = self._all_mask()
+            vis = (V & np.uint32(vm)) != 0 if vm else np.ones(V.shape, bool)
+            fog = np.where(vis, 255, int(round(FOG_DIM * 255))).astype(np.uint8)
         else:
             vm, em = self._team_masks(self.persp)
             vis = (V & np.uint32(vm)) != 0
@@ -508,7 +860,7 @@ class Viewer:
             k25 = U["kind"] == 25
             if self.persp is None:
                 keep &= ~k25
-                bright = np.ones(len(U), np.float32)
+                bright = np.where(vis[ty, tx], 1.0, FOG_DIM).astype(np.float32)
             else:
                 vT = vis[ty, tx]
                 eT = exp[ty, tx]
@@ -975,6 +1327,20 @@ class Viewer:
                              "hotkey": self._hotkey_of.get(p.index),
                              "status": {1: "thắng", 2: "đầu hàng" if p.resigned else "thua"}.get(p.ptype)}
         m.teams = [[rows[i] for i in t if i in rows] for t in d.teams]
+        # thẻ góc phải trên (người dùng 12/11): mỗi người chơi một thẻ nhỏ, sáng = đang xem tầm nhìn người đó; bấm để đổi
+        cards = [{"key": ("all", None), "name": "Toàn bản đồ", "civ": "", "rgb": (235, 235, 235),
+                  "active": self.persp is None, "team": -1}]
+        for k, team in enumerate(m.teams):
+            for p in team:
+                act = self.persp == k and (self.persp_pl is None or self.persp_pl == p["index"])
+                cards.append({"key": ("pl", p["index"]), "name": p["name"], "civ": p["civ"], "rgb": p["rgb"],
+                              "active": act, "team": k})
+        sub = None
+        if self.persp is None:
+            sub = "chỗ tối: không người chơi nào nhìn thấy"
+        m.settings = self._settings_model() if self.hud.show_settings else None
+        m.persp_card = {"title": "Góc nhìn" + ("  ·  máy quay tự động (A)" if self.auto_cam else ""), "sub": sub,
+                        "cards": cards}
         m.selected = self.selected
         # thanh dưới mang giao diện văn minh của người chơi đang chọn (chưa chọn: người ghi trận), như trong game
         who = self.selected if self.selected is not None else d.recorder_index()
@@ -1154,20 +1520,26 @@ class Viewer:
     def toggle_fullscreen(self):
         """Toàn màn hình kiểu 'desktop' (không đổi độ phân giải, không mất ngữ cảnh OpenGL); giữ chuột trong cửa sổ
         để cuộn bằng mép màn hình chạy cả khi có nhiều màn hình."""
+        import warnings
         try:
-            import warnings
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", DeprecationWarning)
                 win = pygame.Window.from_display_module()
             if self.fullscreen:
                 win.set_windowed()
-                win.mouse_grabbed = False
             else:
                 win.set_fullscreen(desktop=True)
-                win.mouse_grabbed = True
+            # ghi trạng thái ngay khi đổi xong: trước đây lỗi giữ chuột (mouse_grabbed chỉ đọc ở pygame-ce 2.5) nhảy
+            # qua dòng này nên lần bấm sau vẫn "bật" toàn màn hình, không tắt được
             self.fullscreen = not self.fullscreen
         except Exception as e:  # noqa: BLE001
             self.log(f"không đổi được chế độ toàn màn hình: {e}")
+        try:                                              # giữ chuột trong cửa sổ khi toàn màn hình (cuộn bằng mép)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                pygame.Window.from_display_module().grab_mouse = self.fullscreen
+        except Exception:  # noqa: BLE001
+            pass
         self._on_resize()
 
     def _on_resize(self):
@@ -1184,7 +1556,10 @@ class Viewer:
         if k == pygame.K_RETURN and (mods & pygame.KMOD_ALT) or k == pygame.K_F11:
             self.toggle_fullscreen()
         elif k == pygame.K_ESCAPE:
-            hud.show_help = not hud.show_help         # Esc: bảng phím tắt (thoát toàn màn hình bằng F11 / Alt+Enter)
+            if hud.show_settings:                      # Esc: đóng bảng Cài đặt trước
+                hud.show_settings = False
+            else:
+                hud.show_help = not hud.show_help     # Esc: bảng phím tắt (thoát toàn màn hình bằng F11 / Alt+Enter)
         elif k == pygame.K_p:
             self.playing = not self.playing
             if self.playing and self.data.n_frames and self.r >= self.data.f_r[-1] and self.data.done:
@@ -1212,6 +1587,8 @@ class Viewer:
             self.set_persp(seq[(i + 1) % len(seq)])
         elif k == pygame.K_f:
             self.set_persp(self.last_team if self.persp is None else None)
+        elif k == pygame.K_a and not (mods & (pygame.KMOD_CTRL | pygame.KMOD_ALT)):
+            self.set_auto_cam(not self.auto_cam)
         elif k == pygame.K_SPACE:
             if self.selected is not None:
                 home = self.player_home(self.selected)
@@ -1241,6 +1618,7 @@ class Viewer:
         elif k == pygame.K_HOME:
             self.fit_view()
         elif k in (pygame.K_y, pygame.K_l):
+            self._take_camera()
             if self.follow:
                 self.unfollow()
             elif len(self.group) > 1:
@@ -1261,7 +1639,29 @@ class Viewer:
             hud.show_help = False
             self._hud_dirty = True
             return
+        if hud.show_settings:
+            # bảng Cài đặt đang mở: bấm nút trong bảng = làm; bấm trong bảng = không gì; bấm ngoài = đóng bảng
+            if ev.button == 1:
+                for r, act in hud.settings_hits:
+                    if r.collidepoint(pos):
+                        self._settings_action(act)
+                        return
+            if hud.r_settings_panel is not None and hud.r_settings_panel.collidepoint(pos):
+                return
+            self.toggle_settings(False)
+            return
         if ev.button == 1:
+            if hud.r_settings is not None and hud.r_settings.collidepoint(pos):
+                self.toggle_settings()
+                return
+            for r, key in hud.persp_hits:
+                if r.collidepoint(pos):
+                    if key[0] == "all":
+                        self.set_persp(None)
+                    else:
+                        self.set_persp_player(key[1])
+                    self._hud_dirty = True
+                    return
             if hud.r_help is not None and hud.r_help.collidepoint(pos):
                 hud.show_help = True
                 self._hud_dirty = True
@@ -1281,6 +1681,7 @@ class Viewer:
         mm = hud.minimap_rect()
         if mm is not None and mm.collidepoint(pos) and ev.button in (1, 3):
             self.drag = ("minimap", pos, True)
+            self._take_camera()
             self.unfollow()
             self.cx, self.cy = self._minimap_to_world(pos)
             self.fly = None
@@ -1304,6 +1705,7 @@ class Viewer:
             return
         if d[0] == "world" and not d[2]:
             if d[3] == 1:
+                self._take_camera()
                 self.group = []                         # bấm chuột trái bất kì: đóng thanh máu của nhóm
                 self.sel_unit = self.pick_unit(*ev.pos)
                 if self.sel_unit is not None and self.sel_unit[0] == "u":
@@ -1323,6 +1725,12 @@ class Viewer:
         if hov != hud.hover_timeline:
             hud.hover_timeline = hov
             self._hud_dirty = True
+        if hud.show_settings:                              # tô sáng nút bảng Cài đặt dưới chuột
+            hs = next((k for k, (rc, _a) in enumerate(hud.settings_hits) if rc.collidepoint(ev.pos)), None)
+            if hs != getattr(self, "_hover_set", None):
+                self._hover_set = hs
+                self._hud_dirty = True
+            hud.hover_pos = ev.pos
         hc = next((k for k, (rc, _t) in enumerate(hud.cmd_hits) if rc.collidepoint(ev.pos)), None)
         if hc != hud.hover_cmd:                            # rê chuột lên nút bảng lệnh: hiện tên + giá
             hud.hover_cmd = hc
@@ -1346,6 +1754,7 @@ class Viewer:
                 if abs(ev.pos[0] - d[1][0]) + abs(ev.pos[1] - d[1][1]) < 5:
                     return
                 self.drag = ("world", d[1], True, d[3])
+                self._take_camera()
                 self.unfollow()
             self.cx -= ev.rel[0] / self.zoom
             self.cy -= ev.rel[1] / self.zoom
@@ -1381,7 +1790,8 @@ class Viewer:
                 elif ev.type == pygame.MOUSEWHEEL:
                     mx, my = pygame.mouse.get_pos()
                     mm = self.hud.minimap_rect()
-                    if mm is None or not mm.collidepoint((mx, my)):
+                    sp = self.hud.r_settings_panel if self.hud.show_settings else None
+                    if (mm is None or not mm.collidepoint((mx, my))) and (sp is None or not sp.collidepoint((mx, my))):
                         step = ev.precise_y if getattr(ev, "precise_y", 0) else ev.y
                         self.zoom_at(ZOOM_STEP ** step, mx, my)
             now = time.perf_counter()
@@ -1403,7 +1813,9 @@ class Viewer:
         if ready:
             self._advance(dt)
             self._update_camera(dt)
-            if self.cursor.version != self._built_version or self.persp != self._built_persp or self._deferred:
+            if self.auto_cam and self.cursor.version != self._dir_ver:
+                self._director()
+            if self.cursor.version != self._built_version or self._persp_key() != self._built_persp or self._deferred:
                 frame_changed = self.cursor.version != self._built_version
                 self._rebuild()
                 if frame_changed and self.audio is not None:
@@ -1421,7 +1833,7 @@ class Viewer:
                         self.log(f"lỗi âm thanh: {e}")
                         self.audio = None
                 self._built_version = self.cursor.version
-                self._built_persp = self.persp
+                self._built_persp = self._persp_key()
                 if not self.playing:
                     self._hud_dirty = True
         self._render()

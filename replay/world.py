@@ -59,6 +59,11 @@ class SpriteResolver(VideoRenderer):
         self.scale = 1.0
         self.Y0_full = y0
         self._cmds = None
+        try:   # replay: tên unit tiếng Anh gốc như trong game (người dùng 11/11), không lấy languagev.dll
+            from mapcap.lang import GameStrings
+            self.strings = GameStrings(getattr(store, 'game_dir', None) or '', prefer_vietnamese=False)
+        except Exception:  # noqa: BLE001
+            self.strings = None
 
     def _draw_main(self, img, g, X, Y, color_id, angle_frac, fogged, frame=-1, abs_frame=-1):
         if g.slp_id < 0:
@@ -319,6 +324,15 @@ class World:
                 d[fill] = sv[fill]
                 hv &= ~fill
         self.index = idx
+        # tâm từng ô trên ảnh thế giới (đã tính độ cao): viền sương mù bo tròn theo ô (gpu.py fog_at)
+        ys_c, xs_c = np.mgrid[0:h, 0:w]
+        if tdx is not None:
+            cxs = np.asarray(tdx, np.float32) + TILE_W / 2
+            cys = np.asarray(tdy, np.float32) + self.Y0
+        else:
+            cxs = (xs_c + ys_c + 1) * (TILE_W / 2)
+            cys = (ys_c - xs_c) * (TILE_H / 2) - self.elev * ELEV_H + self.Y0
+        self.centers = np.ascontiguousarray(np.stack([cxs, cys], -1).astype(np.float32))
 
     # ---- mảnh sprite ---------------------------------------------------------------------
     def _slot(self, skey):

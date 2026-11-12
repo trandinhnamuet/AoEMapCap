@@ -86,7 +86,7 @@ def test_app_close_to_tray():
     started = []
 
     class FakeEngine:
-        def __init__(self, cfg, logger, stop_event, status=None, progress=None):
+        def __init__(self, cfg, logger, stop_event, status=None, progress=None, **kw):
             self.stop_event, self.state, self.current_rec_path = stop_event, "đang ghi", None
             started.append(self)
 

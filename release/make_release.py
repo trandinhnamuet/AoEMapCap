@@ -73,6 +73,9 @@ def manifest(tag, zip_path, out):
     min_v = str(policy.get("min_version") or "1")
     if vkey(min_v) > vkey(v):
         raise SystemExit(f"min_version {min_v} lớn hơn bản đang phát hành {v}")
+    auto_v = str(policy.get("auto_below") or "1")    # bản thấp hơn số này tự cập nhật (không cần bấm)
+    if vkey(auto_v) > vkey(v):
+        raise SystemExit(f"auto_below {auto_v} lớn hơn bản đang phát hành {v}")
     notes = {k: t for k, t in all_notes().items() if vkey(k) <= vkey(v)}
     if v not in notes:
         raise SystemExit(f"thiếu ghi chú release/notes/v{v}.md")
@@ -95,12 +98,12 @@ def manifest(tag, zip_path, out):
          "sha256": sha256(zip_path), "files": files}
     # "assets" rỗng: bộ cập nhật v3/v4 (chỉ biết exe lẻ) vẫn báo "có bản mới", bấm Cập nhật thì báo tải tay ở trang
     # phát hành (thiếu khoá này thì v3/v4 coi version.json hỏng và không báo gì)
-    m = {"version": v, "tag": tag, "min_version": min_v,
+    m = {"version": v, "tag": tag, "min_version": min_v, "auto_below": auto_v,
          "published": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
          "page": f"https://github.com/{REPO}/releases/tag/{tag}", "notes": notes, "zip": z, "assets": {}}
     with open(out, "w", encoding="utf-8") as f:
         json.dump(m, f, ensure_ascii=False, indent=1)
-    print(f"{out}: v{v}, min v{min_v}, zip {z['size'] / 1e6:.1f} MB, "
+    print(f"{out}: v{v}, min v{min_v}, tự cập nhật dưới v{auto_v}, zip {z['size'] / 1e6:.1f} MB, "
           + ", ".join(f"{n} {a['size'] / 1e6:.1f} MB" for n, a in files.items()))
 
 

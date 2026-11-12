@@ -4,6 +4,8 @@ ghi file hay ảnh tĩnh của tiến trình chính.
 Tiến trình con: mở bộ nhớ game theo pid, đọc snapshot theo nhịp capture_fps (kèm vật thể tĩnh, doppelganger),
 ghi .aoerec, mỗi giây gửi thống kê về cha qua Pipe; nhận lệnh ("stop",) và ("still", tên) (gửi lại snapshot để cha
 chụp ảnh tĩnh). Giao thức: tuple (loại, ...) qua multiprocessing.Connection.
+Từ 2026-11-11: đọc thêm lệnh của mọi người chơi (luồng mapcap/commands.py, ghi vào file) và chạy bộ luật phát hiện
+hack (mapcap/hackcheck.py) trên từng mẫu; vi phạm mới gửi về cha ("hack", sự kiện), tổng hợp ghi vào 'E'.
 """
 import multiprocessing as mp
 import os
@@ -41,12 +43,28 @@ def recorder_main(conn, pid, cfg_dict, raw_path, game_dir):
         mem = ProcessMemory(pid)
         reader = GameReader(mem)
         statics = StaticObjects(reader, cfg.static_rescan_seconds, log, cfg.static_refresh_seconds)
+        try:
+            reader.start_commands(log=log)
+        except Exception as e:  # noqa: BLE001
+            log(f"không bật được đọc lệnh người chơi: {e}")
+        from .hackcheck import Detector
+        detector = Detector(log=log)
+
+        def check(snap):
+            try:
+                for ev in detector.feed(snap):
+                    conn.send(("hack", ev))
+            except Exception as e:  # noqa: BLE001
+                if not getattr(check, "warned", False):
+                    check.warned = True
+                    log(f"lỗi bộ phát hiện hack: {e!r}")
         snap = reader.snapshot()
         statics.ensure_first(snap)
         statics.attach(snap)
         os.makedirs(os.path.dirname(raw_path), exist_ok=True)
         writer = RawWriter(raw_path)
         writer.start(snap, meta={"game_dir": game_dir, "capture_fps": cfg.capture_fps, "reader_process": True})
+        check(snap)
         interval = 1.0 / max(cfg.capture_fps, 1.0)
         nxt = time.time()
         written = 1
@@ -106,6 +124,7 @@ def recorder_main(conn, pid, cfg_dict, raw_path, game_dir):
                 t1 = time.time()
                 snap_t.append(ts - t0)
                 wq.put(snap)                      # ghi ở luồng riêng (zlib nhả GIL) để không chặn lượt đọc kế
+                check(snap)
                 read_t.append(t1 - t0)
                 written += 1
                 n_since += 1
@@ -143,6 +162,15 @@ def recorder_main(conn, pid, cfg_dict, raw_path, game_dir):
                 nxt = time.time()
         wq.put(wstop)
         wthread.join(30)
+        try:
+            reader.stop_commands()
+            for ev in detector.finish():
+                conn.send(("hack", ev))
+            writer.hack = detector.summary()
+            if writer.hack:
+                log("trận có người chơi hack: " + "; ".join(f"{e['name']} - {e['label']}" for e in writer.hack))
+        except Exception as e:  # noqa: BLE001
+            log(f"lỗi tổng hợp phát hiện hack: {e!r}")
         n = writer.close(reason)
         conn.send(("done", n))
     except Exception as e:  # noqa: BLE001
@@ -161,8 +189,9 @@ def recorder_main(conn, pid, cfg_dict, raw_path, game_dir):
 class RecorderProcess:
     """Phía cha: khởi chạy/dừng tiến trình ghi, gom thống kê, chuyển ảnh tĩnh và log về."""
 
-    def __init__(self, pid, cfg, raw_path, game_dir, log, on_still=None):
+    def __init__(self, pid, cfg, raw_path, game_dir, log, on_still=None, on_hack=None):
         self.pid = pid
+        self.on_hack = on_hack            # on_hack(sự kiện) khi tiến trình ghi phát hiện vi phạm mới
         self.cfg = cfg
         self.raw_path = raw_path
         self.game_dir = game_dir
@@ -209,6 +238,12 @@ class RecorderProcess:
                         self.on_still(msg[1], msg[2])
                     except Exception as e:  # noqa: BLE001
                         self.log(f"lỗi ảnh tĩnh: {e}")
+            elif kind == "hack":
+                if self.on_hack:
+                    try:
+                        self.on_hack(msg[1])
+                    except Exception as e:  # noqa: BLE001
+                        self.log(f"lỗi báo hack: {e}")
             elif kind == "done":
                 self.done_n = msg[1]
             elif kind == "error":

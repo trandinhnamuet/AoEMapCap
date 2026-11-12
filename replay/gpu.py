@@ -8,6 +8,13 @@
 import numpy as np
 import moderngl
 
+from mapcap.render_full import TILE_H, TILE_W
+
+# viền tầm nhìn (đo theo video người dùng quay trong game 12/11, game 1366x768): răng bậc thang chu kỳ 1 ô, sâu ~15 px
+# (bản cũ 32 px), cạnh chéo thẳng, dải chấm ô cờ ~5 px. Mức bo 0,65 cho răng sâu 14,8 px.
+FOG_ROUND_W = 0.65         # độ bo góc viền tầm nhìn (đơn vị ô)
+FOG_BAND = 0.17            # bề dày dải chấm ô cờ dọc viền (đơn vị ô)
+
 _COMMON = """
 #version 330
 uniform vec2 cam;        // góc trên trái của khung nhìn (toạ độ thế giới)
@@ -22,15 +29,55 @@ vec4 to_clip(vec2 w) {
 _FOG = """
 uniform usampler2D idxmap;   // chỉ số ô của từng pixel ảnh địa hình
 uniform sampler2D fogtex;    // độ sáng từng ô (map_w x map_h)
+uniform sampler2D centers;   // tâm từng ô trên ảnh thế giới (đã tính độ cao)
 uniform float ts;            // tỉ lệ ảnh địa hình / thế giới
 uniform int map_w;
 uniform int n_tiles;
+uniform float fog_w;         // độ bo góc viền tầm nhìn (đơn vị ô); 0 = viền thẳng theo cạnh ô như cũ
+uniform float fog_band;      // bề dày dải chấm dọc viền (đơn vị ô)
+uniform vec2 half_tile;      // (TILE_W / 2, TILE_H / 2)
+// Viền tầm nhìn như trong game (video người dùng 12/11): viền vẫn theo bậc thang của ô (số răng cưa như cũ) nhưng góc
+// lồi / lõm bo tròn, và một dải chấm ô cờ mảnh dọc viền. Mỗi ô góp một "hình vuông mềm" r(x) * r(y) trong toạ độ ô
+// (r: dốc tuyến tính bề rộng fog_w quanh cạnh ô, các ô kề cộng lại đúng bằng 1 nên trong vùng không có lỗ); điểm ảnh
+// thuộc mức sáng nào lấy theo ngưỡng 0,5 của tổng các ô có mức sáng đó: cạnh thẳng giữ nguyên, góc bị bo.
+float fog_ramp(float t) { return clamp((0.5 - abs(t)) / max(fog_w, 1e-3) + 0.5, 0.0, 1.0); }
 float fog_at(vec2 w) {
     ivec2 sz = textureSize(idxmap, 0);
     ivec2 p = clamp(ivec2(floor(w * ts)), ivec2(0), sz - 1);
     int id = int(texelFetch(idxmap, p, 0).r);
     if (id >= n_tiles) return 0.0;
-    return texelFetch(fogtex, ivec2(id % map_w, id / map_w), 0).r;
+    ivec2 t = ivec2(id % map_w, id / map_w);
+    float own = texelFetch(fogtex, t, 0).r;
+    if (fog_w <= 0.0) return own;
+    vec2 d = (w - texelFetch(centers, t, 0).rg) / half_tile;
+    vec2 q = clamp(vec2(d.x - d.y, d.x + d.y) * 0.5, -0.5, 0.5);  // vị trí trong ô (vách đồi: kẹp vào ô)
+    ivec2 tsz = textureSize(fogtex, 0);
+    float f_vis = 0.0, f_exp = 0.0, lo = 0.0;
+    bool same = true;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            ivec2 n = t + ivec2(dx, dy);
+            float v = 0.0;
+            if (n.x >= 0 && n.y >= 0 && n.x < tsz.x && n.y < tsz.y) v = texelFetch(fogtex, n, 0).r;
+            float k = fog_ramp(q.x - float(dx)) * fog_ramp(q.y - float(dy));
+            if (k <= 0.0) continue;
+            if (abs(v - own) > 0.002) same = false;
+            if (v >= 0.99) f_vis += k;
+            if (v > 0.0) { f_exp += k; if (v < 0.99) lo = max(lo, v); }
+        }
+    }
+    if (same) return own;                                      // giữa vùng cùng mức sáng: không phải viền
+    if (lo <= 0.0) lo = own < 0.99 ? own : 0.43;
+    // ô cờ theo điểm ảnh màn hình (như game): dải sát viền xen kẽ mức sáng trong / ngoài
+    ivec2 fc = ivec2(gl_FragCoord.xy);
+    bool odd = ((fc.x + fc.y) & 1) == 1;
+    float band = fog_band / max(fog_w, 1e-3);                  // bề dày dải tính theo giá trị tổng (dốc 1 / fog_w)
+    if (f_vis >= 0.5) {
+        float below = (f_exp - f_vis >= 0.25) ? lo : 0.0;
+        return (f_vis < 0.5 + band && odd) ? below : 1.0;
+    }
+    if (f_exp >= 0.5) return (f_exp < 0.5 + band && odd) ? 0.0 : lo;
+    return 0.0;
 }
 """
 
@@ -351,6 +398,8 @@ class GPU:
         self.idx_tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
         self.fog_tex = ctx.texture((world.map_w, world.map_h), 1, dtype="f1", alignment=1)
         self.fog_tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
+        self.centers_tex = ctx.texture((world.map_w, world.map_h), 2, world.centers.tobytes(), dtype="f4")
+        self.centers_tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
         W, H = world.full_w, world.full_h
         quad = np.array([0, 0, W, 0, 0, H, W, H], np.float32)
         self.terrain_vbo = ctx.buffer(quad.tobytes())
@@ -362,6 +411,10 @@ class GPU:
             p["ts"].value = world.ts
             p["map_w"].value = world.map_w
             p["n_tiles"].value = world.map_w * world.map_h
+            p["centers"].value = 4
+            p["fog_w"].value = FOG_ROUND_W
+            p["fog_band"].value = FOG_BAND
+            p["half_tile"].value = (TILE_W / 2, TILE_H / 2)
         self.p_terrain["terrain"].value = 0
         self.p_terrain["tex_size"].value = (tw, th)
         self.p_sprite["atlas"].value = 3
@@ -423,6 +476,7 @@ class GPU:
         self.idx_tex.use(1)
         self.fog_tex.use(2)
         self.atlas.tex.use(3)
+        self.centers_tex.use(4)
 
     def draw_world(self, cam, zoom, view, outline_alpha=0.35, statics=True, units=True):
         ctx = self.ctx

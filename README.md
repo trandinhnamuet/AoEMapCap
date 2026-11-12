@@ -26,6 +26,20 @@ video thì app chờ xong việc mới cập nhật. Không có mạng vẫn dù
 nút Cập nhật / Thoát. Bản v1, v2 chưa có tính năng này: tải v3 bằng tay một lần. Mỗi bản có gì mới:
 [trang Releases](https://github.com/trandinhnamuet/AoEMapCap/releases).
 
+## Phát hiện hack
+
+Trong trận, AoE-MapCap đọc lệnh và tài nguyên của mọi người chơi (chỉ đọc, như phần ghi trận) và so với danh sách luật:
+điều khiển thú hoặc quân / nhà của người khác, xoá quân / nhà của người khác, ép người khác đầu hàng, lệnh cheat khi
+phòng không bật cheat, ra quân / nâng cấp thứ chưa mở, tài nguyên vượt 1.000.000 hoặc tăng từ 1000 trở lên trong 1 giây
+không rõ nguồn, unit chỉ cheat mới có. Phát hiện thì: chuông cảnh báo (ô **Báo âm thanh khi có hack** ở thanh bên), thẻ
+đỏ ở góc phải trên cửa sổ app, và trận đó hiện **⚠ Có hack** trong Trận đã ghi. Hack chỉ chạy trên máy người hack (soi
+bản đồ, bỏ sương mù) thì không phát hiện được.
+
+Thấy trận có hack: bấm **⚑ Báo cáo hack**, chọn trận (mặc định trận đang chọn trong bảng; trận app đã bắt được hack
+có ⚠), chọn người bị nghi, ghi chú rồi gửi. File trận được gửi lên máy chủ của AoE-MapCap để xem lại và bổ sung luật
+phát hiện. Thẻ **Lịch sử báo cáo** liệt kê các trận bạn đã báo cáo từ máy này (mã báo cáo, ngày gửi, người bị nghi, ghi
+chú) và mở lại replay được; lịch sử lưu ở `Video\_report_history.json`.
+
 ## Thống kê sử dụng
 
 Từ v6, mỗi lần mở app (có mạng) và mỗi trận ghi xong, app gửi một lượt thống kê lên Cloudflare: **mã máy ngẫu
@@ -75,7 +89,10 @@ Mã băm SHA-256 nằm trong `SHA256SUMS.txt` (trong zip) và `AoE-MapCap-win64.
 - Thẻ **Trận đã ghi** (mặc định) là bảng các trận: bấm đúp một trận hoặc **▶ Xem replay** để xem lại như replay LMHT
   (mục bên dưới). **Xuất video...** dựng file mp4 cho trận đang chọn khi bạn cần chia sẻ (chọn độ rộng 1920/2560/3840/9216,
   FPS, tua nhanh, sương mù...).
-- Thẻ **Cài đặt**: nhịp đọc game, thư mục lưu, ảnh tĩnh theo mốc phút (mặc định tắt), và tuỳ chọn "Tự xuất video sau
+- **★ Ghim**: giữ trận đang chọn mãi mãi: "Tự dọn trận cũ" không bao giờ xoá trận ghim (nút **Xoá trận** vẫn xoá được).
+  Trận ghim có dấu ★ trước ngày và viền vàng sáng; tích **★ Trận đã ghim** trên bảng để chỉ xem các trận ghim; bấm
+  ★ Ghim lần nữa để bỏ ghim. Danh sách ghim lưu trong `Video\Raw\_keep.json`.
+- Thẻ **Cài đặt**: thư mục lưu trận (đầu trang), nhịp đọc game, ảnh tĩnh theo mốc phút (mặc định tắt), và tuỳ chọn "Tự xuất video sau
   mỗi trận" (mặc định tắt). Thẻ **Nhật ký**: log. Cấu hình lưu ở `Video\_settings.ini`, nhật ký ở `Video\_mapcap.log`.
 - Dòng lệnh dựng video: `AoE-MapCap.exe --render-raw file.aoerec [out.mp4] --width=3840 --fps=25`.
 

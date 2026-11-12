@@ -9,7 +9,9 @@ import pygame
 
 from mapcap import offsets as O
 
-AGE_VI = {0: "Du mục", 1: "Đồ đá", 2: "Công cụ", 3: "Đồ đồng", 4: "Đồ sắt"}
+AGE_VI = {0: "Du mục", 1: "Đời 1", 2: "Đời 2", 3: "Đời 3", 4: "Đời 4"}
+
+from .keys import KEYS_HELP  # noqa: E402
 GOLD = (255, 214, 120)
 WHITE = (240, 240, 240)
 GREY = (170, 170, 170)
@@ -38,26 +40,7 @@ def pil_to_surface(im):
 
 
 class Hud:
-    KEYS_HELP = [
-        ("P", "phát / tạm dừng"),
-        ("-  /  =", "chậm / nhanh (0,25x … 16x);  0: tốc độ thường"),
-        ("Backspace  /  J", "lùi / tiến 15 giây (giờ game)"),
-        ("F1  /  F2  /  F3", "tầm nhìn đội 1 / đội 2 / toàn bản đồ  (F4–F8: đội 3–7)"),
-        ("V  /  F", "đổi vòng tầm nhìn  /  bật-tắt sương mù"),
-        ("1–5  /  Q–T", "chọn người chơi đội 1 / đội 2 (đưa máy quay tới nhà chính)"),
-        ("Space", "đưa máy quay về người chơi đang chọn"),
-        ("O  /  X", "bảng tỉ số  /  đổi cột kinh tế ↔ quân sự"),
-        ("C", "bảng công nghệ của người chơi đang chọn"),
-        ("U  /  H  /  M", "thanh thời gian  /  ẩn toàn bộ HUD  /  minimap"),
-        ("Lăn chuột", "zoom quanh con trỏ;  Home / bấm chuột giữa: xem cả bản đồ"),
-        ("Chuột ra mép, mũi tên, kéo chuột", "di chuyển máy quay"),
-        ("Bấm vào unit", "xem thông tin + thanh máu + khoá máy quay theo unit;  bấm chỗ trống để đóng"),
-        ("Giữ chuột phải, kéo", "khoanh vùng: hiện thanh máu mọi unit trong vùng (không khoá máy quay); bấm chuột trái để đóng"),
-        ("Y  /  L", "bật / tắt khoá máy quay theo unit đang chọn (tự di chuyển máy quay cũng bỏ khoá)"),
-        ("S", "bật / tắt âm thanh (nghe theo những gì máy quay đang nhìn, tốc độ tối đa x2)"),
-        ("F11  /  Alt+Enter", "bật / tắt toàn màn hình"),
-        ("Esc  /  ?", "bật / tắt bảng này (bấm chuột bất kì đâu cũng đóng)"),
-    ]
+    KEYS_HELP = KEYS_HELP
 
     def __init__(self):
         self.show_hud = True
@@ -79,11 +62,17 @@ class Hud:
         self.r_timeline = None
         self.r_play = None
         self.r_help = None           # nút "Phím tắt (Esc)" trên thanh thời gian
+        self.r_settings = None       # nút ⚙ Cài đặt trên thanh thời gian (người dùng 12/11)
+        self.show_settings = False
+        self.r_settings_panel = None
+        self.settings_hits = []      # [(Rect, hành động)] các nút trong bảng Cài đặt
+        self.hover_pos = None        # vị trí chuột (tô sáng nút trong bảng Cài đặt)
         self.r_minimap = None
         self.score_rows = []         # [(Rect, index người chơi)]
         self.hover_timeline = None   # tỉ lệ 0..1 khi chuột trên thanh thời gian
         self.cmd_hits = []           # [(Rect, chữ gợi ý)] các nút bảng lệnh công trình vừa vẽ
         self.hover_cmd = None        # chỉ số nút đang rê chuột
+        self.persp_hits = []         # (Rect, khoá) các thẻ góc nhìn góc phải trên
 
     # ---- chữ --------------------------------------------------------------------------
     def font(self, size, bold=False):
@@ -146,7 +135,10 @@ class Hud:
         W, H = self.size
         surf = pygame.Surface((W, H), pygame.SRCALPHA)
         self.score_rows = []
-        self.r_timeline = self.r_play = self.r_help = None
+        self.r_timeline = self.r_play = self.r_help = self.r_persp = self.r_settings = None
+        self.r_settings_panel = None
+        self.persp_hits = []
+        self.settings_hits = []
         if m.loading is not None:
             self._loading(surf, m)
             return surf
@@ -155,8 +147,12 @@ class Hud:
             self._bottom_bar(surf, m)
             if self.show_timeline:
                 self._timeline(surf, m)
+            if getattr(m, "persp_card", None):
+                self._persp_card(surf, m.persp_card)
             if self.show_techs:
                 self._techs(surf, m)
+            if self.show_settings and self.show_timeline and getattr(m, "settings", None):
+                self._settings(surf, m.settings)
         if m.toast:
             t = self.text(m.toast, int(22 * self.u), GOLD, bold=True)
             y = int(96 * self.u) if self.show_hud else int(20 * self.u)
@@ -167,6 +163,60 @@ class Hud:
         if self.show_help:
             self._help(surf)
         return surf
+
+    def _persp_card(self, surf, card):
+        """Góc phải trên: mỗi người chơi một thẻ nhỏ (người dùng 12/11), thẻ sáng viền vàng = đang xem tầm nhìn người
+        đó; bấm thẻ để xem tầm nhìn người đó (bấm lại: cả đội), thẻ Toàn bản đồ = F3."""
+        W, _H = self.size
+        u = self.u
+        pad = int(8 * u)
+        title = self.text(card["title"], int(14 * u), GOLD, bold=True)
+        sub = self.text(card["sub"], int(12 * u), GREY) if card.get("sub") else None
+        rows = []
+        for cd in card["cards"]:
+            name = self.text(cd["name"], int(15 * u), cd["rgb"] if cd["active"] or cd["key"][0] == "all" else
+                             tuple(int(v * 0.75) for v in cd["rgb"]), bold=cd["active"])
+            civ = self.text(cd["civ"], int(12 * u), GREY) if cd["civ"] else None
+            rows.append((cd, name, civ))
+        ch = max(int(26 * u), max(nm.get_height() for _c, nm, _v in rows) + int(6 * u))
+        cw = max(nm.get_width() + (cv.get_width() + int(10 * u) if cv else 0) for _c, nm, cv in rows) + int(26 * u)
+        cw = max(cw, title.get_width(), sub.get_width() if sub else 0, int(150 * u))
+        gap, tgap = int(4 * u), int(7 * u)
+        h = pad + title.get_height() + (sub.get_height() if sub else 0) + int(6 * u)
+        prev_team = None
+        for cd, _n, _c in rows:
+            h += ch + (tgap if prev_team is not None and cd["team"] != prev_team else gap)
+            prev_team = cd["team"]
+        h += pad - gap
+        r = pygame.Rect(W - cw - 2 * pad - int(8 * u), int(6 * u), cw + 2 * pad, h)
+        self.panel(surf, r, border=(120, 110, 80))
+        y = r.y + pad
+        surf.blit(title, (r.x + pad, y))
+        y += title.get_height()
+        if sub:
+            surf.blit(sub, (r.x + pad, y))
+            y += sub.get_height()
+        y += int(6 * u)
+        prev_team = None
+        self.persp_hits = []
+        for cd, name, civ in rows:
+            if prev_team is not None and cd["team"] != prev_team:
+                y += tgap - gap
+            prev_team = cd["team"]
+            cr = pygame.Rect(r.x + pad, y, cw, ch)
+            if cd["active"]:
+                self.panel(surf, cr, (70, 58, 26, 240), border=GOLD, radius=5)
+            else:
+                self.panel(surf, cr, (22, 22, 26, 225), border=(70, 66, 56), radius=5)
+            if cd["key"][0] == "pl":
+                pygame.draw.rect(surf, cd["rgb"], pygame.Rect(cr.x + int(5 * u), cr.y + int(5 * u), int(5 * u),
+                                                              cr.h - int(10 * u)), border_radius=2)
+            surf.blit(name, name.get_rect(midleft=(cr.x + int(16 * u), cr.centery)))
+            if civ:
+                surf.blit(civ, civ.get_rect(midright=(cr.right - int(8 * u), cr.centery)))
+            self.persp_hits.append((cr, cd["key"]))
+            y += ch + gap
+        self.r_persp = r
 
     def _loading(self, surf, m):
         W, H = self.size
@@ -244,7 +294,18 @@ class Hud:
         pygame.draw.rect(surf, (120, 110, 80), hb, 1, border_radius=5)
         surf.blit(th, th.get_rect(center=hb.center))
         self.r_help = hb
-        bar = pygame.Rect(x, r.centery - int(4 * u), hb.x - x - int(16 * u), int(8 * u))
+        # nút ⚙ Cài đặt (bánh răng vẽ tay: phông chữ không chắc có ký tự ⚙)
+        tg = self.text("Cài đặt", int(15 * u), GOLD)
+        gs = hb.h
+        gb = pygame.Rect(0, 0, gs + tg.get_width() + int(8 * u), hb.h)
+        gb.midright = (hb.x - int(8 * u), r.centery)
+        on = self.show_settings
+        pygame.draw.rect(surf, (110, 88, 40) if on else (60, 55, 40), gb, border_radius=5)
+        pygame.draw.rect(surf, GOLD if on else (120, 110, 80), gb, 1, border_radius=5)
+        self._gear(surf, (gb.x + gs // 2 + int(2 * u), gb.centery), int(gs * 0.30), GOLD)
+        surf.blit(tg, tg.get_rect(midleft=(gb.x + gs + int(1 * u), gb.centery)))
+        self.r_settings = gb
+        bar = pygame.Rect(x, r.centery - int(4 * u), gb.x - x - int(16 * u), int(8 * u))
         self.r_timeline = bar.inflate(0, int(24 * u))
         pygame.draw.rect(surf, (50, 50, 50), bar, border_radius=4)
         if m.indexed < 1.0:
@@ -269,7 +330,74 @@ class Hud:
             self.panel(surf, rr)
             surf.blit(tt, tt.get_rect(center=rr.center))
 
-    ECO_COLS = [("Thời đại", "age"), ("Dân", "vill"), ("Dân số", "popcap"), ("food", O.ATTR_FOOD),
+    @staticmethod
+    def _gear(surf, c, rad, color):
+        """Biểu tượng bánh răng: 8 răng + vành + lỗ giữa."""
+        import math
+        cx, cy = c
+        tw = max(2, int(rad * 0.42))
+        for k in range(8):
+            a = k * math.pi / 4
+            x, y = cx + math.cos(a) * rad * 1.05, cy + math.sin(a) * rad * 1.05
+            pygame.draw.circle(surf, color, (int(x), int(y)), tw // 2 + 1)
+        pygame.draw.circle(surf, color, (cx, cy), int(rad * 0.88))
+        pygame.draw.circle(surf, (60, 55, 40), (cx, cy), max(2, int(rad * 0.38)))
+
+    def _settings(self, surf, rows):
+        """Bảng Cài đặt replay (nút ⚙ trên thanh thời gian, người dùng 12/11): mỗi hàng một nhãn + các nút chọn; nút
+        đang bật viền vàng. Đặt sát trên nút ⚙, căn phải; hàng dài thì xuống dòng."""
+        W, H = self.size
+        u = self.u
+        pad, gap, ch = int(14 * u), int(6 * u), int(30 * u)
+        fs = int(15 * u)
+        labels = [self.text(row["label"], fs, GREY) for row in rows]
+        lw = max(t.get_width() for t in labels) + int(16 * u)
+        maxw = min(W - int(40 * u), int(760 * u))
+        title = self.text("Cài đặt replay", int(18 * u), WHITE, bold=True)
+        # đo trước: vị trí từng nút (xuống dòng khi vượt maxw)
+        lay, y, need_w = [], title.get_height() + int(12 * u), 0
+        for row, lab in zip(rows, labels):
+            x0 = lw
+            x, items = x0, []
+            for it in row["items"]:
+                t = self.text(it["text"], fs, GOLD if it.get("active") else WHITE, bold=bool(it.get("active")))
+                w = t.get_width() + int(20 * u)
+                if x > x0 and x + w > maxw - 2 * pad:
+                    x, y = x0, y + ch + gap
+                items.append((pygame.Rect(x, y, w, ch), t, it))
+                x += w + gap
+                need_w = max(need_w, x - gap)
+            lay.append((lab, items, y))
+            y += ch + int(10 * u)
+        w = max(need_w, title.get_width()) + 2 * pad
+        h = y - int(10 * u) + 2 * pad
+        r = pygame.Rect(0, 0, w, h)
+        gb = self.r_settings
+        bottom = gb.y - int(14 * u) if gb else H - self.tl_h - int(14 * u)
+        bt = getattr(self, "bar_top", None)            # trên thanh dưới (minimap vẽ GPU đè lên mọi thứ trong thanh)
+        if self.show_hud and bt is not None and bt - int(8 * u) - h >= 0:
+            bottom = min(bottom, bt - int(8 * u))
+        r.bottomright = ((gb.right if gb else W - int(10 * u)), bottom)
+        r.clamp_ip(pygame.Rect(0, 0, W, H))
+        self.panel(surf, r, (8, 10, 14, 238), border=(120, 110, 80), radius=8)
+        surf.blit(title, (r.x + pad, r.y + pad))
+        hits = []
+        for (lab, items, ry), row in zip(lay, rows):
+            surf.blit(lab, lab.get_rect(midleft=(r.x + pad, r.y + pad + ry + ch // 2)))
+            for br, t, it in items:
+                b = br.move(r.x + pad, r.y + pad)
+                hov = self.hover_pos is not None and b.collidepoint(self.hover_pos)
+                if it.get("active"):
+                    self.panel(surf, b, (90, 72, 30, 245), border=GOLD, radius=5)
+                else:
+                    self.panel(surf, b, (52, 50, 44, 245) if hov else (30, 30, 34, 235),
+                               border=(150, 140, 100) if hov else (80, 76, 64), radius=5)
+                surf.blit(t, t.get_rect(center=b.center))
+                hits.append((b, it["act"]))
+        self.settings_hits = hits
+        self.r_settings_panel = r
+
+    ECO_COLS = [("Đời", "age"), ("Dân", "vill"), ("Time", "popcap"), ("food", O.ATTR_FOOD),
                 ("wood", O.ATTR_WOOD), ("gold", O.ATTR_GOLD), ("stone", O.ATTR_STONE)]
     MIL_COLS = [("Quân", "army"), ("Kill", "kills"), ("Chết", "deaths"), ("Phá nhà", "razings"),
                 ("Công nghệ", "ntech"), ("Vàng KT", "gold_mined"), ("Bơm", "tribute")]
@@ -592,7 +720,8 @@ class Hud:
         resg = getattr(m, "researching", []) or []
         res_h = len(resg) * int(40 * u) + (int(8 * u) if resg else 0)
         h = int(36 * u) + res_h + n_rows * cell_h + int(8 * u)
-        r = pygame.Rect(W - w - int(10 * u), int(76 * u), w, h)
+        top = int(76 * u) if self.r_persp is None else max(int(76 * u), self.r_persp.bottom + int(6 * u))
+        r = pygame.Rect(W - w - int(10 * u), top, w, h)      # dưới thẻ góc nhìn
         self.panel(surf, r, border=(120, 110, 80))
         surf.blit(self.text(f"Công nghệ · {m.sel_player['name']}", int(16 * u), m.sel_player["rgb"], bold=True),
                   (r.x + int(10 * u), r.y + int(6 * u)))

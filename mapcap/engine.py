@@ -88,6 +88,7 @@ class Config:
     clean_limit_gb: float = 5.0              # ngưỡng tổng dung lượng file ghi (GB); dưới ngưỡng giữ hết
     clean_days: int = 30                     # trận cũ hơn số ngày này mới bị dọn (cũ nhất trước)
     clean_agreed: bool = False               # đã đồng ý lần đầu; trước đó chỉ hiện đề nghị trên giao diện, chưa dọn
+    hack_sound: bool = True                  # phát âm thanh khi phát hiện hack trong trận (mapcap/hackcheck, 2026-11-11)
     win_startup_init: bool = False           # bản exe đã tự bật Khởi động cùng Windows lần đầu (mapcap/winstartup, v30);
                                              # sau đó theo ô ở thanh bên, không tự bật lại
     config_version: int = 3                  # tăng khi đổi mặc định quan trọng (v2: nhịp đọc = FPS;
@@ -489,21 +490,28 @@ class RawMatchRecorder:
 class ProcRecorder(RawMatchRecorder):
     """Ghi dữ liệu thô bằng tiến trình riêng (recproc.RecorderProcess); dựng video sau trận như RawMatchRecorder."""
 
-    def __init__(self, cfg, raw_dir, video_dir, label, log, game_dir, pid, stills=None, on_render_done=None):
+    def __init__(self, cfg, raw_dir, video_dir, label, log, game_dir, pid, stills=None, on_render_done=None,
+                 on_hack=None):
         super().__init__(cfg, raw_dir, video_dir, label, log, game_dir, on_render_done)
         self.pid = pid
         self.stills = stills
+        self.on_hack = on_hack
         self.rp = None
 
     def start(self, snap):
         from .recproc import RecorderProcess
         os.makedirs(self.raw_dir, exist_ok=True)
         self.path = os.path.join(self.raw_dir, f"{dt.datetime.now():%Y-%m-%d_%H%M%S}_{self.label}.aoerec")
-        self.rp = RecorderProcess(self.pid, self.cfg, self.path, self.game_dir, self.log, on_still=self._on_still)
+        self.rp = RecorderProcess(self.pid, self.cfg, self.path, self.game_dir, self.log, on_still=self._on_still,
+                                  on_hack=self._on_hack)
         self.rp.start()
         self.start_real = time.time()
         self.written = 1
         self.log(f"ghi dữ liệu thô {self.path} ({self.cfg.capture_fps:g} mẫu/giây, tiến trình riêng)")
+
+    def _on_hack(self, ev):
+        if self.on_hack is not None:
+            self.on_hack(dict(ev, file=self.path))
 
     def _on_still(self, name, snap):
         if self.stills is not None:
@@ -550,8 +558,9 @@ def _close_reader(sreader):
 class Engine:
     """Vòng lặp ghi. Gọi run() trong luồng riêng; set stop_event để dừng an toàn."""
 
-    def __init__(self, cfg: Config, log, stop_event=None, status=None, progress=None):
+    def __init__(self, cfg: Config, log, stop_event=None, status=None, progress=None, on_hack=None):
         self.cfg = cfg
+        self.on_hack = on_hack         # on_hack(sự kiện) khi phát hiện hack trong trận đang ghi (mapcap/hackcheck)
         self.log = log
         self.stop_event = stop_event or threading.Event()
         self.status = status or (lambda s: None)
@@ -789,7 +798,8 @@ class Engine:
                                     statics.ensure_first(snap)
                                     statics.attach(snap)
                                     if cfg.record_mode == "raw" and cfg.reader_process:
-                                        rec = ProcRecorder(cfg, cfg.raw_dir(), out_dir, f"tran{game_no}", log, gfx["dir"], proc.pid, stills)
+                                        rec = ProcRecorder(cfg, cfg.raw_dir(), out_dir, f"tran{game_no}", log, gfx["dir"], proc.pid, stills,
+                                                           on_hack=self.on_hack)
                                         rec.on_progress = (lambda lb: (lambda f, s: self.progress(lb, s)))(f"tran{game_no}")
                                     elif cfg.record_mode == "raw":
                                         rec = RawMatchRecorder(cfg, cfg.raw_dir(), out_dir, f"tran{game_no}", log, gfx["dir"])

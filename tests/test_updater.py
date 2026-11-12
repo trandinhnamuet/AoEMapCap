@@ -85,7 +85,13 @@ def test_versions():
     assert updater.UpdateInfo(m, "4").state == "current"
     assert updater.UpdateInfo(m, "10").state == "current"                  # so theo số, không theo chữ
     assert updater.UpdateInfo(dict(m, min_version="4"), "3").state == "required"
-    print("so phiên bản / ghi chú: OK")
+    # tự cập nhật (bản sửa lỗi quan trọng): bản thấp hơn auto_below -> "auto"; bằng thì chỉ báo; bắt buộc vẫn ưu tiên
+    assert updater.UpdateInfo(dict(m, auto_below="4"), "3").state == "auto"
+    assert updater.UpdateInfo(dict(m, auto_below="3"), "3").state == "available"
+    assert updater.UpdateInfo(dict(m, auto_below="4"), "4").state == "current"
+    assert updater.UpdateInfo(dict(m, auto_below="4", min_version="4"), "3").state == "required"
+    assert updater.UpdateInfo(m, "3").auto_below == "0", "version.json cũ không có auto_below = tắt"
+    print("so phiên bản / ghi chú / tự cập nhật (auto_below): OK")
 
 
 def test_offline():
@@ -200,6 +206,7 @@ def test_make_release():
     make_release.manifest("v3", zp, out)
     m = json.load(open(out, encoding="utf-8"))
     assert m["version"] == "3" and m["tag"] == "v3" and set(m["notes"]) >= {"1", "2", "3"}
+    assert m["auto_below"] == json.load(open(os.path.join(ROOT, "release", "policy.json"), encoding="utf-8"))["auto_below"]
     assert m["assets"] == {}, "từ v5 không còn exe lẻ (assets rỗng cho bộ cập nhật v3/v4)"
     z = m["zip"]
     assert z["url"].endswith("/releases/download/v3/AoE-MapCap-win64.zip") and z["size"] == os.path.getsize(zp)
@@ -398,6 +405,98 @@ def test_ui():
     print("giao diện: lỗi thì thử lại sớm, thanh báo, chờ hết bận, Để sau, cửa sổ bắt buộc: OK")
 
 
+def test_ui_auto():
+    """Bản sửa lỗi quan trọng (auto_below): tự cập nhật không cần bấm, chờ hết bận, ẩn thì ngay, mở thì đếm ngược;
+    Để sau chỉ hoãn; bấm tay bỏ đếm ngược; lỗi không bật hộp thoại."""
+    import tkinter as tk
+    from tkinter import ttk
+    from mapcap import update_ui
+    root = tk.Tk()
+    body = ttk.Frame(root)
+    body.pack(fill="both", expand=True)
+    root.geometry("600x300+50+50")
+    busy = {"v": "Đang ghi trận"}
+    from mapcap.version import APP_VERSION
+    nxt = str(int(APP_VERSION) + 1)
+    m = {"version": nxt, "tag": "v" + nxt, "min_version": "1", "auto_below": nxt, "assets": {}, "notes": {nxt: "- x"},
+         "page": "https://github.com/x"}
+    frozen = updater.is_frozen
+    errors = []
+    showerror = update_ui.messagebox.showerror
+    update_ui.messagebox.showerror = lambda *a, **k: errors.append(a)
+    updater.is_frozen = lambda: True
+
+    def pump(sec):
+        t0 = time.time()
+        while time.time() - t0 < sec:
+            root.update()
+            time.sleep(0.03)
+    try:
+        ctl = update_ui.UpdateController(root, root, "mapcap", "Test", is_busy=lambda: busy["v"], bar_before=body)
+        ctl.root.after(300, ctl._poll)
+        started = []
+        ctl._download = lambda: started.append(time.monotonic())
+        ctl.AUTO_DELAY = 2
+        # 1) cửa sổ ẩn ở khay + đang ghi trận: chờ; hết bận: tự cập nhật ngay, không cần bấm
+        root.withdraw()
+        ctl._on_checked(updater.UpdateInfo(m, APP_VERSION))
+        assert ctl.info.state == "auto" and ctl.auto_pending
+        pump(1.0)
+        assert not started, "đang ghi trận: chưa được cập nhật"
+        busy["v"] = ""
+        pump(1.0)
+        assert len(started) == 1 and ctl.auto_running and not ctl.auto_pending, "ẩn + rảnh: tự cập nhật ngay"
+        print("tự cập nhật: đang ghi trận thì chờ, cửa sổ ẩn ở khay + rảnh thì cập nhật ngay (không bấm): OK")
+        # lỗi khi tự cập nhật: chỉ ghi nhật ký, không hộp thoại; lần kiểm sau lại tự cập nhật
+        ctl.working = True
+        ctl.info = updater.UpdateInfo(m, APP_VERSION)
+        ctl._on_failed(updater.UpdateError("mạng lỗi"))
+        assert not errors and not ctl.auto_running and ctl.bar.winfo_manager() == ""
+        print("tự cập nhật lỗi: không bật hộp thoại, thử lại ở lần kiểm sau: OK")
+        # 2) cửa sổ đang mở: đếm ngược rồi tự cập nhật
+        root.deiconify()
+        pump(0.5)
+        started.clear()
+        ctl._on_checked(updater.UpdateInfo(m, APP_VERSION))
+        pump(0.8)
+        assert not started and "tự cập nhật sau" in ctl.lbl.cget("text") and "quan trọng" in ctl.lbl.cget("text"), \
+            ctl.lbl.cget("text")
+        assert ctl.btn_update.cget("text") == "Cập nhật ngay"
+        pump(2.0)
+        assert len(started) == 1, "hết đếm ngược phải tự cập nhật"
+        print("cửa sổ đang mở: thanh 'sửa lỗi quan trọng: tự cập nhật sau N giây' rồi tự cập nhật: OK")
+        # 3) Để sau: chỉ hoãn (SNOOZE), không bỏ hẳn
+        started.clear()
+        ctl.SNOOZE = 2
+        ctl._on_checked(updater.UpdateInfo(m, APP_VERSION))
+        pump(0.5)
+        ctl._later()
+        pump(1.0)
+        assert not started and ctl.auto_pending, "Để sau: hoãn"
+        pump(4.0)
+        assert len(started) == 1, "hết hoãn: lại đếm ngược rồi tự cập nhật"
+        print("Để sau: chỉ hoãn, hết hạn hoãn lại tự cập nhật: OK")
+        # 4) bấm Cập nhật ngay: bỏ đếm ngược, tải luôn
+        started.clear()
+        ctl._on_checked(updater.UpdateInfo(m, APP_VERSION))
+        pump(0.5)
+        ctl.begin_update()
+        assert len(started) == 1 and not ctl.auto_pending
+        pump(2.5)
+        assert len(started) == 1, "bấm tay rồi thì không tải lần nữa"
+        print("bấm Cập nhật ngay: tải luôn, bỏ đếm ngược: OK")
+        # bản thường (không auto_below): vẫn chỉ báo, không tự cập nhật
+        started.clear()
+        ctl._on_checked(updater.UpdateInfo(dict(m, auto_below="1"), APP_VERSION))
+        pump(2.5)
+        assert ctl.info.state == "available" and not started and not ctl.auto_pending
+        print("bản thường: chỉ hiện thanh báo, không tự cập nhật: OK")
+    finally:
+        updater.is_frozen = frozen
+        update_ui.messagebox.showerror = showerror
+        root.destroy()
+
+
 def test_compile_all():
     """Mọi file mã biên dịch được (PyInstaller lặng lẽ bỏ module lỗi cú pháp -> exe báo thiếu module khi chạy)."""
     bad = []
@@ -424,4 +523,5 @@ if __name__ == "__main__":
     test_update_from_zip()
     test_newer_format_file()
     test_ui()
+    test_ui_auto()
     print("OK")

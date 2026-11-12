@@ -30,6 +30,7 @@ SETTINGS_MAP_TYPE = 0xA80        # int32 0..8 -> chuỗi 10602.. (Quần đảo 
 SETTINGS_VICTORY = 0xA8C         # int32 0..9 điều kiện thắng (0 Standard? log: Default/Standard/Time(%d)/Score(%d))
 SETTINGS_VICTORY_VALUE = 0xA90   # int32 tham số (thời gian / điểm)
 SETTINGS_REVEAL_MAP = 0xAD9      # byte
+SETTINGS_CHEATS = 0x982          # byte "cho phép cheat" của phòng (TRIBE_Game, AoESolo aoemem G_CHEATS_ALLOWED)
 SETTINGS_RESOURCES = 0xADC       # int32 0 mặc định, 1 thấp, 2 vừa, 3 cao
 SETTINGS_START_AGE = 0xAE0       # int32 0 mặc định, 1 đồ đá, 2 công cụ, 3 đồ đồng, 4 đồ sắt
 SETTINGS_FLAG_AE4 = 0xAE4        # byte (chưa rõ)

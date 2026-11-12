@@ -1,0 +1,26 @@
+"""Phím tắt trình xem replay (một chỗ cho bảng Esc trong replay và tab Phím tắt của AoE-MapCap)."""
+
+KEYS_HELP = [
+    ("P", "phát / tạm dừng"),
+    ("-  /  =", "chậm / nhanh (0,25x … 16x);  0: tốc độ thường"),
+    ("Backspace  /  J", "lùi / tiến 15 giây (giờ game)"),
+    ("F1  /  F2  /  F3", "tầm nhìn đội 1 / đội 2 / toàn bản đồ  (F4–F8: đội 3–7)"),
+    ("", "toàn bản đồ: thấy hết, chỗ không người chơi nào nhìn thấy vẫn tối"),
+    ("V  /  F", "đổi vòng tầm nhìn  /  bật-tắt sương mù"),
+    ("Bấm thẻ góc phải trên", "xem tầm nhìn riêng người chơi đó (bấm lại: cả đội);  thẻ Toàn bản đồ = F3"),
+    ("A", "máy quay tự động, luôn khoá theo một unit: giao tranh -> nhà đang xây -> dân đang làm việc (tự kéo máy quay / bấm chọn unit thì tắt)"),
+    ("1–5  /  Q–T", "chọn người chơi đội 1 / đội 2 (đưa máy quay tới nhà chính)"),
+    ("Space", "đưa máy quay về người chơi đang chọn"),
+    ("O  /  X", "bảng tỉ số  /  đổi cột kinh tế ↔ quân sự"),
+    ("C", "bảng công nghệ của người chơi đang chọn"),
+    ("U  /  H  /  M", "thanh thời gian  /  ẩn toàn bộ HUD  /  minimap"),
+    ("Lăn chuột", "zoom quanh con trỏ;  Home / bấm chuột giữa: xem cả bản đồ"),
+    ("Chuột ra mép, mũi tên, kéo chuột", "di chuyển máy quay"),
+    ("Bấm vào unit", "xem thông tin + thanh máu + khoá máy quay theo unit;  bấm chỗ trống để đóng"),
+    ("Giữ chuột phải, kéo", "khoanh vùng: hiện thanh máu mọi unit trong vùng (không khoá máy quay); bấm chuột trái để đóng"),
+    ("Y  /  L", "bật / tắt khoá máy quay theo unit đang chọn (tự di chuyển máy quay cũng bỏ khoá)"),
+    ("S", "bật / tắt âm thanh (nghe theo những gì máy quay đang nhìn, tốc độ tối đa x2)"),
+    ("F11  /  Alt+Enter", "bật / tắt toàn màn hình"),
+    ("Nút ⚙ Cài đặt", "trên thanh thời gian: máy quay tự động, tầm nhìn, tốc độ, âm thanh, bảng hiện / ẩn, toàn màn hình, bảng phím tắt"),
+    ("Esc  /  ?", "bật / tắt bảng này (bấm chuột bất kì đâu cũng đóng)"),
+]

@@ -14,18 +14,21 @@ from tkinter import filedialog, ttk
 
 from mapcap.retention import load_keep, set_keep
 
-from .library import Library, fmt_duration
+from .library import Library, age3_of, fmt_duration
 
 COLUMNS = (
-    ("date", "Ngày đánh", 120, "w"),
+    ("date", "Ngày", 136, "w"),
     ("name", "Người chơi", 150, "w"),
     ("civ", "Quân", 100, "w"),
     ("result", "Kết quả", 160, "w"),
     ("mode", "Thể thức", 110, "w"),          # "2v1 Random", "4v4 Shang"
     ("kind", "Map", 170, "w"),               # "Hill Country - Large"
-    ("dur", "Thời lượng", 80, "e"),
+    ("age3", "Kích 3", 64, "e"),             # giờ game người ghi kích đời 3
+    ("dur", "Thời gian", 80, "e"),
 )
+COL_MIN = {"date": 124, "name": 88, "civ": 74, "result": 100, "mode": 76, "kind": 88, "age3": 54, "dur": 64}
 RESULT_TAG = {"Thắng": "win", "Thua": "lose", "Đầu hàng": "lose", "Cần bản mới": "muted"}
+HACK_MARK = "\u26a0 Có hack"     # cột Kết quả của trận có người chơi hack (mapcap/hackcheck)
 PREFETCH_AGES = 40               # số trận mới nhất được tính sẵn giờ kích đời ở nền (mở rộng hiện ngay)
 SPACER = "::sp"                  # iid dòng trống giữ chỗ cho khung mở rộng: "<đường dẫn>::sp<k>"
 
@@ -35,6 +38,17 @@ def fmt_clock(ms):
         return "—"
     s = max(0, int(ms) // 1000)
     return f"{s // 60}:{s % 60:02d}"
+
+
+PIN_BG_DARK, PIN_BG_LIGHT = "#29241b", "#fffaf0"   # nền dòng trận ghim: ánh vàng rất nhẹ
+PIN_EDGE = "#f0c674"                                 # viền 1 px vàng sáng
+PIN_GLOW_MIX = (0.30, 0.12)                          # 2 lớp 1 px phía trong: nhạt dần (ánh sáng toả vào trong)
+
+
+def _mix(a, b, t):
+    """Màu a pha t phần sang b (#rrggbb)."""
+    pa, pb = (int(a[i:i + 2], 16) for i in (1, 3, 5)), (int(b[i:i + 2], 16) for i in (1, 3, 5))
+    return "#" + "".join(f"{round(y + (x - y) * t):02x}" for x, y in zip(pa, pb))
 
 
 class MatchTable(ttk.Frame):
@@ -65,17 +79,29 @@ class MatchTable(ttk.Frame):
         bar = ttk.Frame(self)
         bar.pack(fill="x", pady=(0, 8))
         self.bar = bar                                        # AoE-MapCap gắn ô Tự dọn trận cũ vào hàng này
-        ttk.Label(bar, text="Thư mục:", style="Muted.TLabel" if dark else "TLabel").pack(side="left")
+        self.dir_caption = ttk.Label(bar, text="Thư mục:", style="Muted.TLabel" if dark else "TLabel")
+        self.dir_caption.pack(side="left")
         self.var_dir = tk.StringVar()
         self.dir_label = ttk.Label(bar, textvariable=self.var_dir, style="Muted.TLabel" if dark else "TLabel")
         self.dir_label.pack(side="left", padx=6)
         if show_dir_button:
             ttk.Button(bar, text="Đổi thư mục...", command=self._choose_dir).pack(side="right")
-        ttk.Button(bar, text="Làm mới", command=self.reload).pack(side="right", padx=(4, 0))
+        # hàng trên gọn (bảng ở AoE-MapCap chỉ rộng ~700 px cạnh thanh bên): Làm mới là nút biểu tượng, nhãn "Tìm:"
+        refresh = ttk.Button(bar, text="⟳", width=3, command=self.reload)
+        refresh.pack(side="right", padx=(4, 0))
+        theme.Tip(refresh, "Làm mới danh sách trận")
         self.var_find = tk.StringVar()
-        ttk.Entry(bar, textvariable=self.var_find, width=22).pack(side="right", padx=(4, 12))
-        ttk.Label(bar, text="Tìm tên người chơi:", style="Muted.TLabel" if dark else "TLabel").pack(side="right")
+        find = ttk.Entry(bar, textvariable=self.var_find, width=20)
+        find.pack(side="right", padx=(4, 12))
+        theme.Tip(find, "Tìm theo tên người chơi, tên file, map, ngày... (gõ một phần là đủ)")
+        ttk.Label(bar, text="Tìm:", style="Muted.TLabel" if dark else "TLabel").pack(side="right")
         self.var_find.trace_add("write", lambda *_: self._refill())
+        # lọc chỉ trận đã ghim (người dùng 12/11: trước phải kéo cả bảng tìm dấu ★)
+        self.var_pinned_only = tk.BooleanVar(value=False)
+        self.pin_check = ttk.Checkbutton(bar, text="★ Trận đã ghim", variable=self.var_pinned_only,
+                                         command=self._refill)
+        self.pin_check.pack(side="right", padx=(0, 14))
+        self._pin_frames = []        # viền sáng đè lên các dòng trận ghim đang thấy (_place_pins)
 
         mid = ttk.Frame(self)
         mid.pack(fill="both", expand=True)
@@ -86,13 +112,19 @@ class MatchTable(ttk.Frame):
         self.tree.tag_configure("win", foreground=theme.C["green"] if dark else "#1b7a1b")
         self.tree.tag_configure("lose", foreground=theme.C["lose"] if dark else "#b02020")
         self.tree.tag_configure("muted", foreground=theme.C["dim"] if dark else "#888888")
+        self.tree.tag_configure("hack", foreground="#ff6b6b" if dark else "#c62828")
         if dark:
             self.tree.tag_configure("odd", background=theme.C["bg2"])    # dòng xen kẽ
         sb = ttk.Scrollbar(mid, command=self.tree.yview)
         self.tree.configure(yscrollcommand=lambda a, b: (sb.set(a, b), self._place_expand()))
         self.tree.tag_configure("spacer", background=theme.C["panel"] if dark else "#f4f4f4")
+        # trận ghim: nền ánh vàng (tạo sau "odd" nên được ưu tiên) + viền vàng sáng (_place_pins)
+        pin_bg = PIN_BG_DARK if dark else PIN_BG_LIGHT
+        self.tree.tag_configure("pin", background=pin_bg)
+        self._pin_colors = (PIN_EDGE,) + tuple(_mix(PIN_EDGE, pin_bg, t) for t in PIN_GLOW_MIX)
         self.tree.bind("<Button-3>", self._on_right_click)
         self.tree.bind("<Configure>", lambda e: self.after_idle(self._place_expand), add="+")
+        self.tree.bind("<Configure>", lambda e: self._fit_columns(e.width), add="+")
         self.tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
         self.tree.bind("<Double-1>", self._on_double)
@@ -106,6 +138,37 @@ class MatchTable(ttk.Frame):
                   wraplength=900).pack(fill="x", pady=(8, 0))
         self.var_status = tk.StringVar(value="")
         self.bind("<Configure>", lambda e: self._wrap(e.width))
+
+    def _fit_columns(self, width):
+        """Các cột luôn vừa bề rộng bảng (người dùng 12/11: cột Thời gian bị che nửa): rộng thì phần dư cho Người chơi
+        và Map, hẹp thì co mọi cột theo tỉ lệ phần co được (không nhỏ hơn COL_MIN)."""
+        try:                                      # màn hình phóng to chữ (125 %, 150 %): cột tối thiểu rộng theo
+            scale = max(1.0, float(self.tk.call("tk", "scaling")) / (96 / 72))
+        except (tk.TclError, ValueError):
+            scale = 1.0
+        avail = width - 4
+        base = {k: w * scale for k, _l, w, _a in COLUMNS}
+        mins = {k: COL_MIN.get(k, 50) * scale for k in base}
+        try:                                      # tiêu đề cột luôn đọc đủ ("Thời gian" không thành "Thời giar")
+            from tkinter import font as tkfont
+            hf = tkfont.Font(font=ttk.Style().lookup("Treeview.Heading", "font") or "TkHeadingFont")
+            for k, label, _w, _a in COLUMNS:
+                mins[k] = max(mins[k], hf.measure(label) + 22)
+                base[k] = max(base[k], mins[k])
+        except (tk.TclError, ValueError):
+            pass
+        total = sum(base.values())
+        if avail >= total:
+            extra = avail - total
+            out = dict(base)
+            out["name"] += extra / 2
+            out["kind"] += extra - extra / 2
+        else:
+            slack = sum(base[k] - mins[k] for k in base)
+            f = max(0.0, 1 - (total - avail) / slack) if slack > 0 else 0.0
+            out = {k: mins[k] + (base[k] - mins[k]) * f for k in base}
+        for k, w in out.items():
+            self.tree.column(k, width=int(w), stretch=False)
 
     def _wrap(self, width):
         for w in self.winfo_children():
@@ -178,6 +241,8 @@ class MatchTable(ttk.Frame):
                 self.var_status.set("Chưa có trận nào được ghi." if msg[2] == 0 else f"Đang đọc {msg[2]} trận…")
             elif msg[0] == "info":
                 _, _, p, info, k, n = msg
+                if "age3" not in info and p in self._ages and "rec_index" in info:
+                    info["age3"] = age3_of(self._ages[p], info["rec_index"])
                 self.infos[p] = info
                 changed = True
                 self.var_status.set(f"Đang đọc {k}/{n} trận…")
@@ -185,12 +250,16 @@ class MatchTable(ttk.Frame):
                 _, _, p, ages = msg
                 self._ages[p] = ages
                 self._ages_busy.discard(p)
+                info = self.infos.get(p)
+                if info is not None and "error" not in info and not info.get("recording") and "age3" not in info:
+                    info["age3"] = age3_of(ages, info.get("rec_index"))
+                    if self.tree.exists(p):
+                        self.tree.set(p, "age3", fmt_clock(info["age3"]))
                 if p in self.expanded:
                     self._draw_panel(p)
             elif msg[0] == "done":
-                self.var_status.set(f"{msg[2]} trận. Bấm đúp hoặc Enter để xem; chuột phải để xem 2 đội; "
-                                    "bấm tiêu đề cột để sắp xếp."
-                                    if msg[2] else "Chưa có trận nào được ghi.")
+                # đọc xong: không ghi câu hướng dẫn "N trận. Bấm đúp…" (người dùng 12/11 bỏ)
+                self.var_status.set("" if msg[2] else "Chưa có trận nào được ghi.")
         if changed:
             self._refill()
         try:
@@ -202,14 +271,16 @@ class MatchTable(ttk.Frame):
     def _row(info):
         if info.get("recording"):                  # file đang bị bộ ghi giữ: trận đang đánh
             return (time.strftime("%d/%m/%Y %H:%M", time.localtime(info.get("created", 0))), info["file"], "",
-                    "● Đang ghi", "", "xem được khi hết trận", ""), "muted"
+                    "● Đang ghi", "", "xem được khi hết trận", "", ""), "muted"
         if "error" in info:
             return (time.strftime("%d/%m/%Y %H:%M", time.localtime(info.get("created", 0))), info["file"], "",
-                    "lỗi đọc file", "", info["error"][:40], ""), "muted"
+                    "lỗi đọc file", "", info["error"][:40], "", ""), "muted"
+        hacked = bool(info.get("hack"))
         vals = (time.strftime("%d/%m/%Y %H:%M", time.localtime(info["created"])), info["recorder"],
-                info["recorder_civ"], info["result"], f"{info['format']} {info['civ_mode']}", info["map"],
-                fmt_duration(info["duration_ms"]))
-        return vals, RESULT_TAG.get(info["result"], "")
+                info["recorder_civ"], (f"{HACK_MARK} · {info['result']}" if hacked else info["result"]),
+                f"{info['format']} {info['civ_mode']}", info["map"],
+                (fmt_clock(info["age3"]) if "age3" in info else ""), fmt_duration(info["duration_ms"]))
+        return vals, ("hack" if hacked else RESULT_TAG.get(info["result"], ""))
 
     def _refill(self):
         sel_path = self.selected_path()
@@ -226,18 +297,25 @@ class MatchTable(ttk.Frame):
                 return info.get("created", 0)
             if key == "dur":
                 return info.get("duration_ms", 0)
+            if key == "age3":                       # chưa biết / không lên đời 3 xếp cuối
+                t = info.get("age3")
+                return t if t is not None else (float("-inf") if desc else float("inf"))
             return str(self._row(info)[0][idx]).lower()
         row = 0
+        pinned_only = self.var_pinned_only.get()
         for p, info in sorted(self.infos.items(), key=sort_val, reverse=desc):
+            if pinned_only and os.path.basename(p) not in self.pinned:
+                continue
             if find:
                 hay = " ".join([info.get("file", "")] + [pl.get("name", "") for pl in info.get("players", [])] +
                                [str(v) for v in self._row(info)[0]]).lower()
                 if find not in hay:
                     continue
             vals, tag = self._row(info)
-            if os.path.basename(p) in self.pinned:              # ghim: không tự dọn (mapcap/retention)
+            pin = os.path.basename(p) in self.pinned
+            if pin:                                             # ghim: không tự dọn (mapcap/retention)
                 vals = ("★ " + vals[0],) + tuple(vals[1:])
-            tags = ((tag,) if tag else ()) + (("odd",) if row % 2 else ())
+            tags = ((tag,) if tag else ()) + (("pin",) if pin else ("odd",) if row % 2 else ())
             self.tree.insert("", "end", iid=p, values=vals, tags=tags)
             row += 1
         if sel_path and self.tree.exists(sel_path):
@@ -250,6 +328,9 @@ class MatchTable(ttk.Frame):
             if self.tree.exists(k):
                 self._expand(k, scroll=False)
         self._show_detail()
+        if pinned_only and not row:
+            self.var_status.set("Chưa có trận ghim." if not self.pinned else "Không có trận ghim khớp.")
+        self.after_idle(self._place_pins)
 
     def _sort(self, key):
         k, desc = self.sort_key
@@ -426,6 +507,68 @@ class MatchTable(ttk.Frame):
                 inner.place(x=0, y=geom[2], relwidth=1, height=geom[3])
             except tk.TclError:
                 pass
+        self._place_pins()
+
+    def _pin_frame(self, k):
+        """Bộ dải viền thứ k (mỗi lớp 4 cạnh 1 px), tạo khi cần; bấm lên viền = bấm lên dòng."""
+        while len(self._pin_frames) <= k:
+            parts = []
+            for color in self._pin_colors:
+                for _side in range(4):
+                    f = tk.Frame(self.tree, bg=color, highlightthickness=0, bd=0)
+                    f.bind("<Button-1>", lambda e, j=len(self._pin_frames): self._pin_click(j))
+                    f.bind("<Double-1>", lambda e, j=len(self._pin_frames): (self._pin_click(j), self.open_selected(),
+                                                                              "break")[2])
+                    f.bind("<Button-3>", lambda e, j=len(self._pin_frames): self.toggle_expand(self._pin_iid(j)))
+                    f.bind("<MouseWheel>", self._wheel)
+                    parts.append(f)
+            self._pin_frames.append({"parts": parts, "iid": None, "geom": None})
+        return self._pin_frames[k]
+
+    def _pin_iid(self, j):
+        return self._pin_frames[j]["iid"] if j < len(self._pin_frames) else None
+
+    def _pin_click(self, j):
+        iid = self._pin_iid(j)
+        if iid and self.tree.exists(iid):
+            self.tree.selection_set(iid)
+            self.tree.focus(iid)
+            self.tree.focus_set()
+
+    def _place_pins(self):
+        """Viền vàng 1 px + 2 lớp nhạt dần vào trong quanh các dòng trận ghim đang thấy (Treeview không vẽ viền từng dòng): đặt lại khi
+        cuộn / đổi cỡ / lọc; chỉ gọi place khi vị trí đổi."""
+        try:
+            bottom = self.tree.winfo_height()           # Treeview cuộn theo nguyên dòng: dòng thấy = có bbox
+            rows = []
+            for iid in self.tree.get_children():
+                if os.path.basename(iid) not in self.pinned:
+                    continue
+                bb = self.tree.bbox(iid)
+                if bb and 0 <= bb[1] < bottom:
+                    rows.append((iid, (bb[0], bb[1], bb[2], min(bb[3], bottom - bb[1]))))
+        except tk.TclError:
+            return
+        for k, (iid, geom) in enumerate(rows):
+            fr = self._pin_frame(k)
+            fr["iid"] = iid
+            if fr["geom"] == geom:
+                continue
+            fr["geom"] = geom
+            x, y, w, h = geom
+            for layer in range(len(self._pin_colors)):
+                o, t = layer, 1                             # mỗi lớp 1 px, lớp sau nằm trong lớp trước
+                xs, ys, ws, hs = x + o, y + o, w - 2 * o, h - 2 * o
+                top, bot, lef, rig = fr["parts"][layer * 4:layer * 4 + 4]
+                top.place(x=xs, y=ys, width=ws, height=t)
+                bot.place(x=xs, y=ys + hs - t, width=ws, height=t)
+                lef.place(x=xs, y=ys, width=t, height=hs)
+                rig.place(x=xs + ws - t, y=ys, width=t, height=hs)
+        for fr in self._pin_frames[len(rows):]:
+            if fr["geom"] is not None:
+                fr["geom"], fr["iid"] = None, None
+                for f in fr["parts"]:
+                    f.place_forget()
 
     def _fonts(self):
         if self._pfonts is None:
@@ -488,8 +631,10 @@ class MatchTable(ttk.Frame):
                 ty = y0 + (y1 - y0 - (head_h + len(pls) * lh)) / 2
                 rx = [x1 - 10 - 2 * tw, x1 - 10 - tw, x1 - 10]            # mép phải cột Kích 2 / 3 / 4
                 nx = x0 + 9
+                hackers = {e.get("player") for e in st["info"].get("hack") or []}
                 namew = max([f["head"].measure("Người chơi")] +
-                            [f["bold" if p.get("name") == rec_name else "txt"].measure(p.get("name", "?")) for p in pls])
+                            [f["bold" if p.get("name") == rec_name or p.get("index") in hackers else "txt"].measure(
+                                p.get("name", "?") + ("  ⚠ HACK" if p.get("index") in hackers else "")) for p in pls])
                 cx = min(nx + namew + 14, rx[0] - tw - 60)
                 cv.create_text(nx, ty, text="Người chơi", anchor="nw", fill=C["dim"], font=f["head"])
                 cv.create_text(cx, ty, text="Quân", anchor="nw", fill=C["dim"], font=f["head"])
@@ -499,8 +644,10 @@ class MatchTable(ttk.Frame):
                 for i, pl in enumerate(pls):
                     y = ty + head_h + i * lh
                     me = pl.get("name") == rec_name
-                    cv.create_text(nx, y, text=pl.get("name", "?"), anchor="nw", fill=C["gold_hi"] if me else C["text"],
-                                   font=f["bold" if me else "txt"])
+                    hk = pl.get("index") in hackers
+                    cv.create_text(nx, y, text=pl.get("name", "?") + ("  \u26a0 HACK" if hk else ""), anchor="nw",
+                                   fill="#ff6b6b" if hk else (C["gold_hi"] if me else C["text"]),
+                                   font=f["bold" if me or hk else "txt"])
                     cv.create_text(cx, y, text=pl.get("civ", ""), anchor="nw", fill=C["muted"], font=f["txt"])
                     a = (ages or {}).get(str(pl.get("index")), {})
                     for j, age in enumerate(("2", "3", "4")):
@@ -566,8 +713,8 @@ class MatchTable(ttk.Frame):
         except OSError as e:
             self.var_status.set(f"Không ghim được: {e}")
             return None
-        self._refill()
-        self.var_status.set("Đã ghim trận: không bao giờ tự dọn." if on else "Đã bỏ ghim trận.")
+        self._refill()          # không ghi dòng trạng thái: chữ dài tràn hàng nút (người dùng 12/11); ★ + viền là đủ
+        self.var_status.set("")
         return on
 
     def stop(self):

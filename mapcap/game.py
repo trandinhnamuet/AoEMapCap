@@ -742,6 +742,7 @@ class GameReader:
                 "victory": i32(O.SETTINGS_VICTORY), "victory_value": i32(O.SETTINGS_VICTORY_VALUE),
                 "resources": i32(O.SETTINGS_RESOURCES), "start_age": i32(O.SETTINGS_START_AGE),
                 "reveal_map": b(O.SETTINGS_REVEAL_MAP), "full_tech": b(O.SETTINGS_FULL_TECH),
+                "cheats": b(O.SETTINGS_CHEATS),        # phòng bật "cho phép cheat" (luật L5/S1-S3 của hackcheck)
                 "deathmatch": b(O.SETTINGS_DEATHMATCH), "flag_ae4": b(O.SETTINGS_FLAG_AE4),
                 # mảng theo người chơi 1..n (chỉ số 0 của mảng = người chơi 1)
                 "teams": [b(O.SETTINGS_TEAMS + k) - 1 for k in range(n)],
@@ -754,12 +755,30 @@ class GameReader:
         self._match_cache = (g, info)
         return info
 
+    def start_commands(self, period=0.02, log=None):
+        """Bật luồng đọc lệnh người chơi (mapcap/commands.py); từ đó mỗi snapshot có .cmds = lệnh mới."""
+        from .commands import CommandPoller
+        if getattr(self, "cmd_poller", None) is None:
+            self.cmd_poller = CommandPoller(self.mem, period, log).start()
+        return self.cmd_poller
+
+    def stop_commands(self):
+        p = getattr(self, "cmd_poller", None)
+        if p is not None:
+            p.stop()
+            self.cmd_poller = None
+
     def snapshot(self, with_units=True):
         self.bulk.begin_frame()
         try:
-            return self._snapshot(with_units)
+            snap = self._snapshot(with_units)
         finally:
             self.bulk.end_frame()
+        poller = getattr(self, "cmd_poller", None)
+        if poller is not None:                 # lệnh người chơi đọc được từ mẫu trước tới giờ
+            snap.cmds = poller.drain()
+            snap.turn = poller.turn
+        return snap
 
     def _snapshot(self, with_units=True):
         mem = self.mem

@@ -12,3 +12,9 @@ enabled = true
 binding = "DB"
 database_name = "aoe-mapcap-telemetry"
 database_id = "3c3ce8b1-5c55-4e91-9246-6254e91b89b4"
+
+# Báo cáo trận có hack: file .aoerec (2026-11-11). Cần bật R2 trong Cloudflare Dashboard, rồi:
+#   npx wrangler r2 bucket create aoe-mapcap-reports
+[[r2_buckets]]
+binding = "REPORTS"
+bucket_name = "aoe-mapcap-reports"

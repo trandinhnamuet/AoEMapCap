@@ -5,6 +5,8 @@ Luồng:
      (https://github.com/<repo>/releases/latest/download/version.json, do GitHub Actions tạo khi đăng bản).
      Không có mạng / không vào được GitHub -> None: dùng bình thường, không báo gì.
      So APP_VERSION với "version" (có bản mới) và "min_version" (bản này đã ngừng hỗ trợ, bắt buộc cập nhật).
+     "auto_below" (release/policy.json): bản thấp hơn số này TỰ cập nhật lên bản mới nhất, không cần bấm (bản sửa lỗi
+     quan trọng cho mọi bản cũ - người dùng hay không để ý thanh báo). Không có trong version.json cũ = "0" (tắt).
   2. download_all(): exe của mình và exe "anh em" cùng thư mục (AoE-MapCap.exe <-> AoE-Replay.exe, để hai bản
      luôn cùng phiên bản) -> <exe>.new. Từ v5 Release chỉ đính kèm zip: tải zip (kiểm cỡ + SHA-256), giải nén exe cần
      thay (kiểm SHA-256 từng exe theo version.json "zip.files"). version.json v3/v4 có "assets" = exe lẻ.
@@ -112,17 +114,18 @@ def fetch_manifest(url=None, timeout=TIMEOUT):
 
 
 class UpdateInfo:
-    """Kết quả kiểm tra: state = "current" | "available" | "required"."""
+    """Kết quả kiểm tra: state = "current" | "available" | "auto" (tự cập nhật, không cần bấm) | "required"."""
 
     def __init__(self, manifest, current=APP_VERSION):
         self.manifest = manifest
         self.current = str(current)
         self.latest = str(manifest.get("version"))
         self.min_version = str(manifest.get("min_version") or "0")
+        self.auto_below = str(manifest.get("auto_below") or "0")
         if vtuple(self.current) < vtuple(self.min_version):
             self.state = "required"
         elif vtuple(self.current) < vtuple(self.latest):
-            self.state = "available"
+            self.state = "auto" if vtuple(self.current) < vtuple(self.auto_below) else "available"
         else:
             self.state = "current"
         self.page = safe_page(manifest.get("page"))

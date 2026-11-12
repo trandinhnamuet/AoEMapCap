@@ -98,10 +98,212 @@ class ExportDialog:
         self.app.export_video(self.path)
 
 
+def report_choices(infos, is_busy=None):
+    """Trận báo cáo được (đọc được, không đang ghi), mới nhất trước: [(đường dẫn, nhãn)]. Trận app đã thấy hack có ⚠."""
+    import time
+
+    from replay.library import fmt_duration
+    out = []
+    for p, info in infos.items():
+        if "error" in info or info.get("recording") or not info.get("players") or (is_busy and is_busy(p)):
+            continue
+        names = ", ".join(pl.get("name", "?") for pl in info["players"])
+        label = (("⚠ " if info.get("hack") else "") + time.strftime("%d/%m/%Y %H:%M", time.localtime(info.get(
+            "created", 0))) + f" · {info.get('map', '')} · {fmt_duration(info.get('duration_ms', 0))} · {names}")
+        out.append((info.get("created", 0), p, label[:150]))
+    return [(p, lb) for _c, p, lb in sorted(out, key=lambda x: x[0], reverse=True)]
+
+
+class ReportDialog:
+    """Hộp thoại "Báo cáo hack": chọn trận (người dùng 12/11), người bị nghi, ghi chú, gửi file trận lên máy chủ
+    (thanh tiến độ). Gửi xong lưu vào lịch sử trên máy (trang Lịch sử báo cáo)."""
+
+    def __init__(self, app, path, info=None):
+        self.app = app
+        self.choices = report_choices(app.table.infos, app._is_recording_path)
+        if path not in dict(self.choices) and self.choices:
+            path = self.choices[0][0]
+        self.path = path
+        self.info = app.table.infos.get(path) or info or {}
+        C = theme.C
+        top = self.top = tk.Toplevel(app.root)
+        top.title("Báo cáo trận có hack")
+        top.configure(bg=C["bg"])
+        top.transient(app.root)
+        top.resizable(False, False)
+        theme.dark_window(top)
+        pad = {"padx": 16}
+        tk.Label(top, text="Báo cáo trận có hack", font=theme.F(14, "bold"), bg=C["bg"], fg="#ffffff",
+                 anchor="w").pack(fill="x", pady=(14, 8), **pad)
+        tk.Label(top, text="Trận", font=theme.F(10, "bold"), bg=C["bg"], fg=C["text"], anchor="w").pack(fill="x", **pad)
+        self.var_match = tk.StringVar(value=dict(self.choices).get(path, ""))
+        self.cb_match = ttk.Combobox(top, textvariable=self.var_match, values=[lb for _p, lb in self.choices],
+                                     state="readonly", height=16)
+        self.cb_match.pack(fill="x", pady=(4, 2), **pad)
+        self.cb_match.bind("<<ComboboxSelected>>", lambda e: self._pick_match())
+        self.lbl_meta = tk.Label(top, text="", font=theme.F(10), bg=C["bg"], fg=C["muted"], anchor="w")
+        self.lbl_meta.pack(fill="x", **pad)
+        self.lbl_auto = tk.Label(top, text="", font=theme.F(10), bg=C["bg"], anchor="w", justify="left",
+                                 wraplength=520)
+        self.lbl_auto.pack(fill="x", pady=(6, 8), **pad)
+        tk.Label(top, text="Người bị nghi hack", font=theme.F(10, "bold"), bg=C["bg"], fg=C["text"],
+                 anchor="w").pack(fill="x", **pad)
+        self.var_suspect = tk.StringVar(value="Không rõ")
+        self.cb_suspect = ttk.Combobox(top, textvariable=self.var_suspect, values=["Không rõ"], state="readonly")
+        self.cb_suspect.pack(fill="x", pady=(4, 10), **pad)
+        tk.Label(top, text="Ghi chú (hack gì, phút thứ mấy...)", font=theme.F(10, "bold"), bg=C["bg"], fg=C["text"],
+                 anchor="w").pack(fill="x", **pad)
+        self.txt = tk.Text(top, height=4, width=62, wrap="word", font=theme.F(10), padx=8, pady=6,
+                           **theme.text_widget_colors())
+        self.txt.pack(fill="x", pady=(4, 8), **pad)                # thẳng hàng với nhãn và ô chọn ở trên
+        tk.Label(top, text="Gửi lên máy chủ của AoE-MapCap: file trận này, mã máy, phiên bản, tên trong game của bạn và "
+                           "nội dung ở trên. Admin xem lại trận để xác định hack và bổ sung luật phát hiện.",
+                 font=theme.F(9), bg=C["bg"], fg=C["muted"], anchor="w", justify="left", wraplength=520).pack(fill="x", **pad)
+        self.pb = ttk.Progressbar(top, mode="determinate", maximum=1000)
+        self.lbl = tk.Label(top, text="", font=theme.F(10), bg=C["bg"], fg=C["muted"], anchor="w")
+        self.lbl.pack(fill="x", pady=(6, 0), **pad)
+        bot = tk.Frame(top, bg=C["bg"])
+        bot.pack(fill="x", pady=12, **pad)
+        self.btn_close = ttk.Button(bot, text="Huỷ", command=top.destroy)
+        self.btn_close.pack(side="right")
+        self.btn_send = ttk.Button(bot, text="Gửi báo cáo", style="Accent.TButton", command=self._send)
+        self.btn_send.pack(side="right", padx=8)
+        self.q = queue.Queue()
+        self._set_match(self.path)
+        top.grab_set()
+
+    def _pick_match(self):
+        lb = self.var_match.get()
+        p = next((p for p, x in self.choices if x == lb), None)
+        if p and p != self.path:
+            self._set_match(p)
+
+    def _set_match(self, path):
+        """Đổi trận đang báo cáo: dòng tóm tắt, vi phạm app tự thấy, danh sách người bị nghi (gợi ý người app bắt được)."""
+        from replay.library import fmt_duration, hack_text
+        self.path = path
+        info = self.info = self.app.table.infos.get(path) or self.info or {}
+        C = theme.C
+        if not path:
+            self.lbl_meta.configure(text="Chưa có trận nào báo cáo được.")
+            self.btn_send.configure(state="disabled")
+            return
+        size = os.path.getsize(path) / 1e6 if os.path.exists(path) else 0
+        self.lbl_meta.configure(text=f"{info.get('map', '')} · {fmt_duration(info.get('duration_ms', 0))} · "
+                                     f"{info.get('format', '')} · file {size:.1f} MB")
+        auto = hack_text(info)
+        self.lbl_auto.configure(text=("App đã phát hiện: " + auto) if auto else
+                                "App không tự phát hiện vi phạm nào trong trận này.",
+                                fg="#ff6b6b" if auto else C["muted"])
+        names = [pl.get("name", "?") for pl in info.get("players", []) if pl.get("name") != info.get("recorder")]
+        hackers = list(dict.fromkeys(e.get("name") for e in info.get("hack") or []))
+        self.cb_suspect.configure(values=names + ["Không rõ"])
+        self.var_suspect.set(hackers[0] if hackers else (names[0] if len(names) == 1 else "Không rõ"))
+
+    def _send(self):
+        suspect = self.var_suspect.get().strip()
+        note = self.txt.get("1.0", "end").strip()
+        if suspect == "Không rõ":
+            suspect = ""
+        if not suspect and not note:
+            messagebox.showinfo("Báo cáo hack", "Hãy chọn người bị nghi hoặc ghi chú hack gì.", parent=self.top)
+            return
+        self.btn_send.configure(state="disabled")
+        self.cb_match.configure(state="disabled")
+        self._sent = (self.path, self.info, suspect, note)
+        self.pb.pack(fill="x", padx=16, pady=(6, 0), before=self.lbl)
+        self.lbl.configure(text="Đang gửi…")
+
+        def run():
+            from . import report
+            try:
+                rid = report.upload(self.path, self.info, suspect, note,
+                                    progress=lambda a, b: self.q.put(("p", a, b)))
+                self.q.put(("ok", rid))
+            except report.ReportError as e:
+                self.q.put(("err", str(e)))
+            except Exception as e:  # noqa: BLE001
+                self.q.put(("err", repr(e)))
+        threading.Thread(target=run, daemon=True).start()
+        self._poll()
+
+    def _poll(self):
+        try:
+            while True:
+                m = self.q.get_nowait()
+                if m[0] == "p":
+                    self.pb["value"] = 1000 * m[1] / max(m[2], 1)
+                    self.lbl.configure(text=f"Đang gửi {m[1] / 1e6:.1f} / {m[2] / 1e6:.1f} MB…")
+                elif m[0] == "ok":
+                    self.lbl.configure(text=f"Đã gửi báo cáo #{m[1]}. Cảm ơn bạn!", fg=theme.C["green"])
+                    self.btn_close.configure(text="Đóng")
+                    self.app._append(f"đã gửi báo cáo hack #{m[1]}: {os.path.basename(self.path)}")
+                    self.app._report_sent(m[1], *self._sent)
+                    return
+                elif m[0] == "err":
+                    self.lbl.configure(text="Không gửi được: " + m[1], fg="#ff6b6b")
+                    self.btn_send.configure(state="normal")
+                    self.cb_match.configure(state="readonly")
+                    self.app._append("báo cáo hack lỗi: " + m[1])
+                    return
+        except queue.Empty:
+            pass
+        except tk.TclError:
+            return
+        try:
+            self.top.after(150, self._poll)
+        except tk.TclError:
+            pass
+
+
+_ALARM = None
+
+
+def _alarm_wav():
+    """Chuông cảnh báo hack: 3 cặp nốt cao-thấp (~1,1 s), WAV 16 bit tạo trong bộ nhớ."""
+    global _ALARM
+    if _ALARM is None:
+        import io
+        import math
+        import struct as st
+        import wave
+        rate = 22050
+        frames = bytearray()
+        for _k in range(3):
+            for f in (1320.0, 880.0):
+                n = int(rate * 0.16)
+                for i in range(n):
+                    env = min(1.0, i / 200.0, (n - i) / 400.0)
+                    frames += st.pack("<h", int(14000 * env * math.sin(2 * math.pi * f * i / rate)))
+            frames += b"\0\0" * int(rate * 0.05)
+        bio = io.BytesIO()
+        with wave.open(bio, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(bytes(frames))
+        _ALARM = bio.getvalue()
+    return _ALARM
+
+
+def play_alarm():
+    """Phát chuông (luồng riêng: winsound SND_MEMORY không chạy nền được). Lỗi âm thanh thì bỏ qua."""
+    def run():
+        try:
+            import winsound
+            winsound.PlaySound(_alarm_wav(), winsound.SND_MEMORY | winsound.SND_NODEFAULT)
+        except Exception:  # noqa: BLE001
+            pass
+    if os.environ.get("AOEMAPCAP_MUTE") != "1":
+        threading.Thread(target=run, daemon=True).start()
+
+
 class App:
     PAGES = (("matches", "", "Trận đã ghi", "Xem lại trận: tua, đổi góc nhìn, xuất video khi cần"),
              ("phone", "", "Điện thoại", "Xem lại trận trên điện thoại Android ở bất kỳ mạng nào: quét mã QR để kết nối"),
              ("settings", "", "Cài đặt", "Ghi trận, thư mục lưu, xuất video, thống kê sử dụng"),
+             ("reports", "\ue7c1", "Lịch sử báo cáo", "Các trận bạn đã báo cáo hack từ máy này"),
+             ("keys", "\ue765", "Phím tắt", "Phím điều khiển khi xem replay"),
              ("log", "", "Nhật ký", "Hoạt động của bộ ghi, xuất video và cập nhật"),
              ("feedback", "\ue939", "Góp ý", "Gửi ý kiến, báo lỗi cho tác giả trên trang Thảo luận (GitHub Discussions)"))
     FEEDBACK_URL = "https://github.com/trandinhnamuet/AoEMapCap/discussions"
@@ -139,6 +341,9 @@ class App:
         self._clean_st = None        # tình trạng quét gần nhất
         self._low_disk = False
         self.var_clean = tk.BooleanVar(value=self.cfg.auto_clean)
+        self.var_hack_sound = tk.BooleanVar(value=self.cfg.hack_sound)
+        self.hack_events = []        # vi phạm phát hiện trong trận đang ghi (thẻ cảnh báo góc phải trên)
+        self.hack_card = None
         self.var_clean_usage = tk.StringVar(value="")
         self._build()
         self.root.after(200, self._poll)
@@ -194,7 +399,7 @@ class App:
             bar.pack(side="left", fill="y")
             ic = tk.Label(item, text=glyph if icon_font else "•", font=icon_font or theme.F(12), bg=C["sidebar"],
                           fg=C["muted"], width=3)
-            ic.pack(side="left", pady=10, padx=(8, 0))
+            ic.pack(side="left", pady=7, padx=(8, 0))      # 7 mục vẫn vừa trên các ô tích ở cửa sổ cao 600 px
             tx = tk.Label(item, text=label, font=theme.F(11, "bold"), bg=C["sidebar"], fg=C["muted"], anchor="w")
             tx.pack(side="left", fill="x", expand=True, padx=(4, 0))
             self.nav[key] = (item, bar, ic, tx)
@@ -256,6 +461,8 @@ class App:
         self._build_matches()
         self._build_phone()
         self._build_settings()
+        self._build_reports()
+        self._build_keys()
         self._build_log()
         self._build_feedback()
         self.show_page("matches")
@@ -286,6 +493,8 @@ class App:
         self.var_winstart = tk.BooleanVar(value=winstartup.is_enabled())
         self.start_cb, self.start_icon, self.start_tip, self.start_icon_tip = row(
             "Khởi động cùng Windows", self.var_winstart, self._winstart_toggled, self._winstart_text)
+        self.hack_cb, self.hack_icon, self.hack_tip, self.hack_icon_tip = row(
+            "Báo âm thanh khi có hack", self.var_hack_sound, self._hack_sound_toggled, self._hack_sound_text)
         self.clean_text = ""                                   # mô tả + tình trạng tự dọn (chú thích khi rê chuột)
         self.clean_cb, self.clean_icon, self.clean_tip, self.clean_icon_tip = row(
             "Tự dọn trận cũ", self.var_clean, self._clean_toggled, lambda: self.clean_text)
@@ -298,6 +507,89 @@ class App:
                 "Ngoài trận app không làm gì nên không tốn tài nguyên, không nặng máy, chỉ nhẹ như Vietkey.\n"
                 "Bật / tắt ngay tại ô này (Windows chạy app bằng tác vụ AoE-MapCap trong Task Scheduler, có quyền quản trị để "
                 "đọc được game, không hỏi UAC).")
+
+    def _hack_sound_text(self):
+        on = bool(self.var_hack_sound.get())
+        return ("Báo âm thanh khi phát hiện hack đang " + ("BẬT" if on else "TẮT") + ".\n"
+                "Trong trận, AoE-MapCap đọc lệnh và tài nguyên của mọi người chơi và so với danh sách luật: điều khiển "
+                "thú hoặc quân người khác, xoá nhà / quân người khác, ép người khác đầu hàng, lệnh cheat khi phòng không "
+                "bật cheat, ra quân / nâng cấp thứ chưa mở, tài nguyên vượt 1.000.000 hoặc tăng đột biến >= 1000 trong "
+                "1 giây, unit chỉ cheat mới có.\n"
+                "Phát hiện: phát chuông cảnh báo (ô này), hiện thẻ cảnh báo ở góc phải trên cửa sổ app và đánh dấu "
+                "trận trong danh sách Trận đã ghi.")
+
+    def _hack_sound_toggled(self):
+        self.cfg.hack_sound = bool(self.var_hack_sound.get())
+        self._save_cfg()
+        self._append("báo âm thanh khi phát hiện hack: " + ("BẬT" if self.cfg.hack_sound else "TẮT"))
+        if self.cfg.hack_sound:
+            play_alarm()                                   # nghe thử
+
+    # ---- phát hiện hack (mapcap/hackcheck) ----------------------------------------------
+    def _on_hack(self, ev):
+        """Vi phạm mới (luồng chính, từ hàng đợi): nhật ký + chuông + thẻ cảnh báo + thông báo khay."""
+        from .hackcheck import fmt_time
+        line = f"{ev.get('name')} - {ev.get('label')} ({ev.get('detail')}) lúc {fmt_time(ev.get('t', 0))}"
+        self._append("PHÁT HIỆN HACK: " + line)
+        if ev.get("file") and ev.get("file") != getattr(self, "_hack_file", None):
+            self._hack_file = ev.get("file")
+            self.hack_events = []                          # trận mới: thẻ chỉ liệt kê vi phạm của trận này
+        self.hack_events.append(ev)
+        if self.cfg.hack_sound:
+            play_alarm()
+        self._show_hack_card()
+        if self.tray is not None and not self._window_visible():
+            try:
+                self.tray.balloon("AoE-MapCap: phát hiện hack", line[:250])
+            except Exception:  # noqa: BLE001
+                pass
+        self.table.reload()
+
+    def _window_visible(self):
+        try:
+            return self.root.state() != "withdrawn" and bool(self.root.winfo_viewable())
+        except tk.TclError:
+            return False
+
+    def _show_hack_card(self):
+        """Thẻ cảnh báo ở góc phải trên cửa sổ app: mỗi người chơi hack một dòng (tên + các loại hack + giờ game)."""
+        from .hackcheck import fmt_time
+        C = theme.C
+        if self.hack_card is not None:
+            try:
+                self.hack_card.destroy()
+            except tk.TclError:
+                pass
+        card = tk.Frame(self.root, bg="#3a0d0d", highlightthickness=2, highlightbackground="#e53935")
+        head = tk.Frame(card, bg="#3a0d0d")
+        head.pack(fill="x", padx=10, pady=(8, 2))
+        tk.Label(head, text="\u26a0  Phát hiện hack", font=theme.F(12, "bold"), bg="#3a0d0d", fg="#ff6b6b").pack(side="left")
+        close = tk.Label(head, text="\u2715", font=theme.F(11), bg="#3a0d0d", fg=C["muted"], cursor="hand2")
+        close.pack(side="right")
+        close.bind("<Button-1>", lambda e: self._hide_hack_card())
+        by = {}
+        for ev in self.hack_events:
+            by.setdefault((ev.get("player"), ev.get("name")), []).append(ev)
+        self.hack_lines = []
+        for (_p, name), evs in by.items():
+            kinds = "; ".join(f"{e.get('label')} ({fmt_time(e.get('t', 0))})" for e in evs)
+            lb = tk.Label(card, text=f"{name}: {kinds}", font=theme.F(10), bg="#3a0d0d", fg="#ffd7d7",
+                          justify="left", anchor="w", wraplength=340)
+            lb.pack(fill="x", padx=12, pady=1)
+            self.hack_lines.append(lb.cget("text"))
+        tk.Label(card, text="Trận này được đánh dấu có hack trong Trận đã ghi.", font=theme.F(9), bg="#3a0d0d",
+                 fg=C["muted"], anchor="w").pack(fill="x", padx=12, pady=(2, 8))
+        card.place(relx=1.0, x=-14, y=14, anchor="ne")
+        card.lift()
+        self.hack_card = card
+
+    def _hide_hack_card(self):
+        if self.hack_card is not None:
+            try:
+                self.hack_card.destroy()
+            except tk.TclError:
+                pass
+            self.hack_card = None
 
     def _winstart_toggled(self):
         from . import winstartup
@@ -376,6 +668,8 @@ class App:
                 f.pack(fill="both", expand=True)
             else:
                 f.pack_forget()
+        if key == "reports":                      # file trận có thể đã bị xoá / dọn từ lần trước
+            self._fill_reports()
         _k, _g, title, sub = next(p for p in self.PAGES if p[0] == key)
         self.head.itemconfigure(self._head_title, text=title)
         self.head.itemconfigure(self._head_sub, text=sub)
@@ -405,13 +699,157 @@ class App:
         self.table.pack(fill="both", expand=True)
         self._build_clean_bar(tab)
         ttk.Button(bot, text="▶  Xem replay", style="Accent.TButton", command=self.table.open_selected).pack(side="left")
+        ttk.Style().configure("Bar.TButton", padding=(12, 6), width=-6)  # rộng theo chữ (mặc định tối thiểu 11 ký tự)
         for text, cmd in (("Xuất video...", self._export_selected), ("Mở file khác...", self._open_other),
                           ("Mở thư mục", self._open_dir), ("Xoá trận", self.table.delete_selected),
-                          ("★ Ghim", self._pin_selected), ("Nén trận cũ", self._compact_old)):
-            ttk.Button(bot, text=text, command=cmd).pack(side="left", padx=(8, 0))
+                          ("★ Ghim", self._pin_selected)):
+            b = ttk.Button(bot, text=text, command=cmd, style="Bar.TButton")
+            b.pack(side="left", padx=(6, 0))
+            if cmd == self._open_dir:
+                self.btn_open_dir = b
+                theme.Tip(b, lambda: "Mở " + self.table.var_dir.get() + " (đổi trong Cài đặt)")
+            if cmd == self._pin_selected:
+                self.btn_pin = b
+                theme.Tip(b, "Ghim trận đang chọn để giữ mãi: Tự dọn trận cũ không bao giờ xoá trận ghim (vẫn tự "
+                             "xoá được bằng nút Xoá trận). Trận ghim có dấu ★ và viền vàng sáng; tích \"★ Trận đã ghim\" "
+                             "ở trên bảng để chỉ xem các trận ghim. Bấm lại để bỏ ghim.")
+        theme.Tip(self.table.pin_check, "Chỉ hiện các trận đã ghim ★")
+        # Báo cáo hack: hàng trên, ngay trái nút Làm mới (hàng nút dưới đã kín ở cửa sổ 980 px)
+        entry = next((w for w in self.table.bar.winfo_children() if isinstance(w, ttk.Entry)), None)
+        self.btn_report = ttk.Button(self.table.bar, text="\u2691 Báo cáo hack", command=self._report_selected)
+        self.btn_report.pack(side="right", padx=(4, 0), **({"before": entry} if entry is not None else {}))
         self.table.is_busy = self._is_recording_path
         self.table.prefetch_ok = lambda: self._mode_now() != "rec"   # không quét trận cũ ở nền khi đang ghi
-        ttk.Label(bot, textvariable=self.table.var_status, style="Muted.TLabel").pack(side="right")
+        # dòng trạng thái: bên trái hàng trên bảng (hàng nút dưới đã kín ở cửa sổ 980 px); chữ dài tự rút gọn "…"
+        # (không tràn), rê chuột xem đủ
+        self.status_lbl = ttk.Label(self.table.bar, text="", style="Muted.TLabel", anchor="w", width=1)
+        self.status_lbl.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self.status_lbl.bind("<Configure>", lambda e: self._fit_status(), add="+")
+        self.table.var_status.trace_add("write", lambda *_: self._fit_status())
+        theme.Tip(self.status_lbl, lambda: self.table.var_status.get()
+                  if self.status_lbl.cget("text") != self.table.var_status.get() else "")
+
+    def _fit_status(self):
+        from tkinter import font as tkfont
+        full = self.table.var_status.get()
+        lbl = self.status_lbl
+        w = lbl.winfo_width() - 4
+        f = tkfont.Font(font=ttk.Style().lookup("Muted.TLabel", "font") or "TkDefaultFont")
+        txt = full
+        if w > 1 and f.measure(txt) > w:
+            while txt and f.measure(txt.rstrip() + "…") > w:
+                txt = txt[:-1]
+            txt = txt.rstrip() + "…" if txt else ""
+        if lbl.cget("text") != txt:
+            lbl.configure(text=txt)
+
+    # ---- báo cáo trận có hack (mapcap/report: file lên máy chủ, admin xem ở trang thống kê) -------------
+    def _report_selected(self):
+        """Mở hộp thoại báo cáo, chọn sẵn trận đang chọn trong bảng (đổi được trận ngay trong hộp thoại)."""
+        if not report_choices(self.table.infos, self._is_recording_path):
+            messagebox.showinfo(APP_TITLE, "Chưa có trận nào báo cáo được (trận đang ghi báo cáo được khi kết thúc).")
+            return
+        ReportDialog(self, self.table.selected_path())
+
+    def _report_sent(self, rid, path, info, suspect, note):
+        from replay.library import hack_text
+
+        from . import report
+        try:
+            report.add_history(self.cfg.resolved_out_dir(), rid, path, info, suspect, note, hack_text(info))
+        except OSError as e:
+            self._append(f"không lưu được lịch sử báo cáo: {e}")
+        self._fill_reports()
+
+    # ---- trang Lịch sử báo cáo (người dùng 12/11): các trận máy này đã báo cáo hack ---------------
+    REPORT_COLS = (("ts", "Ngày gửi", 128, "w"), ("id", "Mã", 56, "center"), ("match", "Trận", 128, "w"),
+                   ("map", "Map", 150, "w"), ("suspect", "Người bị nghi", 130, "w"), ("note", "Ghi chú", 200, "w"))
+
+    def _build_reports(self):
+        import time
+        C = theme.C
+        tab = tk.Frame(self.content, bg=C["bg"])
+        self.pages["reports"] = tab
+        bot = ttk.Frame(tab)
+        bot.pack(side="bottom", fill="x", pady=(12, 0))
+        self.btn_rep_play = ttk.Button(bot, text="▶  Xem replay", style="Accent.TButton",
+                                       command=self._report_open)
+        self.btn_rep_play.pack(side="left")
+        ttk.Button(bot, text="⚑ Báo cáo trận khác...", style="Bar.TButton",
+                   command=lambda: self._report_selected()).pack(side="left", padx=(6, 0))
+        self.var_rep_detail = tk.StringVar(value="")
+        ttk.Label(tab, textvariable=self.var_rep_detail, style="Detail.TLabel", justify="left",
+                  wraplength=700).pack(side="bottom", fill="x", pady=(8, 0))
+        mid = ttk.Frame(tab)
+        mid.pack(fill="both", expand=True)
+        tv = self.rep_tree = ttk.Treeview(mid, columns=[c[0] for c in self.REPORT_COLS], show="headings",
+                                          selectmode="browse")
+        for key, label, w, anchor in self.REPORT_COLS:
+            tv.heading(key, text=label)
+            tv.column(key, width=w, anchor=anchor, stretch=key in ("map", "note"))
+        tv.tag_configure("odd", background=C["bg2"])
+        tv.tag_configure("gone", foreground=C["dim"])
+        sb = ttk.Scrollbar(mid, command=tv.yview)
+        tv.configure(yscrollcommand=sb.set)
+        tv.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.rep_empty = tk.Label(tv, text="Chưa gửi báo cáo nào.\nỞ trang Trận đã ghi, chọn trận rồi bấm "
+                                  "⚑ Báo cáo hack: trận đã gửi sẽ hiện ở đây.", bg=C["panel"], fg=C["muted"],
+                                  font=theme.F(10), justify="center")
+        tv.bind("<<TreeviewSelect>>", lambda e: self._report_detail())
+        tv.bind("<Double-1>", lambda e: self._report_open())
+        tv.bind("<Return>", lambda e: self._report_open())
+        self._rep_items = {}
+        self._fmt_t = lambda t: time.strftime("%d/%m/%Y %H:%M", time.localtime(t)) if t else ""
+        self._fill_reports()
+
+    def _fill_reports(self):
+        from . import report
+        tv = self.rep_tree
+        tv.delete(*tv.get_children())
+        self._rep_items = {}
+        items = report.load_history(self.cfg.resolved_out_dir())
+        for k, it in enumerate(items):
+            iid = f"r{k}"
+            self._rep_items[iid] = it
+            note = " ".join(str(it.get("note", "")).split())
+            gone = not os.path.exists(it.get("path", ""))
+            tags = (("odd",) if k % 2 else ()) + (("gone",) if gone else ())
+            tv.insert("", "end", iid=iid, tags=tags, values=(
+                self._fmt_t(it.get("ts")), f"#{it.get('id')}" if it.get("id") is not None else "",
+                self._fmt_t(it.get("created")), it.get("map", ""), it.get("suspect") or "Không rõ", note))
+        if items:
+            self.rep_empty.place_forget()
+            tv.selection_set("r0")
+            tv.focus("r0")
+        else:
+            self.rep_empty.place(relx=0.5, rely=0.45, anchor="center")
+        self._report_detail()
+
+    def _report_detail(self):
+        sel = self.rep_tree.selection()
+        it = self._rep_items.get(sel[0]) if sel else None
+        if not it:
+            self.var_rep_detail.set("")
+            self.btn_rep_play.configure(state="disabled")
+            return
+        gone = not os.path.exists(it.get("path", ""))
+        parts = [it.get("file", ""), f"{it.get('format', '')} · {it.get('duration', '')}".strip(" ·"),
+                 "Người chơi: " + ", ".join(it.get("players") or [])]
+        if it.get("auto"):
+            parts.append("App đã phát hiện: " + it["auto"])
+        if it.get("note"):
+            parts.append("Ghi chú: " + " ".join(str(it["note"]).split()))
+        if gone:
+            parts.append("File trận không còn trên máy (đã xoá / dọn / đổi thư mục): không xem lại được.")
+        self.var_rep_detail.set("   ·   ".join(p for p in parts if p))
+        self.btn_rep_play.configure(state="disabled" if gone else "normal")
+
+    def _report_open(self):
+        sel = self.rep_tree.selection()
+        it = self._rep_items.get(sel[0]) if sel else None
+        if it and os.path.exists(it.get("path", "")):
+            self._launch_replay(it["path"])
 
     # ---- điện thoại: máy chủ trong mạng nhà cho app Android (docs/13) ----------------------
     def _build_phone(self):
@@ -628,14 +1066,20 @@ class App:
         self.var_clean_limit = tk.DoubleVar(value=cfg.clean_limit_gb)
         self.var_clean_days = tk.IntVar(value=int(cfg.clean_days))
 
+        fd = self._card(tab, "Thư mục lưu trận")
+        ttk.Entry(fd, textvariable=self.var_out, width=60).grid(row=0, column=0, sticky="we", pady=6, padx=(0, 10))
+        ttk.Button(fd, text="Chọn...", command=self._choose_dir).grid(row=0, column=1, sticky="w", pady=6)
+        ttk.Button(fd, text="Mở thư mục", command=self._open_dir).grid(row=0, column=2, sticky="w", pady=6,
+                                                                       padx=(8, 0))
+        ttk.Label(fd, text="Trận ghi nằm trong thư mục con Raw; đổi thư mục rồi bấm Lưu cài đặt",
+                  style="CardMuted.TLabel").grid(row=1, column=0, columnspan=3, sticky="w")
+        fd.columnconfigure(0, weight=1)
+
         rec = self._card(tab, "Ghi trận")
         ttk.Label(rec, text="Nhịp đọc game (lần/giây)", style="Card.TLabel").grid(row=0, column=0, sticky="w", **pad)
         ttk.Spinbox(rec, from_=1, to=60, textvariable=self.var_cap, width=8).grid(row=0, column=1, sticky="w", **pad)
         ttk.Label(rec, text="25 = mượt như game; thấp hơn thì file nhỏ hơn", style="CardMuted.TLabel").grid(
             row=0, column=2, sticky="w", **pad)
-        ttk.Label(rec, text="Thư mục lưu", style="Card.TLabel").grid(row=1, column=0, sticky="w", **pad)
-        ttk.Entry(rec, textvariable=self.var_out, width=60).grid(row=1, column=1, columnspan=2, sticky="we", **pad)
-        ttk.Button(rec, text="Chọn...", command=self._choose_dir).grid(row=1, column=3, sticky="w", pady=6)
         ttk.Checkbutton(rec, text="Bấm X: chạy ngầm ở khay hệ thống (góc phải thanh tác vụ), vẫn ghi trận",
                         variable=self.var_tray, style="Card.TCheckbutton").grid(row=3, column=0, columnspan=4,
                                                                                 sticky="w", pady=(10, 2))
@@ -660,7 +1104,13 @@ class App:
             row=1, column=5, sticky="e", pady=6)
         ttk.Label(cl, textvariable=self.var_clean_usage, style="CardMuted.TLabel", justify="left").grid(
             row=2, column=0, columnspan=6, sticky="w", pady=(4, 0))
+        # Nén trận cũ: chuyển từ hàng nút dưới bảng Trận đã ghi (hàng đó tràn ở cửa sổ hẹp)
+        ttk.Button(cl, text="Nén trận cũ", command=self._compact_old).grid(row=3, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(cl, text="Trận ghi bằng bản cũ nhỏ đi khoảng 5 lần, không mất dữ liệu", style="CardMuted.TLabel").grid(
+            row=3, column=1, columnspan=5, sticky="w", padx=10, pady=(10, 0))
         cl.columnconfigure(4, weight=1)
+
+        self._build_rules_card(tab)
 
         vid = self._card(tab, "Xuất video (tuỳ chọn)")
         ttk.Checkbutton(vid, text="Tự xuất video sau mỗi trận (tốn CPU sau trận; mặc định tắt — dùng nút Xuất video... khi cần)",
@@ -779,6 +1229,61 @@ class App:
         self.root.clipboard_append(text)
         self.fb_msg.configure(text=f"Đã sao chép {len(lines)} dòng Nhật ký: dán (Ctrl+V) vào bài viết.")
 
+    def _build_rules_card(self, tab):
+        """Cài đặt -> Phát hiện hack (người dùng 12/11): danh sách luật app dùng để đánh dấu người chơi hack."""
+        from .hackcheck import RULE_DETAILS, RULES
+        C = theme.C
+        card = self._card(tab, "Phát hiện hack")
+        intro = tk.Label(card, text="Trong lúc ghi trận, app kiểm tra lệnh và chỉ số của mọi người chơi theo các luật dưới đây. "
+                            "Vi phạm một luật là người đó bị đánh dấu hack: báo bằng chuông (ô Báo âm thanh khi có hack ở "
+                            "thanh bên), thẻ cảnh báo trong app, và trận được đánh dấu ⚠ Có hack. Phòng bật cheat thì "
+                            "L5, S1-S3 không tính.", bg=C["panel"], fg=C["muted"], font=theme.F(9), justify="left",
+                 anchor="w", wraplength=600)
+        intro.grid(row=0, column=0, columnspan=3, sticky="we", pady=(0, 8))
+        self.rule_rows = []
+        for r, (code, label) in enumerate(RULES.items(), start=1):
+            tk.Label(card, text=code, bg=C["panel"], fg=C["gold_hi"], font=theme.F(10, "bold"), anchor="nw").grid(
+                row=r, column=0, sticky="nw", padx=(0, 12), pady=3)
+            tk.Label(card, text=label, bg=C["panel"], fg=C["text"], font=theme.F(10, "bold"), anchor="nw",
+                     justify="left").grid(row=r, column=1, sticky="nw", padx=(0, 16), pady=3)
+            d = tk.Label(card, text=RULE_DETAILS.get(code, ""), bg=C["panel"], fg=C["muted"], font=theme.F(9),
+                         anchor="nw", justify="left", wraplength=420)
+            d.grid(row=r, column=2, sticky="nwe", pady=3)
+            self.rule_rows.append((code, label, d))
+        card.columnconfigure(2, weight=1)
+
+        def rewrap(e):
+            intro.configure(wraplength=max(300, e.width - 8))
+            w = max(240, e.width - 330)
+            for _c, _l, d in self.rule_rows:
+                d.configure(wraplength=w)
+        card.bind("<Configure>", rewrap, add="+")
+
+    def _build_keys(self):
+        """Tab Phím tắt (người dùng 11/11): phím điều khiển trình xem replay, cùng danh sách với bảng Esc trong replay."""
+        from replay.keys import KEYS_HELP
+        C = theme.C
+        tab = tk.Frame(self.content, bg=C["bg"])
+        self.pages["keys"] = tab
+        txt = tk.Text(tab, wrap="word", font=theme.F(10), padx=18, pady=14, cursor="arrow", spacing1=3, spacing3=3,
+                      **theme.text_widget_colors())
+        sb = ttk.Scrollbar(tab, command=txt.yview)
+        txt.configure(yscrollcommand=sb.set)
+        txt.tag_configure("key", foreground=C["gold_hi"], font=theme.F(10, "bold"))
+        txt.tag_configure("note", foreground=C["muted"])
+        kf = tkfont.Font(font=theme.F(10, "bold"))
+        kw = max(kf.measure(k) for k, _d in KEYS_HELP) + 28
+        txt.configure(tabs=(kw,))
+        txt.tag_configure("row", lmargin2=kw)
+        txt.insert("end", "Trong lúc xem replay bấm Esc hoặc ? để hiện bảng này ngay trên màn hình.\n\n", "note")
+        for k, d in KEYS_HELP:
+            txt.insert("end", k, ("key", "row"))
+            txt.insert("end", "\t" + d + "\n", "row")
+        txt.configure(state="disabled")
+        txt.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y", padx=(4, 0))
+        self.keys_text = txt
+
     def _build_log(self):
         tab = tk.Frame(self.content, bg=theme.C["bg"])
         self.pages["log"] = tab
@@ -810,6 +1315,7 @@ class App:
             messagebox.showerror(APP_TITLE, f"Giá trị không hợp lệ: {e}")
             return None
         cfg.auto_clean = bool(self.var_clean.get())
+        cfg.hack_sound = bool(self.var_hack_sound.get())
         cfg.record_mode = "raw"
         cfg.record_video = True
         cfg.keep_raw = True
@@ -881,7 +1387,8 @@ class App:
         self.stop_event = threading.Event()
         logger = Logger(cfg.log_path(), callback=self.q.put)
         self.engine = Engine(cfg, logger, self.stop_event, status=lambda s: self.q.put(("__status__", s)),
-                             progress=lambda label, text: self.q.put(("__progress__", label, text)))
+                             progress=lambda label, text: self.q.put(("__progress__", label, text)),
+                             on_hack=lambda ev: self.q.put(("__hack__", ev)))
         self.thread = threading.Thread(target=self._run_engine, daemon=True)
         import time
         self._engine_started = time.monotonic()
@@ -1025,14 +1532,13 @@ class App:
 
     def _build_clean_bar(self, tab):
         """Tự dọn trận cũ trên trang Trận đã ghi, không lấy thêm chiều cao của bảng (ô bật / tắt ở đáy thanh bên,
-        _build_side_opts). Cảnh báo ổ sắp đầy là chữ đỏ ngắn trên hàng Thư mục / Tìm tên (chi tiết khi rê chuột). Chỉ
+        _build_side_opts). Cảnh báo ổ sắp đầy là chữ đỏ ngắn đầu hàng trên bảng (chi tiết khi rê chuột). Chỉ
         lúc chờ đồng ý lần dọn đầu mới có một dòng hỏi (Đồng ý / Tắt) phía trên bảng, trả lời xong thì mất."""
         C = theme.C
         bar = self.table.bar
-        dl = self.table.dir_label                              # đường dẫn dài nhường chỗ (bị cắt trước), rê chuột xem đủ
-        dl.pack_forget()
-        dl.pack(side="left", padx=6)
-        theme.Tip(dl, lambda: self.table.var_dir.get())
+        # đường dẫn thư mục: ở đầu trang Cài đặt (người dùng 12/11); nút Mở thư mục ở hàng nút dưới bảng
+        self.table.dir_caption.pack_forget()
+        self.table.dir_label.pack_forget()
         self.disk_text = ""
         self.disk_msg = tk.Label(bar, text="", bg=C["bg"], fg=C["lose"], font=theme.F(10, "bold"), anchor="e")
         self.disk_tip = theme.Tip(self.disk_msg, lambda: self.disk_text)
@@ -1147,7 +1653,8 @@ class App:
             self.disk_text = msg
             self.disk_msg.configure(text=f"⚠ Ổ {drive} sắp đầy")
             if not self.disk_msg.winfo_manager():
-                self.disk_msg.pack(side="right", padx=(0, 14), before=self.table.dir_label)
+                self.disk_msg.pack(side="left", padx=(0, 10),         # xếp đầu: hàng hẹp thì ô khác nhường chỗ
+                                   before=self.table.bar.pack_slaves()[0])
             if not self._low_disk:
                 self._append("cảnh báo: " + msg)
         else:
@@ -1237,6 +1744,8 @@ class App:
                         else:
                             self.renders[label] = text
                         self._refresh_status()
+                    elif kind == "__hack__":           # tiến trình ghi phát hiện hack (mapcap/hackcheck)
+                        self._on_hack(item[1])
                     elif kind == "__tray__":           # từ luồng khay / bản mở sau (instance.signal_show)
                         self._tray_action(item[1])
                     elif kind == "__clean__":          # tình trạng tự dọn (luồng nền)

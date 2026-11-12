@@ -24,7 +24,7 @@ export const DASHBOARD_HTML = `<!doctype html>
   --f-display:"Space Grotesk","Be Vietnam Pro",system-ui,sans-serif;
   --f-body:"Be Vietnam Pro","Space Grotesk",system-ui,sans-serif;
   --f-mono:"JetBrains Mono",ui-monospace,monospace;
-  --s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;
+  --s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;--s4:#8b5cf6;
 }
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg-soft);color:var(--ink-2);font-family:var(--f-body)}
@@ -72,6 +72,8 @@ details.an-card .an-fold{padding:0 22px 22px}
 .bl .val em{font-style:normal;color:var(--muted-2);margin-left:6px}
 .an-empty{text-align:center;color:var(--muted);padding:18px 0;font-size:13.5px}
 .an-tablewrap{overflow-x:auto}
+.an-reports{white-space:normal}.an-reports td{vertical-align:top}.an-reports td[data-l="Trận"]{min-width:200px;max-width:280px}
+.an-reports td[data-l="Nghi ai"],.an-reports td[data-l="App phát hiện"]{max-width:240px}.rp-dl{white-space:nowrap}.rp-admin{min-width:210px}.rp-admin .an-field{width:100%;box-sizing:border-box;margin:0 0 6px}
 table{width:100%;border-collapse:collapse;font-size:13px;white-space:nowrap}
 th{text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:.03em;font-weight:600;color:var(--muted-2);padding:0 14px 10px 0;border-bottom:1px solid var(--line)}
 td{padding:11px 14px 11px 0;border-bottom:1px solid var(--line-2);color:var(--ink-2);vertical-align:top}
@@ -82,6 +84,12 @@ td small{display:block;font-size:11.5px;color:var(--muted-2)}
 .an-tag{display:inline-block;padding:2px 9px;border-radius:var(--r-pill);font-size:11.5px;font-weight:600;margin-left:6px}
 .an-tag.new{background:#e8f6ee;color:#0f7a4d}.an-tag.back{background:var(--blue-50);color:var(--blue-700)}
 .an-tag.match{background:#fff1e8;color:#a5481a}
+th.an-sort{cursor:pointer;user-select:none;white-space:nowrap}
+th.an-sort:hover{color:var(--ink-3)}
+th.an-sort[aria-sort]{color:var(--blue-700)}
+th.an-sort .ar{display:inline-block;margin-left:4px;font-size:10px;color:var(--blue)}
+.an-sortbar{display:none;align-items:center;gap:8px;margin:0 0 6px;font-size:13px;color:var(--muted)}
+.an-sortbar select{border:1px solid var(--line);border-radius:var(--r-pill);padding:6px 12px;font:inherit;color:var(--ink-2);background:#fff}
 .an-tablehead{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
 .an-search{flex:1 1 240px;max-width:360px;border:1px solid var(--line);border-radius:var(--r-pill);padding:9px 16px;font-size:14px;font-family:var(--f-body);outline:none}
 .an-search:focus,.an-field:focus{border-color:var(--blue)}
@@ -119,6 +127,7 @@ td small{display:block;font-size:11.5px;color:var(--muted-2)}
   .an-pager{justify-content:space-between}
   .an-kpis .an-kpi:last-child:nth-child(odd){grid-column:1/-1}
   /* bảng thành thẻ: mỗi hàng một khối, không cuộn ngang */
+  .an-sortbar{display:flex}
   .an-tablewrap{overflow:visible}
   table,tbody,tr,td{display:block;width:auto}
   thead{display:none}
@@ -152,7 +161,54 @@ td small{display:block;font-size:11.5px;color:var(--muted-2)}
 <script>
 (function () {
   var KEY = "aoe_stats_pw";
-  var state = { range: "7d", page: 1, q: "", data: null, loading: false, chart: null, topOpen: false };
+  var state = { range: "7d", page: 1, q: "", data: null, loading: false, chart: null, topOpen: false,
+                tSort: { key: "matches", dir: "desc" }, rSort: { key: "ts", dir: "desc" } };
+  // cột của hai bảng: [khoá, nhãn, kiểu] - chữ: bấm lần đầu xếp A-Z, số / thời gian: lớn trước
+  var TOP_COLS = [["name", "Người chơi", "text"], ["matches", "Trận ghi", "num"], ["opens", "Lượt mở", "num"],
+                  ["install", "Mã máy", "text"], ["lastIp", "IP gần nhất", "ip"], ["version", "Phiên bản", "num"],
+                  ["firstSeen", "Lần đầu", "num"], ["lastSeen", "Lần cuối", "num"]];
+  var REC_COLS = [["ts", "Thời điểm", "num"], ["ip", "IP", "text"], ["name", "Máy", "text"], ["app", "Ứng dụng", "text"],
+                  ["version", "Phiên bản", "num"], ["ev", "Sự kiện", "text"], ["country", "Quốc gia", "text"]];
+  function colOf(cols, key) { for (var k = 0; k < cols.length; k++) if (cols[k][0] === key) return cols[k]; return cols[0]; }
+  function sortHead(cols, cur, table) {
+    return cols.map(function (c) {
+      var on = c[0] === cur.key;
+      return '<th class="an-sort" data-t="' + table + '" data-k="' + c[0] + '"' +
+        (on ? ' aria-sort="' + (cur.dir === "asc" ? "ascending" : "descending") + '"' : '') + ' title="Bấm để sắp xếp">' +
+        c[1] + (on ? '<span class="ar">' + (cur.dir === "asc" ? "▲" : "▼") + '</span>' : '') + '</th>';
+    }).join("");
+  }
+  function sortBar(cols, cur, table) {          // điện thoại: không có hàng tiêu đề -> ô chọn
+    return '<div class="an-sortbar">Sắp xếp <select data-t="' + table + '">' + cols.map(function (c) {
+      return ['desc', 'asc'].map(function (d) {
+        var sel = c[0] === cur.key && d === cur.dir;
+        return '<option value="' + c[0] + ' ' + d + '"' + (sel ? ' selected' : '') + '>' + c[1] + ' ' + (d === "asc" ? "↑" : "↓") + '</option>';
+      }).join("");
+    }).join("") + '</select></div>';
+  }
+  function sortWord(cols, cur) {
+    var c = colOf(cols, cur.key);
+    return "xếp theo " + c[1].toLowerCase() + " " + (cur.dir === "asc" ? (c[2] === "text" ? "A→Z" : "tăng dần") :
+                                                      (c[2] === "text" ? "Z→A" : "giảm dần"));
+  }
+  function ipKey(ip) {
+    var p = String(ip || "").split(".");
+    return p.length === 4 ? p.map(function (x) { return ("00" + x).slice(-3); }).join(".") : String(ip || "");
+  }
+  function sortTop(rows) {
+    var c = colOf(TOP_COLS, state.tSort.key), sign = state.tSort.dir === "asc" ? 1 : -1;
+    function val(r) {
+      var v = r[c[0]];
+      if (c[2] === "num") return Number(v) || 0;
+      if (c[2] === "ip") return ipKey(v);
+      return String(v || "").toLocaleLowerCase("vi");
+    }
+    return rows.slice().sort(function (a, b) {
+      var x = val(a), y = val(b);
+      var d = typeof x === "number" ? x - y : x.localeCompare(y, "vi");
+      return d ? d * sign : (b.matches - a.matches) || (b.opens - a.opens);
+    });
+  }
   var app = document.getElementById("app");
   var fmt = new Intl.NumberFormat("vi-VN");
   var TZ = "Asia/Ho_Chi_Minh";
@@ -183,26 +239,111 @@ td small{display:block;font-size:11.5px;color:var(--muted-2)}
     };
   }
 
-  function load() {
+  // recentOnly: tìm / sắp xếp / chuyển trang chỉ lấy lại bảng Từng lượt (part=recent), giữ nguyên phần còn lại
+  // của trang - đỡ tốn hạn mức đọc D1 (mỗi lần lấy cả trang chạy ~10 truy vấn)
+  function load(recentOnly) {
     if (!pw()) return login();
+    if (recentOnly && !state.data) recentOnly = false;
     state.loading = true; paintBusy();
     var u = "/api/stats?range=" + encodeURIComponent(state.range) + "&page=" + state.page +
-            "&q=" + encodeURIComponent(state.q);
+            "&sort=" + encodeURIComponent(state.rSort.key) + "&dir=" + state.rSort.dir +
+            "&q=" + encodeURIComponent(state.q) + (recentOnly ? "&part=recent" : "");
     fetch(u, { headers: { authorization: "Bearer " + pw() } }).then(function (r) {
       if (r.status === 401) { setPw(""); throw { login: true }; }
       return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || r.status); return j; });
-    }).then(function (j) { state.data = j; state.error = null; state.loading = false; render(); })
+    }).then(function (j) {
+      if (recentOnly) {
+        ["recent", "recentTotal", "recentCapped", "page", "pageSize", "sort", "dir", "updatedAt"].forEach(function (k) {
+          state.data[k] = j[k];
+        });
+      } else {
+        state.data = j;
+        loadReports();
+      }
+      state.error = null; state.loading = false; render();
+    })
       .catch(function (e) {
         state.loading = false;
         if (e && e.login) return login("Sai mật khẩu.");
         state.error = String(e && e.message || e); render();
       });
   }
+  // báo cáo trận có hack (app gửi file .aoerec; /api/reports): admin xem, tải file, đánh dấu ai hack / hack gì
+  function loadReports() {
+    fetch("/api/reports", { headers: { authorization: "Bearer " + pw() } }).then(function (r) { return r.json(); })
+      .then(function (j) { state.reports = j; render(); })
+      .catch(function (e) { state.reports = { error: String(e && e.message || e) }; render(); });
+  }
+  var REPORT_STATUS = [["new", "Chưa xem"], ["hack", "Có hack"], ["clean", "Không hack"], ["unsure", "Chưa chắc"]];
+  function mb(b) { return (b / 1048576).toLocaleString("vi-VN", { maximumFractionDigits: 1 }) + " MB"; }
+  function reportsCard() {
+    var R = state.reports;
+    if (!R) return '<div class="an-card"><h2>Báo cáo hack</h2><div class="an-hint">Đang tải…</div></div>';
+    if (R.error) return '<div class="an-card"><h2>Báo cáo hack</h2><div class="an-banner">' + esc(R.error) + '</div></div>';
+    var rows = R.reports || [];
+    var h = '<div class="an-card" id="reports"><h2>Báo cáo hack</h2><div class="an-hint">Người chơi bấm "Báo cáo hack" ở một trận ' +
+      'trong app: file trận lưu trên Cloudflare R2 (' + mb(R.storedBytes || 0) + ' / ' + mb(R.storeLimit || 0) +
+      ', đầy thì xoá file cũ nhất) · ' + fmt.format(R.total || 0) + ' báo cáo' +
+      (R.r2 ? '' : ' · <b>máy chủ chưa bật R2</b>') + ' · tải file rồi mở bằng AoE-MapCap (Xem replay) để xem ai hack, hack gì</div>' +
+      '<div class="an-tablewrap"><table class="an-recent an-reports"><thead><tr><th>Thời điểm</th><th>Người báo</th><th>Trận</th>' +
+      '<th>Nghi ai / ghi chú</th><th>App tự phát hiện</th><th>File</th><th>Admin đánh dấu</th></tr></thead><tbody>';
+    h += rows.length ? rows.map(function (r) {
+      var m = r.meta || {};
+      var auto = (m.hack || []).map(function (e) { return esc(e.name) + ': ' + esc(e.label) + (e.detail ? ' <small>(' + esc(e.detail) + ')</small>' : ''); }).join('<br>');
+      var players = (m.players || []).map(function (p) { return esc(p.name) + (p.civ ? ' (' + esc(p.civ) + ')' : ''); }).join(' · ');
+      return '<tr data-id="' + r.id + '"><td class="dim" data-l="Thời điểm">' + dt(r.ts, true) + '</td><td class="lead" data-l="Người báo"><span>' +
+        esc(r.name || '(chưa biết)') + ' <span class="mono dim" title="' + esc(r.install) + '">' + esc(String(r.install).slice(0, 8)) + '</span>' +
+        '<small>v' + esc(r.version) + (r.country ? ' · ' + esc(r.country) : '') + '</small></span></td><td data-l="Trận"><span>' +
+        esc(m.map || '') + (m.duration ? ' · ' + esc(m.duration) : '') + '<small>' + players + '</small></span></td>' +
+        '<td data-l="Nghi ai"><span><b>' + esc(r.suspect || '') + '</b><small>' + esc(r.note || '') + '</small></span></td>' +
+        '<td data-l="App phát hiện">' + (auto || '<span class="dim">không</span>') + '</td>' +
+        '<td data-l="File" title="' + esc(r.file || '') + '">' + (r.hasFile ? '<button class="an-btn rp-dl" data-id="' + r.id + '">Tải ' + mb(r.size) + '</button>'
+                                          : '<span class="dim">đã xoá</span>') + '</td>' +
+        '<td data-l="Admin" class="rp-admin"><select class="an-field rp-st">' + REPORT_STATUS.map(function (s) {
+          return '<option value="' + s[0] + '"' + (r.status === s[0] ? ' selected' : '') + '>' + s[1] + '</option>'; }).join('') +
+        '</select><textarea class="an-field rp-note" rows="2" placeholder="Ai hack, hack gì (để thêm luật)">' + esc(r.admin_note || '') +
+        '</textarea><button class="an-btn rp-save">Lưu</button></td></tr>';
+    }).join('') : '<tr><td colspan="7" class="an-empty">Chưa có báo cáo nào</td></tr>';
+    return h + '</tbody></table></div></div>';
+  }
+  function bindReports() {
+    Array.prototype.forEach.call(document.querySelectorAll(".rp-dl"), function (b) {
+      b.onclick = function () {
+        var id = b.getAttribute("data-id"); b.disabled = true; b.textContent = "Đang tải…";
+        fetch("/api/report/file?id=" + id, { headers: { authorization: "Bearer " + pw() } }).then(function (r) {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          var cd = r.headers.get("content-disposition") || "", m = /filename="([^"]+)"/.exec(cd);
+          return r.blob().then(function (bl) { return [bl, m ? m[1] : "bao-cao-" + id + ".aoerec"]; });
+        }).then(function (x) {
+          var a = document.createElement("a"); a.href = URL.createObjectURL(x[0]); a.download = x[1];
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(function () { URL.revokeObjectURL(a.href); }, 60000);
+          b.disabled = false; b.textContent = "Đã tải";
+        }).catch(function (e) { b.disabled = false; b.textContent = "Lỗi: " + (e && e.message || e); });
+      };
+    });
+    Array.prototype.forEach.call(document.querySelectorAll(".rp-save"), function (b) {
+      b.onclick = function () {
+        var tr = b.closest("tr");
+        b.disabled = true; b.textContent = "Đang lưu…";
+        fetch("/api/report/update", { method: "POST", headers: { authorization: "Bearer " + pw(), "content-type": "application/json" },
+          body: JSON.stringify({ id: Number(tr.getAttribute("data-id")), status: tr.querySelector(".rp-st").value,
+                                 admin_note: tr.querySelector(".rp-note").value }) })
+          .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); b.disabled = false; b.textContent = "Đã lưu"; })
+          .catch(function (e) { b.disabled = false; b.textContent = "Lỗi: " + (e && e.message || e); });
+      };
+    });
+  }
   function paintBusy() { var b = document.getElementById("rf"); if (b) { b.disabled = true; b.textContent = "Đang tải…"; } }
 
   function kpi(l, v, h) {
     return '<div class="an-kpi"><div class="l">' + l + '</div><div class="v">' + fmt.format(v || 0) +
            '</div><div class="h">' + h + '</div></div>';
+  }
+  // thứ hạng trước tên: 3 người đầu là huy chương
+  function ranked(rows) {
+    var medal = ["\ud83e\udd47 ", "\ud83e\udd48 ", "\ud83e\udd49 "];
+    return rows.map(function (r, k) { return { name: (medal[k] || (k + 1) + ". ") + r.name, value: r.value }; });
   }
   function barList(title, hint, rows, unit, label) {
     var max = 0, tot = 0;
@@ -233,7 +374,7 @@ td small{display:block;font-size:11.5px;color:var(--muted-2)}
       h += '<div class="an-kpis">' +
         kpi("Lượt mở app", s.opens, "tổng số lần mở AoE-MapCap / AoE-Replay") +
         kpi("Máy duy nhất", s.installs, "đếm theo mã máy") +
-        kpi("Tên trong game", s.names, "nickname khác nhau") +
+        kpi("Tên trong game", s.names, "nickname có trận ghi") +
         kpi("Địa chỉ IP", s.ips, "số IP khác nhau") +
         kpi("Trận đã ghi", s.matches, "AoE-MapCap ghi xong") +
         kpi("Máy mới", s.newInstalls, "lần đầu dùng app") +
@@ -242,21 +383,22 @@ td small{display:block;font-size:11.5px;color:var(--muted-2)}
         (d.daily.length < 2 ? 'Mới có dữ liệu của một ngày — cần từ hai ngày trở lên mới vẽ được đường' :
          'Một máy có thể mở app nhiều lần') + '</div>' +
         '<div class="an-legend"><span><i style="background:var(--s1)"></i>Lượt mở app</span>' +
-        '<span><i style="background:var(--s2)"></i>Máy duy nhất</span><span><i style="background:var(--s3)"></i>Trận đã ghi</span></div>' +
+        '<span><i style="background:var(--s2)"></i>Máy duy nhất</span><span><i style="background:var(--s3)"></i>Trận đã ghi</span>' +
+        '<span><i style="background:var(--s4)"></i>Máy mới</span></div>' +
         '<div class="an-chart"><canvas id="ch"></canvas></div></div>';
       // từ v6 chỉ còn AoE-MapCap.exe: bỏ ô "Ứng dụng", xếp 2 hàng (Người chơi, Phiên bản) / (Quốc gia, Loại sự kiện)
-      h += '<div class="an-grid">' + barList("Người chơi", "Lượt mở app theo tên người chơi (nickname, cho phép trùng)",
-        d.players || [], "lượt") +
-        barList("Phiên bản", "Số máy theo phiên bản", d.versions, "máy", function (n) { return "v" + n; }) + '</div>';
-      h += '<div class="an-grid">' + barList("Quốc gia", "Số máy, theo Cloudflare", d.countries, "máy") +
+      h += '<div class="an-grid">' + barList("Bảng xếp hạng", "Số trận ghi trong kỳ theo tên người chơi (nickname, cho phép trùng) · top 10",
+        ranked(d.players || []), "trận") +
+        barList("Phiên bản", "Máy dùng trong kỳ, theo phiên bản hiện tại của máy", d.versions, "máy", function (n) { return "v" + n; }) + '</div>';
+      h += '<div class="an-grid">' + barList("Quốc gia", "Máy dùng trong kỳ, theo Cloudflare", d.countries, "máy") +
         barList("Loại sự kiện", "Mở app / ghi xong trận", d.kinds, "lượt", evName) + '</div>';
       // xếp theo số trận ghi (chỉ số quan trọng nhất), mặc định gập; mở / gập được nhớ qua các lần tải lại
       h += '<details class="an-card" id="top"' + (state.topOpen ? ' open' : '') + '><summary><div><h2>Máy dùng nhiều nhất</h2>' +
-        '<div class="an-hint">Xếp theo số trận ghi trong kỳ, rồi số lượt mở · top 20 · bấm để ' +
+        '<div class="an-hint">Top 20 theo số trận ghi trong kỳ · ' + sortWord(TOP_COLS, state.tSort) + ' · bấm để ' +
         (state.topOpen ? 'gập' : 'mở') + '</div></div><span class="an-caret">▾</span></summary>' +
-        '<div class="an-fold"><div class="an-tablewrap"><table class="an-top"><thead><tr><th>Người chơi</th><th>Trận ghi</th><th>Lượt mở</th><th>Mã máy</th><th>IP gần nhất</th>' +
-        '<th>Phiên bản</th><th>Lần đầu</th><th>Lần cuối</th></tr></thead><tbody>' +
-        (d.topInstalls.length ? d.topInstalls.map(function (r) {
+        '<div class="an-fold">' + sortBar(TOP_COLS, state.tSort, "top") + '<div class="an-tablewrap"><table class="an-top"><thead><tr>' +
+        sortHead(TOP_COLS, state.tSort, "top") + '</tr></thead><tbody>' +
+        (d.topInstalls.length ? sortTop(d.topInstalls).map(function (r) {
           return '<tr><td class="lead" data-l="Người chơi">' + (r.name ? esc(r.name) : '<span class="dim">(chưa biết)</span>') +
             '</td><td data-l="Trận ghi"><b>' + fmt.format(r.matches) + '</b></td><td data-l="Lượt mở">' + fmt.format(r.opens) +
             '</td><td class="mono" data-l="Mã máy" title="' + esc(r.install) + '">' + esc(r.install.slice(0, 8)) +
@@ -266,10 +408,11 @@ td small{display:block;font-size:11.5px;color:var(--muted-2)}
             dt(r.firstSeen, true) + '</td><td class="dim" data-l="Lần cuối">' + dt(r.lastSeen, true) + '</td></tr>';
         }).join("") : '<tr><td colspan="8" class="an-empty">Chưa có dữ liệu trong kỳ này</td></tr>') + '</tbody></table></div></div></details>';
       var pages = Math.max(1, Math.ceil(d.recentTotal / d.pageSize));
-      h += '<div class="an-card"><div class="an-tablehead"><div><h2>Từng lượt</h2><div class="an-hint">Mới nhất trước · ' +
-        fmt.format(d.recentTotal) + ' bản ghi</div></div><input class="an-search" id="sq" placeholder="Tìm theo tên người chơi, IP, mã máy hoặc phiên bản…" value="' +
-        esc(state.q) + '"></div><div class="an-tablewrap"><table class="an-recent"><thead><tr><th>Thời điểm</th><th>IP</th><th>Máy</th>' +
-        '<th>Ứng dụng</th><th>Phiên bản</th><th>Sự kiện</th><th>Quốc gia</th></tr></thead><tbody>' +
+      h += '<div class="an-card"><div class="an-tablehead"><div><h2>Từng lượt</h2><div class="an-hint">' +
+        (state.rSort.key === "ts" && state.rSort.dir === "desc" ? "Mới nhất trước" : sortWord(REC_COLS, state.rSort)) + ' · ' +
+        (d.recentCapped ? 'hơn ' : '') + fmt.format(d.recentTotal) + ' bản ghi</div></div><input class="an-search" id="sq" placeholder="Tìm theo tên người chơi, IP, mã máy hoặc phiên bản…" value="' +
+        esc(state.q) + '"></div>' + sortBar(REC_COLS, state.rSort, "rec") + '<div class="an-tablewrap"><table class="an-recent"><thead><tr>' +
+        sortHead(REC_COLS, state.rSort, "rec") + '</tr></thead><tbody>' +
         (d.recent.length ? d.recent.map(function (r) {
           var tag = r.ev === "match" ? '<span class="an-tag match">trận</span>' :
                     r.isNew ? '<span class="an-tag new">mới</span>' : '<span class="an-tag back">quay lại</span>';
@@ -282,29 +425,46 @@ td small{display:block;font-size:11.5px;color:var(--muted-2)}
         '</tbody></table></div><div class="an-pager"><button class="an-btn" id="pv"' + (state.page <= 1 ? ' disabled' : '') +
         '>← Trước</button><span>Trang ' + state.page + ' / ' + pages + '</span><button class="an-btn" id="nx"' +
         (state.page >= pages ? ' disabled' : '') + '>Sau →</button></div></div>';
+      h += reportsCard();
     }
     app.innerHTML = h;
-    document.getElementById("rf").onclick = load;
+    document.getElementById("rf").onclick = function () { load(); };   // làm mới cả trang
     document.getElementById("lo").onclick = function () { setPw(""); state.data = null; login(); };
     Array.prototype.forEach.call(document.querySelectorAll(".an-chip"), function (b) {
       b.onclick = function () { state.range = b.getAttribute("data-r"); state.page = 1; load(); };
     });
     if (!d) return;
+    bindReports();
     var top = document.getElementById("top");
     top.addEventListener("toggle", function () {
       state.topOpen = top.open;
       var hint = top.querySelector("summary .an-hint");
       hint.textContent = hint.textContent.replace(/bấm để (mở|gập)$/, "bấm để " + (top.open ? "gập" : "mở"));
     });
+    function setSort(table, key, dir) {
+      var cur = table === "top" ? state.tSort : state.rSort;
+      var cols = table === "top" ? TOP_COLS : REC_COLS;
+      if (!dir) dir = cur.key === key ? (cur.dir === "asc" ? "desc" : "asc") : (colOf(cols, key)[2] === "text" ? "asc" : "desc");
+      cur.key = key;
+      cur.dir = dir;
+      if (table === "top") render();            // có sẵn cả 20 dòng: xếp ngay trên trình duyệt
+      else { state.page = 1; load(true); }      // phân trang: máy chủ xếp trên toàn bộ bản ghi
+    }
+    Array.prototype.forEach.call(document.querySelectorAll("th.an-sort"), function (th) {
+      th.onclick = function () { setSort(th.getAttribute("data-t"), th.getAttribute("data-k")); };
+    });
+    Array.prototype.forEach.call(document.querySelectorAll(".an-sortbar select"), function (sel) {
+      sel.onchange = function () { var v = sel.value.split(" "); setSort(sel.getAttribute("data-t"), v[0], v[1]); };
+    });
     var sq = document.getElementById("sq"), timer = null;
     sq.oninput = function () {
       clearTimeout(timer);
-      timer = setTimeout(function () { state.q = sq.value.trim(); state.page = 1; load(); }, 400);
+      timer = setTimeout(function () { state.q = sq.value.trim(); state.page = 1; load(true); }, 400);
     };
     if (state.q) { sq.focus(); sq.setSelectionRange(sq.value.length, sq.value.length); }
     var pv = document.getElementById("pv"), nx = document.getElementById("nx");
-    pv.onclick = function () { state.page--; load(); };
-    nx.onclick = function () { state.page++; load(); };
+    pv.onclick = function () { state.page--; load(true); };
+    nx.onclick = function () { state.page++; load(true); };
     drawChart(d.daily);
   }
 
@@ -321,7 +481,7 @@ td small{display:block;font-size:11.5px;color:var(--muted-2)}
     state.chart = new Chart(el, {
       type: "line",
       data: { labels: labels, datasets: [ds("Lượt mở app", "opens", "#2a78d6"), ds("Máy duy nhất", "installs", "#eb6834"),
-                                          ds("Trận đã ghi", "matches", "#1baf7a")] },
+                                          ds("Trận đã ghi", "matches", "#1baf7a"), ds("Máy mới", "newInstalls", "#8b5cf6")] },
       options: {
         maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
         plugins: { legend: { display: false }, tooltip: { backgroundColor: "#fff", titleColor: "#0A0A0A", bodyColor: "#3D3D3D",

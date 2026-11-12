@@ -2,12 +2,16 @@
 
 - Có bản mới: thanh báo phía trên cửa sổ "Có bản mới vN" + Có gì mới / Cập nhật / Để sau.
 - Bản đang dùng thấp hơn min_version: cửa sổ chặn "Bản này đã ngừng hỗ trợ" chỉ có Cập nhật ngay / Thoát.
+- Bản đang dùng thấp hơn auto_below (bản sửa lỗi quan trọng, release/policy.json): tự cập nhật không cần bấm, khi
+  không bận. Cửa sổ đang ẩn (khay hệ thống) -> cập nhật ngay; đang mở -> thanh đếm ngược AUTO_DELAY giây (Cập nhật ngay /
+  Để sau = hoãn SNOOZE giây, không bỏ hẳn). Lỗi tải chỉ ghi nhật ký, thử lại ở lần kiểm sau (không bật hộp thoại).
 - Đang bận (đang ghi trận, đang xuất video): không tải, không khởi động lại; chờ xong việc rồi mới chạy.
 - Không có mạng: không hiện gì, dùng bình thường.
 """
 import os
 import queue
 import threading
+import time
 import tkinter as tk
 import webbrowser
 from tkinter import messagebox, ttk
@@ -16,6 +20,9 @@ from . import updater
 
 
 class UpdateController:
+    AUTO_DELAY = 60                # giây đếm ngược trước khi tự cập nhật khi cửa sổ đang mở
+    SNOOZE = 3600                  # "Để sau" với bản tự cập nhật: hoãn chừng này giây
+
     def __init__(self, root, bar_parent, role, app_title, log=None, is_busy=None, before_restart=None,
                  restart_args=None, bar_before=None, on_block=None):
         """bar_parent: khung chứa thanh báo (pack ở trên, trước bar_before nếu có).
@@ -36,6 +43,10 @@ class UpdateController:
         self.working = False
         self.cancel_flag = False
         self.block_win = None
+        self.auto_pending = False        # có bản tự cập nhật, chờ lúc rảnh
+        self.auto_at = None              # thời điểm (time.monotonic) hết đếm ngược khi cửa sổ đang mở
+        self.snooze_until = 0.0
+        self.auto_running = False        # lượt tải hiện tại là tự cập nhật (lỗi thì không bật hộp thoại)
         from . import theme
         self.dark = theme.APPLIED                       # giao diện tối kiểu XArena (AoE-MapCap)
         self.bar = ttk.Frame(bar_parent, style="Notice.TFrame" if self.dark else "TFrame",
@@ -93,7 +104,43 @@ class UpdateController:
             self._download()
         if self.info is not None and self.info.state == "required" and self.block_win is None and not self.is_busy():
             self._show_block()
+        if self.auto_pending:
+            self._auto_tick()
         self.root.after(1000 if self.pending else 300, self._poll)
+
+    # ---- tự cập nhật (bản sửa lỗi quan trọng) ---------------------------------------------------
+    def _visible(self):
+        try:
+            return self.root.state() != "withdrawn" and bool(self.root.winfo_viewable())
+        except tk.TclError:
+            return False
+
+    def _auto_tick(self):
+        """Gọi từ _poll: bận -> chờ; hoãn -> chờ; cửa sổ ẩn -> cập nhật ngay; đang mở -> đếm ngược rồi cập nhật."""
+        if self.working or self.info is None or self.info.state != "auto" or not updater.is_frozen():
+            return
+        now = time.monotonic()
+        busy = self.is_busy()
+        if busy or now < self.snooze_until:
+            self.auto_at = None
+            if busy and self._visible():
+                self._show_bar(f"Bản v{self.info.latest} có sửa lỗi quan trọng: {busy.lower()}, sẽ tự cập nhật khi xong.")
+            return
+        if self._visible():
+            if self.auto_at is None:
+                self.auto_at = now + self.AUTO_DELAY
+                self.log(f"v{self.info.latest} là bản sửa lỗi quan trọng: tự cập nhật sau {self.AUTO_DELAY} giây")
+            left = int(self.auto_at - now + 0.999)
+            if left > 0:
+                self.btn_update.configure(text="Cập nhật ngay")
+                self._show_bar(f"Bản v{self.info.latest} có sửa lỗi quan trọng: tự cập nhật sau {left} giây "
+                               f"(đang dùng v{self.info.current}).")
+                return
+        self.auto_pending = False
+        self.auto_at = None
+        self.auto_running = True
+        self.log(f"tự cập nhật lên v{self.info.latest} (bản sửa lỗi quan trọng)")
+        self._download()
 
     def _on_checked(self, info):
         # lần sau: kiểm lỗi (mạng chưa lên, lỗi chứng chỉ...) thì thử lại sau vài phút, không chờ 6 tiếng
@@ -106,6 +153,8 @@ class UpdateController:
                  + (f", tối thiểu v{info.min_version}" if info.state == "required" else ""))
         if info.state == "available" and self.dismissed != info.latest and not self.working:
             self._show_bar(f"Có bản mới v{info.latest} (đang dùng v{info.current}).")
+        if info.state == "auto" and not self.working:
+            self.auto_pending = True                # _poll -> _auto_tick: lúc rảnh tự cập nhật
         if info.state != "current" and updater.env_override("AOEMAPCAP_UPDATE_AUTO") == "1":
             self.begin_update()                    # chỉ dùng khi kiểm thử exe: tự bấm Cập nhật
         # "required": _poll hiện cửa sổ chặn khi không bận
@@ -120,6 +169,10 @@ class UpdateController:
     def _later(self):
         if self.info is not None:
             self.dismissed = self.info.latest
+            if self.info.state == "auto":           # bản sửa lỗi quan trọng: chỉ hoãn, không bỏ hẳn
+                self.snooze_until = time.monotonic() + self.SNOOZE
+                self.auto_at = None
+                self.log(f"hoãn tự cập nhật v{self.info.latest} {self.SNOOZE // 60} phút")
         self.pending = False
         self.bar.pack_forget()
 
@@ -149,6 +202,8 @@ class UpdateController:
     def begin_update(self):
         if self.info is None or self.working:
             return
+        self.auto_pending = False                   # bấm tay (Cập nhật / Cập nhật ngay): bỏ đếm ngược
+        self.auto_at = None
         if not updater.is_frozen():
             messagebox.showinfo(self.title, "Đang chạy từ mã nguồn: hãy cập nhật mã (git pull) hoặc tải bản mới.\n"
                                 + self.info.page)
@@ -209,6 +264,11 @@ class UpdateController:
     def _on_failed(self, e):
         self.working = False
         self._set_working_ui(False)
+        if self.auto_running:                       # tự cập nhật: không làm phiền, thử lại ở lần kiểm sau
+            self.auto_running = False
+            self.log(f"tự cập nhật lỗi: {e} (thử lại ở lần kiểm tra sau)")
+            self.bar.pack_forget()
+            return
         if str(e) == "đã huỷ":
             self._show_bar(f"Đã huỷ tải. Có bản mới v{self.info.latest}.")
             return
