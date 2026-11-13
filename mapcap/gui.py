@@ -926,6 +926,15 @@ class App:
                            "khác lên: chọn trận (giữ Ctrl / Shift để chọn nhiều) rồi bấm Gửi lên điện thoại; điện thoại sẽ "
                            "lấy về ở lần mở app tới khi kết nối được máy tính.",
                   style="CardMuted.TLabel", justify="left", wraplength=640).pack(fill="x", anchor="w", pady=(0, 6))
+        frow = tk.Frame(mt, bg=C["panel"])
+        frow.pack(fill="x", pady=(0, 6))
+        ttk.Label(frow, text="Hiện", style="Card.TLabel").pack(side="left")
+        self.var_phone_filter = tk.StringVar(value=self.PHONE_FILTERS[0])
+        cb = ttk.Combobox(frow, textvariable=self.var_phone_filter, values=self.PHONE_FILTERS, state="readonly", width=30)
+        cb.pack(side="left", padx=8)
+        cb.bind("<<ComboboxSelected>>", lambda e: self._phone_lists())
+        self.phone_count = ttk.Label(frow, text="", style="CardMuted.TLabel")
+        self.phone_count.pack(side="left", padx=6)
         cols = (("date", "Ngày", 120, "w"), ("name", "Người chơi", 110, "w"), ("map", "Thể thức · Map", 200, "w"),
                 ("dur", "Thời gian", 70, "e"), ("st", "Trên điện thoại", 230, "w"))
         box = tk.Frame(mt, bg=C["panel"])
@@ -951,6 +960,8 @@ class App:
         self._phone_lists_t = 0.0
         self._phone_refresh()
         self._phone_lists()
+
+    PHONE_FILTERS = ("Tất cả trận", "Đã lưu trên điện thoại", "Chưa lưu trên điện thoại", "Đang chờ gửi")
 
     # ---- danh sách máy đã liên kết + trận trên điện thoại (mobile_server.Phones, <thư mục lưu>\Web\phones.json) ----
     def _phones(self):
@@ -1011,6 +1022,8 @@ class App:
         infos = getattr(self.table, "infos", {}) or {}
         rows = sorted(((p, i) for p, i in infos.items() if "error" not in i and not i.get("recording") and i.get("players")),
                       key=lambda x: x[1].get("created", 0), reverse=True)
+        flt = self.PHONE_FILTERS.index(self.var_phone_filter.get()) if self.var_phone_filter.get() in self.PHONE_FILTERS else 0
+        total = n_saved = shown = 0
         for p, i in rows:
             f = os.path.basename(p)
             have = [d.get("name") or "Điện thoại" for d in devs if f in d["saved"]]
@@ -1025,6 +1038,11 @@ class App:
                 st, tag = "Chờ điện thoại kết nối để lấy", "wait"
             else:
                 st, tag = "Chưa gửi", "none"
+            total += 1
+            n_saved += bool(have)
+            if (flt == 1 and not have) or (flt == 2 and have) or (flt == 3 and f not in push):
+                continue
+            shown += 1
             tv.insert("", "end", iid=f, tags=(tag,), values=(
                 time.strftime("%d/%m/%Y %H:%M", time.localtime(i.get("created", 0))), i.get("recorder", ""),
                 f"{i.get('format', '')} · {i.get('map', '')}", fmt_duration(i.get("duration_ms", 0)), st))
@@ -1032,6 +1050,7 @@ class App:
         if keep:
             tv.selection_set(keep)
         tv.yview_moveto(y)
+        self.phone_count.configure(text=f"{shown} / {total} trận · {n_saved} trận đã lưu trên điện thoại")
 
     def _phone_push(self, on):
         files = list(self.phone_matches.selection())
@@ -1206,6 +1225,15 @@ class App:
         cv.bind("<Configure>", lambda e: cv.itemconfigure(win, width=e.width))
 
         def wheel(e):
+            # chuột đang ở trên bảng / ô chữ tự cuộn được (vd bảng Trận trên điện thoại): để nó tự cuộn, không cuộn cả
+            # trang cùng lúc (người dùng 13/11)
+            w = e.widget
+            try:
+                if (w if hasattr(w, "winfo_class") else self.root.nametowidget(w)).winfo_class() in (
+                        "Treeview", "Text", "Listbox", "TCombobox"):
+                    return
+            except (KeyError, tk.TclError):
+                pass
             if inner.winfo_height() > cv.winfo_height():
                 cv.yview_scroll(int(-e.delta / 120) or (-1 if e.delta > 0 else 1), "units")
         outer.bind("<Enter>", lambda e: outer.bind_all("<MouseWheel>", wheel))

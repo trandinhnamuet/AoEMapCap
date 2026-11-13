@@ -96,6 +96,9 @@ def main():
         # 1. bảng tỉ số
         b.eval("document.querySelector('.v-tools [data-a=score]').click(); 1")
         b.wait("document.querySelectorAll('.v-score tr[data-pl]').length >= 2", timeout=20)
+        # bảng có thể còn hiện số liệu của khung trước khi tua (HUD đã chạy từ lúc tự phát): chờ làm mới xong
+        b.wait(f"{V}._hudFrame === {V}.state.frame && !{V}._hudBusy", timeout=20)
+        time.sleep(0.3)
         hf = b.eval(f"{V}.hs.f")
         rows = b.eval("[...document.querySelectorAll('.v-score tr[data-pl]')].map(r => [+r.dataset.pl, "
                       "[...r.querySelectorAll('td')].map(t => t.textContent)])")
@@ -189,7 +192,9 @@ def main():
                       + (" + hàng đợi sinh" if "Đang sinh" in info else "") + ": OK")
                 shot("06_building")
             else:
-                assert "Giáp" in info, info
+                # thẻ nhỏ (v11): chỉ số có biểu tượng không hiện chữ nhãn; tên chỉ số nằm ở chú thích (title)
+                titles = b.eval("[...document.querySelectorAll('.v-info .stats span')].map(x => x.title)")
+                assert "Giáp" in titles, (titles, info)
                 assert b.eval(f"{V}.follow"), "chạm vào unit phải khoá máy quay theo unit"
                 print(f"chạm vào unit {got[1]}: tên, máu, công / giáp, khoá máy quay: OK")
                 shot("05_unit")

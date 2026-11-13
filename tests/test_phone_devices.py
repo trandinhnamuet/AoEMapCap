@@ -158,6 +158,34 @@ def main():
         assert dv.set("second0002", "via") == "Qua Internet" and dv.set("abc123xyz", "via") == "Mạng nhà (Wi-Fi)"
         assert set(mv.get_children()) == set(names)
         assert mv.set(names[1], "st").startswith("✔ Đã lưu: Samsung") and mv.set(names[2], "st") == "Chưa gửi"
+        # bộ lọc: đã lưu / chưa lưu
+        app.var_phone_filter.set("Đã lưu trên điện thoại")
+        app._phone_lists()
+        assert set(mv.get_children()) == {names[1]}, mv.get_children()
+        assert "1 / " in app.phone_count.cget("text") and "1 trận đã lưu" in app.phone_count.cget("text")
+        app.var_phone_filter.set("Chưa lưu trên điện thoại")
+        app._phone_lists()
+        assert set(mv.get_children()) == set(names) - {names[1]}
+        app.var_phone_filter.set("Tất cả trận")
+        app._phone_lists()
+        # lăn chuột trên bảng trận: chỉ bảng cuộn, trang không cuộn theo
+        outer = app.pages["phone"]
+        cv = [w for w in outer.winfo_children() if w.winfo_class() == "Canvas"][0]
+        root.geometry("1100x520+40+20")
+        pump(root, 0.4)
+        y0 = cv.yview()[0]
+        mv.event_generate("<Enter>")
+        outer.event_generate("<Enter>")
+        pump(root, 0.1)
+        mv.focus_set()
+        mv.event_generate("<MouseWheel>", delta=-240)
+        pump(root, 0.2)
+        assert cv.yview()[0] == y0, ("lăn trên bảng làm cuộn cả trang", y0, cv.yview())
+        app.phone_dev_note.event_generate("<MouseWheel>", delta=-240)      # đối chứng: lăn ở chỗ khác thì trang cuộn
+        pump(root, 0.2)
+        assert cv.yview()[0] > y0, ("lăn ngoài bảng phải cuộn trang (đối chứng)", y0, cv.yview())
+        root.geometry("1100x760+40+20")
+        pump(root, 0.3)
         # chọn 2 trận -> Gửi lên điện thoại
         mv.selection_set([names[2], names[0]])
         app._phone_push(True)

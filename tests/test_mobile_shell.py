@@ -247,6 +247,17 @@ def main():
         if res["viaTeam"]:
             assert res["viaTeam"][0] == res["viaTeam"][1], res
         assert not b.eval("!!document.querySelector('.v-tools [data-a=fit]')"), "nút Toàn cảnh đã bỏ"
+        # nút Bản đồ tắt / bật được minimap thật (trước v11 CSS của khung vẽ chính đè mất hidden); hàng nút tầm nhìn nằm
+        # dưới minimap, không rộng hơn minimap; thẻ unit hẹp bằng nửa trước (<= 110 px)
+        lay = b.eval("""(() => { const g = s => getComputedStyle(document.querySelector(s)).display;
+          const r = s => { const q = document.querySelector(s).getBoundingClientRect(); return [Math.round(q.left), Math.round(q.top), Math.round(q.right), Math.round(q.bottom)]; };
+          const on = g('.v-mini'), mini = r('.v-mini'), persp = r('.v-persp');
+          document.querySelector('.v-tools [data-a=mini]').click(); const off = g('.v-mini'), perspOff = r('.v-persp');
+          document.querySelector('.v-tools [data-a=mini]').click();
+          return {on, off, back: g('.v-mini'), mini, persp, perspOff}; })()""")
+        assert lay["on"] != "none" and lay["off"] == "none" and lay["back"] != "none", lay
+        assert lay["persp"][1] >= lay["mini"][3] and lay["persp"][0] >= lay["mini"][0] - 1 and lay["persp"][2] <= lay["mini"][2] + 1, lay
+        assert lay["perspOff"][1] < lay["persp"][1], "minimap ẩn thì hàng nút tầm nhìn lên chỗ minimap"
         b.eval("document.querySelector('.v-tools [data-a=auto]').click(); 1")
         b.eval("(() => { const v = aoeViewer; v.setPersp(null); v.seekR(v.m.duration * 0.3); v.setSpeed(5); v.playing = true; })()")
         b.wait("aoeViewer.autoCam && aoeViewer.follow && aoeViewer.sel && aoeViewer.sel.kind === 'u'", timeout=60)
