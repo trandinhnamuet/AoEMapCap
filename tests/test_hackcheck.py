@@ -59,10 +59,12 @@ class World:
         self.players = [NS(index=0, name="Gaia", attrs=(), available=None, researching=None, trainable=None),
                         player(1, avail=(10, 11)), player(2), player(3)]
         self.det = Detector(match if match is not None else {"cheats": 0})
+        self.production = None
 
     def step(self, cmds=(), dt=40):
         self.t += dt
-        snap = NS(time_ms=self.t, players=self.players, units=list(self.units), cmds=list(cmds), match=None)
+        snap = NS(time_ms=self.t, players=self.players, units=list(self.units), cmds=list(cmds), match=None,
+                  production=dict(self.production) if self.production is not None and self.t % 480 == 0 else None)
         return self.det.feed(snap)
 
     def run(self, ms, cmds_every=None):
@@ -148,7 +150,19 @@ def test_l5_cheat_commands():
 def test_l7_locked():
     w = World()
     w.step(humans())
-    evs = w.step([(0, 1, 3, research(150, 99))])                        # công nghệ 99 chưa mở
+    evs = w.step([(0, 1, 3, research(150, 99))])                        # công nghệ 99 chưa mở, game bỏ qua lệnh: vô hại
+    evs += w.run(8000)
+    assert not evs, evs
+    w.step([(0, 1, 6, research(150, 102))])                             # bấm lên đời sớm 0,2 s trước khi nút mở (báo cáo 1)
+    w.run(200)
+    w.players[1].available = frozenset({102})
+    assert not w.run(1000)
+    w.players[1].available = frozenset(); w.players[1].researching = {102: 0.0}
+    assert not w.run(9000), "bấm sớm rồi nút mở ngay sau đó: không phải hack"
+    w.step([(0, 1, 7, research(150, 98))])                              # 98 không hề mở mà vẫn bắt đầu nghiên cứu: hack
+    w.run(600)
+    w.players[1].researching = {102: 5.0, 98: 0.0}
+    evs = w.run(8000)
     assert rules(evs) == [(1, "L7")], evs
     w.step([(0, 1, 4, train(150, 75))])                                 # unit 75 chưa mở ...
     assert not w.run(3000)
@@ -165,8 +179,29 @@ def test_resources():
     w.step(humans())
     w.run(12_000)
     w.players[1].attrs = (1200.0, 200.0, 150.0, 0.0, 4.0)               # +1000 thực trong 1 giây, không ai trả
-    evs = w.run(1200)
+    evs = w.run(3000)
     assert rules(evs) == [(1, "S2")], evs
+    # hoàn tiền không phải hack (báo cáo 8, 9 ngày 13/11): huỷ nghiên cứu đang chạy; huỷ hàng đợi sinh quân; hết ván
+    w3 = World()
+    w3.step(humans())
+    w3.players[2].researching = {38: 35.0}
+    w3.run(12_000)
+    w3.players[2].researching = {}
+    w3.players[2].attrs = (1950.0, 200.0, 150.0, 800.0, 4.0)            # huỷ nghiên cứu 38: trả 1750 thực + 800 vàng
+    assert not w3.run(4000), "huỷ nghiên cứu được hoàn tiền: không phải hack"
+    w3.production = {250: (((37, 12),), 37, 3.0, 0.2)}                  # P2 xếp 12 ngựa
+    w3.run(1000)
+    w3.production = {}
+    w3.players[2].attrs = (2950.0, 200.0, 150.0, 800.0, 4.0)            # huỷ hàng đợi: trả 1000 thực
+    assert not w3.run(4000), "huỷ hàng đợi sinh quân được hoàn tiền: không phải hack"
+    w3.players[3].attrs = (1400.0, 200.0, 150.0, 0.0, 4.0)              # P3 tăng 1200 thực, không có dấu hiệu hoàn tiền nào
+    assert rules(w3.run(4000)) == [(3, "S2")]
+    w4 = World()
+    w4.step(humans())
+    w4.run(12_000)
+    w4.players[1].attrs = (1600.0, 2300.0, 150.0, 0.0, 4.0)             # tăng ngay lúc hết ván (game trả hàng đợi)
+    w4.run(400)
+    assert not w4.det.finish(), "tăng ngay trước khi hết ván: không kết luận"
     # cống nạp: P2 nhận 1000 vàng, P1 bị trừ 1250 (kèm phí) -> không báo
     w.players[2].attrs = (200.0, 200.0, 150.0, 1000.0, 4.0)
     w.players[1].attrs = (1200.0, 200.0, 150.0, -1250.0, 4.0)

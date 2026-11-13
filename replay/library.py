@@ -14,7 +14,7 @@ from mapcap import safeload
 
 CACHE_NAME = "_matches.json"
 from mapcap.hackcheck import drop_false as _drop_false  # noqa: E402
-CACHE_VERSION = 8                 # 3: tên quân tiếng Anh; 4: đội có người bỏ cuộc đầu tiên là đội thua; 6: "hack"; 7: "age3"
+CACHE_VERSION = 9                 # 3: tên quân tiếng Anh; 4: đội có người bỏ cuộc đầu tiên là đội thua; 6: "hack"; 7: "age3"
 
 CIV_NAMES = {1: "Egyptian", 2: "Greek", 3: "Babylonian", 4: "Assyrian", 5: "Minoan", 6: "Hittite", 7: "Phoenician",
              8: "Sumerian", 9: "Persian", 10: "Shang", 11: "Yamato", 12: "Choson", 13: "Roman", 14: "Carthaginian",

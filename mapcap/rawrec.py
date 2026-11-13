@@ -547,6 +547,7 @@ class RawReader:
         units = {}                   # uid -> structured record (np.void)
         players = []
         tech_times = {}              # index -> {id công nghệ: time_ms}; tích luỹ từ đầu file nên đúng ở mọi đoạn dựng
+        prod = {}                    # uid công trình -> hàng đợi sinh quân (ghi dạng thay đổi)
         for tag, payload in self.records():
             if tag == b"H":
                 hdr = payload
@@ -602,6 +603,14 @@ class RawReader:
                                 tile_border=hdr["tile_border"])
                 snap.static_units = self.statics
                 snap.static_version = self.static_version
+                pch = payload.get("prod")
+                if pch:
+                    for uid, v in pch.items():
+                        if v is None:
+                            prod.pop(uid, None)
+                        else:
+                            prod[uid] = v
+                snap.production = dict(prod) if pch else None     # như lúc ghi: chỉ có ở mẫu vừa đọc hàng đợi
                 snap.cmds = payload.get("cmd") or []          # lệnh người chơi đọc được trong mẫu này (từ 2026-11-11)
                 snap.turn = payload.get("turn", 0)
                 snap.match = hdr.get("match")
