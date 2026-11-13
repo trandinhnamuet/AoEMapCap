@@ -26,6 +26,14 @@ import collections
 
 from . import commands as C
 
+L4_ON = False        # luật L4 báo oan (xem _check_cmd); bản ghi cũ có L4 cũng bị bỏ qua khi đọc (drop_false)
+
+
+def drop_false(events):
+    """Bỏ các vi phạm của luật đã tắt vì báo oan (L4) khỏi danh sách đọc từ file ghi cũ."""
+    return [e for e in (events or []) if L4_ON or (e or {}).get("rule") != "L4"]
+
+
 RULES = {
     "L1": "Điều khiển thú / vật thể Gaia",
     "L2": "Điều khiển quân / nhà của người khác",
@@ -198,7 +206,9 @@ class Detector:
                                 (typ == C.GAME and len(data) > 1 and data[1] in (C.GAME_INSTANT_BUILD, C.GAME_CHEAT))):
             out.append(self._report(sender, "L5", t, f"lệnh {name}"))
         # L4: đầu hàng thay người khác
-        if typ == C.RESIGN and len(data) > 1 and data[1] != sender:
+        # TẮT từ v41 (13/11): mọi báo cáo L4 đều oan - lệnh đầu hàng mang số người khác xuất hiện cả trong trận bình thường
+        # (nghi do game tự gửi thay người rớt mạng / thoát). Chưa có cách phân biệt nên không kết luận.
+        if L4_ON and typ == C.RESIGN and len(data) > 1 and data[1] != sender:
             self.pending.append({"kind": "victim", "rule": "L4", "sender": sender, "victim": int(data[1]), "t": t,
                                  "detail": f"đầu hàng thay P{data[1]}"})
         # L1 / L2 / L3: tác động vật thể không phải của mình

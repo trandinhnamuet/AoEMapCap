@@ -1,6 +1,6 @@
 {
   "min_version": "1",
-  "auto_below": "1",
+  "auto_below": "41",
   "_ghi_chu_auto": "auto_below: bản thấp hơn số này TỰ cập nhật lên bản mới nhất, không cần người dùng bấm (khi không đang ghi trận / xuất video; cửa sổ đang mở thì đếm ngược 60 giây, 'Để sau' chỉ hoãn 1 giờ). Dùng khi phát hành bản sửa lỗi quan trọng cho mọi bản cũ: đặt bằng số của bản đó. Không ghi gì vào nội dung cập nhật. Chỉ có tác dụng với bản đã có tính năng này (từ bản phát hành kế tiếp sau v34).",
   "_ghi_chu": "min_version: bản thấp nhất còn được dùng. Bản thấp hơn sẽ bị chặn (chỉ còn Cập nhật / Thoát) khi có mạng. Chỉ nâng khi thật cần (đổi định dạng file, lỗi ghi nghiêm trọng). Muốn mọi bản cũ phải cập nhật thì đặt bằng số của bản sắp phát hành."
 }

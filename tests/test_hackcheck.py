@@ -101,9 +101,9 @@ def test_l1_l2_l3_l4():
     evs = w.step([(0, 2, 4, order([100, 101], target=900))])            # P2 điều khiển quân P1
     evs += w.step([(0, 2, 5, delete(150))])                             # P2 xoá nhà P1
     evs += w.step([(0, 2, 6, resign(1))])                               # P2 bắt P1 đầu hàng
-    assert rules(evs) == [(2, "L2"), (2, "L3"), (2, "L4")], evs
+    assert rules(evs) == [(2, "L2"), (2, "L3")], evs      # L4 đã tắt (báo oan, v41)
     e = w.det.summary()
-    assert [x["rule"] for x in e] == ["L1", "L2", "L3", "L4"] and all(x["name"] == "Nguoi2" for x in e), e
+    assert [x["rule"] for x in e] == ["L1", "L2", "L3"] and all(x["name"] == "Nguoi2" for x in e), e
     print("L1 lùa thú, L2 điều khiển quân người khác, L3 xoá nhà người khác, L4 ép đầu hàng: OK")
 
 

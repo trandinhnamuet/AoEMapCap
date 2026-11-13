@@ -522,7 +522,7 @@ class App:
         on = bool(self.var_hack_sound.get())
         return ("Báo âm thanh khi phát hiện hack đang " + ("BẬT" if on else "TẮT") + ".\n"
                 "Trong trận, AoE-MapCap đọc lệnh và tài nguyên của mọi người chơi và so với danh sách luật: điều khiển "
-                "thú hoặc quân người khác, xoá nhà / quân người khác, ép người khác đầu hàng, lệnh cheat khi phòng không "
+                "thú hoặc quân người khác, xoá nhà / quân người khác, lệnh cheat khi phòng không "
                 "bật cheat, ra quân / nâng cấp thứ chưa mở, tài nguyên vượt 1.000.000 hoặc tăng đột biến >= 1000 trong "
                 "1 giây, unit chỉ cheat mới có.\n"
                 "Phát hiện: phát chuông cảnh báo (ô này), hiện thẻ cảnh báo ở góc phải trên cửa sổ app và đánh dấu "

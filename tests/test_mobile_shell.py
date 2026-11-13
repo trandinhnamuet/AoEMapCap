@@ -269,6 +269,71 @@ def main():
           c.dispatchEvent(new PointerEvent('pointermove', {...o, clientX: o.clientX + 60, clientY: o.clientY + 40}));
           c.dispatchEvent(new PointerEvent('pointerup', {...o, clientX: o.clientX + 60, clientY: o.clientY + 40})); })()""")
         assert not b.eval("aoeViewer.autoCam") and not b.eval("aoeViewer.follow")
+        # v12: minimap sát mép trên; nút Ẩn / ? ở thanh thời gian, nút Máu ở cột nút
+        v12 = b.eval("""(() => { const q = s => !!document.querySelector(s);
+          return {top: Math.round(document.querySelector('.v-mini').getBoundingClientRect().top),
+            hideBar: q('.v-bottom [data-a=hide]'), helpBar: q('.v-bottom [data-a=help]'),
+            hideTools: q('.v-tools [data-a=hide]'), helpTools: q('.v-tools [data-a=help]'), hp: q('.v-tools [data-a=hp]')}; })()""")
+        assert v12 == {"top": 0, "hideBar": True, "helpBar": True, "hideTools": False, "helpTools": False, "hp": True}, v12
+        # thanh thời gian: vừa kéo máy quay -> đang hiện; 5 s không kéo / không dùng thanh -> mờ dần rồi ẩn; chạm chỗ trống
+        # -> hiện / ẩn; kéo máy quay -> hiện lại; đang dừng thì không tự ẩn
+        bar = "document.querySelector('.v-bottom')"
+        assert not b.eval(bar + ".classList.contains('gone')"), "vừa kéo máy quay thì thanh thời gian phải hiện"
+        b.eval("(() => { const v = aoeViewer; v.seekR(v.m.duration * 0.3); v.setSpeed(3); v.playing = true; v._barT = performance.now() - 4000; })()")
+        b.wait(bar + ".classList.contains('gone')", timeout=10)
+        b.wait("+getComputedStyle(" + bar + ").opacity < 0.05", timeout=5)
+        assert "opacity" in b.eval("getComputedStyle(" + bar + ").transitionProperty"), "ẩn phải có hiệu ứng mờ dần"
+        tap = """(() => { const v = aoeViewer, c = v.canvas, r = c.getBoundingClientRect(); v._pick = () => null;
+          const o = {pointerId: 1, bubbles: true, clientX: r.left + 150, clientY: r.top + 300};
+          c.dispatchEvent(new PointerEvent('pointerdown', o)); c.dispatchEvent(new PointerEvent('pointerup', o)); })()"""
+        b.eval(tap)
+        b.wait("!" + bar + ".classList.contains('gone')", timeout=5)
+        time.sleep(0.5)
+        b.eval(tap)
+        b.wait(bar + ".classList.contains('gone')", timeout=5)
+        b.eval("""(() => { const c = aoeViewer.canvas, r = c.getBoundingClientRect(); const o = {pointerId: 1, bubbles: true, clientX: r.left + 200, clientY: r.top + 400};
+          c.dispatchEvent(new PointerEvent('pointerdown', o));
+          c.dispatchEvent(new PointerEvent('pointermove', {...o, clientX: o.clientX + 60, clientY: o.clientY + 40}));
+          c.dispatchEvent(new PointerEvent('pointerup', {...o, clientX: o.clientX + 60, clientY: o.clientY + 40})); })()""")
+        assert not b.eval(bar + ".classList.contains('gone')"), "kéo máy quay phải hiện lại thanh thời gian"
+        b.eval("(() => { const v = aoeViewer; v.playing = false; v._barT = performance.now() - 9000; delete v._pick; })()")
+        time.sleep(1.0)
+        assert not b.eval(bar + ".classList.contains('gone')"), "đang dừng thì thanh thời gian không tự ẩn"
+        # unit đang chọn: hình thoi màu người chơi (không phải vòng tròn vàng) + thanh máu trên đầu
+        selc = b.eval("""(() => { const v = aoeViewer, st = v.state; v.setPersp(null); v._loop(performance.now());
+          const i = v.drawn.find(i => { const r = v.hs && v.hs.units.get(st.uid[i]); return st.owner[i] > 0 && r && r[2] > 5 && r[3] === 2; });
+          if (i === undefined) return null;
+          v.selectUnit({kind: 'u', uid: st.uid[i], owner: st.owner[i]}); v.follow = true;
+          return v.m.meta.players.find(p => p.index === st.owner[i]).color; })()""")
+        assert selc, "không có unit nào để chọn"
+        try:
+            b.wait("!document.querySelector('.v-hpbar').hidden && !document.querySelector('.v-mark').hidden", timeout=20)
+        except TimeoutError:
+            print(b.eval("(() => { const v = aoeViewer; return JSON.stringify({sel: v.sel, selHp: v._selHp || null, mark: document.querySelector('.v-mark').hidden, hs: !!v.hs, ok: v.hud.ok, hudFrame: v._hudFrame, frame: v.state.frame, hide: v.show.hide, row: v.hs && v.sel ? (v.hs.units.get(v.sel.uid) || null) : null, info: document.querySelector('.v-info').innerText.slice(0, 80)}); })()"))
+            raise
+        mk = b.eval("""(() => { const m = document.querySelector('.v-mark'), s = getComputedStyle(m), r = m.getBoundingClientRect();
+          const h = document.querySelector('.v-hpbar').getBoundingClientRect();
+          const d = document.createElement('i'); d.style.color = '%s'; document.body.appendChild(d); const want = getComputedStyle(d).color; d.remove();
+          return {poly: !!m.querySelector('polygon'), radius: s.borderTopLeftRadius, border: s.borderTopWidth, same: s.color === want,
+            ratio: Math.round(r.width / r.height * 10) / 10, above: h.bottom <= r.top + r.height / 2, hw: Math.round(h.width), hh: Math.round(h.height)}; })()""" % selc)
+        assert mk["poly"] and mk["radius"] == "0px" and mk["border"] == "0px" and mk["same"] and mk["ratio"] == 2.0 and mk["above"] \
+            and 28 <= mk["hw"] <= 116 and mk["hh"] <= 6, mk
+        shot("11_chon_unit_hinh_thoi_thanh_mau.png")
+        # nút Máu: thanh máu trên đầu mọi unit (khung vẽ phủ có điểm ảnh xanh), thanh riêng của unit đang chọn nhường chỗ
+        b.eval("document.querySelector('.v-tools [data-a=hp]').click(); 1")
+        b.wait("""(() => { const c = document.querySelector('.v-hpall'); if (c.hidden || !c.width) return false;
+          const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let n = 0;
+          for (let i = 0; i < d.length; i += 4) if (d[i + 1] > 180 && d[i] < 90 && d[i + 3] > 200) n++;
+          return n > 40; })()""", timeout=20)
+        assert b.eval("document.querySelector('.v-hpbar').hidden && document.querySelector('.v-tools [data-a=hp]').classList.contains('on')")
+        shot("12_thanh_mau_moi_unit.png")
+        b.eval("document.querySelector('.v-tools [data-a=hp]').click(); aoeViewer.selectUnit(null); 1")
+        assert b.eval("document.querySelector('.v-hpall').hidden")
+        b.eval("document.querySelector('.v-bottom [data-a=help]').click(); 1")
+        assert not b.eval("document.querySelector('.v-help').hidden")
+        b.eval("document.querySelector('.v-help').click(); 1")
+        print("v12: minimap sát mép trên; thanh thời gian tự ẩn mờ dần sau 5 s, chạm chỗ trống ẩn / hiện, kéo máy quay hiện lại; "
+              "unit chọn = hình thoi màu người chơi + thanh máu; nút Máu hiện thanh máu mọi unit; Ẩn / ? ở thanh thời gian: OK")
         assert not b.console, b.console[:3]
         print(f"trình xem: viền trắng mép bản đồ (độ sáng {px}), chạm người chơi / đội -> tầm nhìn đội đó, máy quay tự động "
               f"khoá theo unit ('{lab}') và tắt khi tự kéo: OK")

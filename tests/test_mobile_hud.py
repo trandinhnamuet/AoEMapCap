@@ -213,10 +213,10 @@ def main():
         b.eval("document.querySelector('.v-slow').click(); 1")
         assert b.eval(f"{V}.speed") == 0.5
         assert not b.eval("document.querySelector('.v-mini').hidden"), "minimap mặc định bật"
-        b.eval("document.querySelector('.v-tools [data-a=help]').click(); 1")
+        b.eval("document.querySelector('.v-bottom [data-a=help]').click(); 1")
         assert not b.eval("document.querySelector('.v-help').hidden")
         shot("07_help")
-        b.eval("document.querySelector('.v-help').click(); document.querySelector('.v-tools [data-a=hide]').click(); 1")
+        b.eval("document.querySelector('.v-help').click(); document.querySelector('.v-bottom [data-a=hide]').click(); 1")
         assert b.eval("document.querySelector('.v-top').hidden && document.querySelector('.v-tools').hidden "
                       "&& !document.querySelector('.v-unhide').hidden")
         shot("08_hidden")
