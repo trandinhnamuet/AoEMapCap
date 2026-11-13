@@ -63,7 +63,7 @@ def recorder_main(conn, pid, cfg_dict, raw_path, game_dir):
         statics.attach(snap)
         os.makedirs(os.path.dirname(raw_path), exist_ok=True)
         writer = RawWriter(raw_path)
-        writer.start(snap, meta={"game_dir": game_dir, "capture_fps": cfg.capture_fps, "reader_process": True})
+        writer.start(snap, meta={"game_dir": game_dir, "capture_fps": cfg.capture_fps, "reader_process": True, "app": _app_ver()})
         check(snap)
         interval = 1.0 / max(cfg.capture_fps, 1.0)
         nxt = time.time()
@@ -292,3 +292,12 @@ class RecorderProcess:
                 continue
             avg[k] = sum(s[k] for s in h) / len(h)
         return avg
+
+
+def _app_ver():
+    """Bản app ghi file này (ghi vào meta của header từ v43)."""
+    try:
+        from .version import APP_VERSION
+        return str(APP_VERSION)
+    except Exception:  # noqa: BLE001
+        return ""

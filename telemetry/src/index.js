@@ -49,6 +49,9 @@ export default {
       if (url.pathname === "/api/stats") return await stats(request, env, url);
       if (url.pathname === "/v1/report" && request.method === "POST") return await reportUpload(request, env, url);
       if (url.pathname === "/api/reports") return await reportList(request, env);
+      if (url.pathname === "/v1/report/status" && request.method === "GET") return await reportStatus(env, url);
+      if (url.pathname === "/v1/report/reply" && request.method === "POST") return await reportReply(request, env);
+      if (url.pathname === "/api/report/message" && request.method === "POST") return await reportMessage(request, env);
       if (url.pathname === "/api/report/file") return await reportFile(request, env, url);
       if (url.pathname === "/api/report/update" && request.method === "POST") return await reportUpdate(request, env);
       if (url.pathname === "/") return new Response("AoE-MapCap telemetry\n", { headers: { "content-type": "text/plain" } });
@@ -316,8 +319,78 @@ async function reportList(request, env) {
                                             suspect, note, meta, status, admin_note
                                      FROM reports ORDER BY ts DESC LIMIT 200`).all();
   const tot = await env.DB.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN r2key IS NOT NULL THEN size END), 0) AS b FROM reports").first();
-  return json({ reports: (rows.results || []).map((r) => ({ ...r, meta: safeJson(r.meta) })),
+  const msgs = await msgsOf(env, (rows.results || []).map((r) => r.id));
+  return json({ reports: (rows.results || []).map((r) => ({ ...r, meta: safeJson(r.meta), msgs: msgs.get(r.id) || [] })),
                 total: tot.n, storedBytes: tot.b, storeLimit: REPORT_STORE, r2: !!env.REPORTS });
+}
+
+// ---- nhắn qua lại admin <-> người gửi báo cáo (2026-11-14) -------------------------------------------------------
+const MSG_MAX = 1000;              // kí tự mỗi tin
+const MSG_USER_PER_DAY = 30;       // tin người dùng gửi mỗi máy mỗi ngày
+
+async function msgsOf(env, ids) {
+  const out = new Map();
+  for (let i = 0; i < ids.length; i += 50) {
+    const part = ids.slice(i, i + 50);
+    const rs = await env.DB.prepare(`SELECT id, report, ts, who, text FROM report_msgs WHERE report IN (${part.map(() => "?").join(",")})
+                                     ORDER BY id`).bind(...part).all();
+    for (const m of rs.results || []) {
+      if (!out.has(m.report)) out.set(m.report, []);
+      out.get(m.report).push({ id: m.id, ts: m.ts, who: m.who, text: m.text });
+    }
+  }
+  return out;
+}
+
+// app: trạng thái + tin nhắn của các báo cáo do máy này gửi (mã máy là thứ xác nhận, như lúc gửi báo cáo)
+async function reportStatus(env, url) {
+  const install = String(url.searchParams.get("id") || "");
+  if (!UUID.test(install)) return json({ ok: false, error: "thiếu mã máy" }, 400);
+  const rows = await env.DB.prepare("SELECT id, status FROM reports WHERE install = ? ORDER BY ts DESC LIMIT 200").bind(install).all();
+  const list = rows.results || [];
+  const msgs = await msgsOf(env, list.map((r) => r.id));
+  return json({ ok: true, reports: list.map((r) => ({ id: r.id, status: r.status, msgs: msgs.get(r.id) || [] })) });
+}
+
+// app: người gửi báo cáo trả lời admin
+async function reportReply(request, env) {
+  let b;
+  try {
+    b = await request.json();
+  } catch {
+    return json({ ok: false, error: "bad json" }, 400);
+  }
+  const install = String(b.id || "");
+  const rid = parseInt(b.report || 0, 10);
+  const text = String(b.text || "").replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, " ").trim().slice(0, MSG_MAX);
+  if (!UUID.test(install) || !rid || !text) return json({ ok: false, error: "thiếu nội dung" }, 400);
+  const r = await env.DB.prepare("SELECT id FROM reports WHERE id = ? AND install = ?").bind(rid, install).first();
+  if (!r) return json({ ok: false, error: "không tìm thấy báo cáo của máy này" }, 404);
+  const now = Date.now();
+  const lim = await env.DB.prepare(`SELECT COUNT(*) AS n FROM report_msgs m JOIN reports r ON r.id = m.report
+                                    WHERE r.install = ? AND m.who = 'user' AND m.ts > ?`).bind(install, now - 86400000).first();
+  if (lim && (lim.n || 0) >= MSG_USER_PER_DAY) return json({ ok: false, error: "hôm nay đã gửi quá nhiều tin, vui lòng gửi lại ngày mai" }, 429);
+  const row = await env.DB.prepare("INSERT INTO report_msgs (report, ts, who, text) VALUES (?, ?, 'user', ?) RETURNING id")
+    .bind(rid, now, text).first();
+  return json({ ok: true, msg: { id: row.id, ts: now, who: "user", text } });
+}
+
+// trang /stats: admin nhắn cho người gửi báo cáo
+async function reportMessage(request, env) {
+  if (!authorized(request, env)) return json({ error: "unauthorized" }, 401);
+  let b;
+  try {
+    b = await request.json();
+  } catch {
+    return json({ error: "bad json" }, 400);
+  }
+  const rid = parseInt(b.id || 0, 10);
+  const text = String(b.text || "").replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, " ").trim().slice(0, MSG_MAX);
+  if (!rid || !text) return json({ error: "thiếu nội dung" }, 400);
+  const now = Date.now();
+  const row = await env.DB.prepare("INSERT INTO report_msgs (report, ts, who, text) VALUES (?, ?, 'admin', ?) RETURNING id")
+    .bind(rid, now, text).first();
+  return json({ ok: true, msg: { id: row.id, ts: now, who: "admin", text } });
 }
 
 function safeJson(t) {

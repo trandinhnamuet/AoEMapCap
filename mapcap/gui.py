@@ -127,14 +127,18 @@ class ReportDialog:
         self.info = app.table.infos.get(path) or info or {}
         C = theme.C
         top = self.top = tk.Toplevel(app.root)
-        top.title("Báo cáo trận có hack")
+        top.title("Báo cáo hack / báo bị bắt hack oan")
         top.configure(bg=C["bg"])
         top.transient(app.root)
         top.resizable(False, False)
         theme.dark_window(top)
         pad = {"padx": 16}
-        tk.Label(top, text="Báo cáo trận có hack", font=theme.F(14, "bold"), bg=C["bg"], fg="#ffffff",
-                 anchor="w").pack(fill="x", pady=(14, 8), **pad)
+        tk.Label(top, text="Báo cáo hack / báo bị bắt hack oan", font=theme.F(14, "bold"), bg=C["bg"], fg="#ffffff",
+                 anchor="w").pack(fill="x", pady=(14, 2), **pad)
+        # người dùng 14/11: nói rõ nút này còn dùng để báo app bắt hack OAN (nhiều báo cáo 13/11 là báo oan)
+        tk.Label(top, text="Dùng cho cả hai việc: báo trận có người hack, hoặc báo app đã bắt hack OAN một người chơi "
+                           "(ghi rõ ở ô ghi chú). File trận được gửi lên để admin xem lại.", font=theme.F(10),
+                 bg=C["bg"], fg=C["muted"], anchor="w", justify="left", wraplength=520).pack(fill="x", pady=(0, 8), **pad)
         tk.Label(top, text="Trận", font=theme.F(10, "bold"), bg=C["bg"], fg=C["text"], anchor="w").pack(fill="x", **pad)
         self.var_match = tk.StringVar(value=dict(self.choices).get(path, ""))
         self.cb_match = ttk.Combobox(top, textvariable=self.var_match, values=[lb for _p, lb in self.choices],
@@ -146,7 +150,7 @@ class ReportDialog:
         self.lbl_auto = tk.Label(top, text="", font=theme.F(10), bg=C["bg"], anchor="w", justify="left",
                                  wraplength=520)
         self.lbl_auto.pack(fill="x", pady=(6, 8), **pad)
-        tk.Label(top, text="Người bị nghi hack", font=theme.F(10, "bold"), bg=C["bg"], fg=C["text"],
+        tk.Label(top, text="Người bị nghi hack / người bị app báo oan", font=theme.F(10, "bold"), bg=C["bg"], fg=C["text"],
                  anchor="w").pack(fill="x", **pad)
         self.var_suspect = tk.StringVar(value="Không rõ")
         self.cb_suspect = ttk.Combobox(top, textvariable=self.var_suspect, values=["Không rõ"], state="readonly")
@@ -154,7 +158,7 @@ class ReportDialog:
         from . import vietinput
         nrow = tk.Frame(top, bg=C["bg"])
         nrow.pack(fill="x", **pad)
-        tk.Label(nrow, text="Ghi chú (hack gì, phút thứ mấy...)", font=theme.F(10, "bold"), bg=C["bg"], fg=C["text"],
+        tk.Label(nrow, text="Ghi chú (hack gì, phút mấy; hoặc: app báo oan)", font=theme.F(10, "bold"), bg=C["bg"], fg=C["text"],
                  anchor="w").pack(side="left")
         # App chạy quyền Admin nên UniKey / EVKey (quyền thường) không gõ dấu vào được (Windows chặn): app tự ghép dấu
         # theo kiểu gõ đang đặt trong UniKey (mapcap/vietinput.py; người dùng 13/11)
@@ -216,7 +220,7 @@ class ReportDialog:
         if suspect == "Không rõ":
             suspect = ""
         if not suspect and not note:
-            messagebox.showinfo("Báo cáo hack", "Hãy chọn người bị nghi hoặc ghi chú hack gì.", parent=self.top)
+            messagebox.showinfo("Báo cáo hack", "Hãy chọn người chơi hoặc ghi chú: hack gì, hay app báo oan điều gì.", parent=self.top)
             return
         self.btn_send.configure(state="disabled")
         self.cb_match.configure(state="disabled")
@@ -680,6 +684,7 @@ class App:
                 f.pack_forget()
         if key == "reports":                      # file trận có thể đã bị xoá / dọn từ lần trước
             self._fill_reports()
+            self._reports_fetch()
         if key == "phone" and hasattr(self, "phone_matches"):
             self._phone_lists()
         _k, _g, title, sub = next(p for p in self.PAGES if p[0] == key)
@@ -775,7 +780,8 @@ class App:
 
     # ---- trang Lịch sử báo cáo (người dùng 12/11): các trận máy này đã báo cáo hack ---------------
     REPORT_COLS = (("ts", "Ngày gửi", 128, "w"), ("id", "Mã", 56, "center"), ("match", "Trận", 128, "w"),
-                   ("map", "Map", 150, "w"), ("suspect", "Người bị nghi", 130, "w"), ("note", "Ghi chú", 200, "w"))
+                   ("map", "Map", 130, "w"), ("suspect", "Người bị nghi", 120, "w"), ("note", "Ghi chú", 150, "w"),
+                   ("admin", "Admin trả lời", 170, "w"))
 
     def _build_reports(self):
         import time
@@ -789,6 +795,30 @@ class App:
         self.btn_rep_play.pack(side="left")
         ttk.Button(bot, text="⚑ Báo cáo trận khác...", style="Bar.TButton",
                    command=lambda: self._report_selected()).pack(side="left", padx=(6, 0))
+        self.btn_rep_refresh = ttk.Button(bot, text="↻ Tải trả lời của admin", style="Bar.TButton",
+                                          command=lambda: self._reports_fetch(manual=True))
+        self.btn_rep_refresh.pack(side="left", padx=(6, 0))
+        self.var_rep_net = tk.StringVar(value="")
+        ttk.Label(bot, textvariable=self.var_rep_net, style="Detail.TLabel").pack(side="left", padx=(10, 0))
+        # nhắn qua lại với admin (người dùng 14/11): lời admin về báo cáo đang chọn + ô trả lời
+        from . import vietinput
+        chat = ttk.Frame(tab)
+        chat.pack(side="bottom", fill="x", pady=(8, 0))
+        row = ttk.Frame(chat)
+        row.pack(side="bottom", fill="x", pady=(6, 0))
+        self.btn_rep_send = ttk.Button(row, text="Gửi trả lời", style="Accent.TButton", command=self._report_reply)
+        self.btn_rep_send.pack(side="right", padx=(8, 0))
+        self.rep_reply = tk.Text(row, height=2, wrap="word", font=theme.F(10), padx=8, pady=5,
+                                 **theme.text_widget_colors())
+        self.rep_reply.pack(side="left", fill="x", expand=True)
+        self.rep_viet = vietinput.attach(self.rep_reply, enabled=lambda: True)
+        self.rep_reply.bind("<Control-Return>", lambda e: (self._report_reply(), "break")[1])
+        self.rep_chat = tk.Text(chat, height=6, wrap="word", font=theme.F(10), padx=8, pady=6, state="disabled",
+                                **theme.text_widget_colors())
+        self.rep_chat.pack(side="bottom", fill="x")
+        self.rep_chat.tag_configure("admin", foreground=C["gold_hi"])
+        self.rep_chat.tag_configure("me", foreground="#8fc7ff")
+        self.rep_chat.tag_configure("dim", foreground=C["muted"])
         self.var_rep_detail = tk.StringVar(value="")
         ttk.Label(tab, textvariable=self.var_rep_detail, style="Detail.TLabel", justify="left",
                   wraplength=700).pack(side="bottom", fill="x", pady=(8, 0))
@@ -812,8 +842,12 @@ class App:
         tv.bind("<Double-1>", lambda e: self._report_open())
         tv.bind("<Return>", lambda e: self._report_open())
         self._rep_items = {}
+        from . import report
+        self._rep_status, self._rep_unread, self._rep_busy = {}, {}, False
+        self._rep_seen = report.load_seen(self.cfg.resolved_out_dir())
         self._fmt_t = lambda t: time.strftime("%d/%m/%Y %H:%M", time.localtime(t)) if t else ""
         self._fill_reports()
+        self.root.after(15000, self._reports_timer)
 
     def _fill_reports(self):
         from . import report
@@ -829,7 +863,8 @@ class App:
             tags = (("odd",) if k % 2 else ()) + (("gone",) if gone else ())
             tv.insert("", "end", iid=iid, tags=tags, values=(
                 self._fmt_t(it.get("ts")), f"#{it.get('id')}" if it.get("id") is not None else "",
-                self._fmt_t(it.get("created")), it.get("map", ""), it.get("suspect") or "Không rõ", note))
+                self._fmt_t(it.get("created")), it.get("map", ""), it.get("suspect") or "Không rõ", note,
+                self._report_admin_text(it.get("id"))))
         if items:
             self.rep_empty.place_forget()
             tv.selection_set("r0")
@@ -844,6 +879,7 @@ class App:
         if not it:
             self.var_rep_detail.set("")
             self.btn_rep_play.configure(state="disabled")
+            self._report_chat(None)
             return
         gone = not os.path.exists(it.get("path", ""))
         parts = [it.get("file", ""), f"{it.get('format', '')} · {it.get('duration', '')}".strip(" ·"),
@@ -856,6 +892,142 @@ class App:
             parts.append("File trận không còn trên máy (đã xoá / dọn / đổi thư mục): không xem lại được.")
         self.var_rep_detail.set("   ·   ".join(p for p in parts if p))
         self.btn_rep_play.configure(state="disabled" if gone else "normal")
+        self._report_chat(it)
+
+    # ---- nhắn qua lại với admin ---------------------------------------------------------------------------
+    def _report_admin_text(self, rid):
+        from . import report
+        st = getattr(self, "_rep_status", {}).get(rid) if rid is not None else None
+        if not st:
+            return ""
+        n = sum(1 for m in st["msgs"] if m.get("who") == "admin")
+        new = getattr(self, "_rep_unread", {}).get(rid, 0)
+        return report.STATUS_VI.get(st["status"], st["status"]) + (f" · {n} tin" if n else "") + (f" · ● {new} mới" if new else "")
+
+    def _report_chat(self, it):
+        """Khung tin nhắn của báo cáo đang chọn; đang xem thì coi như đã đọc."""
+        import time
+
+        from . import report
+        tx = self.rep_chat
+        rid = it.get("id") if it else None
+        st = getattr(self, "_rep_status", {}).get(rid) if rid is not None else None
+        tx.configure(state="normal")
+        tx.delete("1.0", "end")
+        if not it:
+            pass
+        elif st is None:
+            tx.insert("end", "Chưa tải được trả lời của admin cho báo cáo này (bấm ↻ Tải trả lời của admin).", "dim")
+        else:
+            tx.insert("end", f"Admin đánh dấu: {report.STATUS_VI.get(st['status'], st['status'])}\n", "dim")
+            if not st["msgs"]:
+                tx.insert("end", "Admin chưa nhắn gì. Bạn có thể nhắn thêm cho admin ở ô dưới.", "dim")
+            for m in st["msgs"]:
+                who = "Admin" if m.get("who") == "admin" else "Bạn"
+                when = time.strftime("%d/%m %H:%M", time.localtime((m.get("ts") or 0) / 1000))
+                tx.insert("end", f"{who} · {when}\n", "admin" if who == "Admin" else "me")
+                tx.insert("end", str(m.get("text", "")).strip() + "\n")
+            tx.see("end")
+        tx.configure(state="disabled")
+        ok = st is not None
+        self.btn_rep_send.configure(state="normal" if ok else "disabled")
+        self.rep_reply.configure(state="normal" if ok else "disabled")
+        if st and getattr(self, "page", None) == "reports":                              # đang xem: đánh dấu đã đọc
+            last = max([int(m.get("id") or 0) for m in st["msgs"] if m.get("who") == "admin"] or [0])
+            if last > self._rep_seen.get(rid, 0):
+                self._rep_seen[rid] = last
+                report.save_seen(self.cfg.resolved_out_dir(), self._rep_seen)
+                self._reports_badge()
+                sel = self.rep_tree.selection()
+                if sel:
+                    self.rep_tree.set(sel[0], "admin", self._report_admin_text(rid))
+
+    def _reports_badge(self):
+        """Số tin admin chưa đọc cạnh mục Lịch sử báo cáo ở thanh bên."""
+        from . import report
+        self._rep_unread = report.unread(getattr(self, "_rep_status", {}), self._rep_seen)
+        n = sum(self._rep_unread.values())
+        label = next(p[2] for p in self.PAGES if p[0] == "reports")
+        try:
+            self.nav["reports"][3].configure(text=label + (f"  ● {n}" if n else ""))
+        except (KeyError, tk.TclError):
+            pass
+        return n
+
+    def _reports_fetch(self, manual=False):
+        """Tải trạng thái + tin nhắn từ máy chủ ở luồng nền (lúc mở app, mỗi 15 phút, khi mở trang, khi bấm nút)."""
+        from . import report
+        if getattr(self, "_rep_busy", False):
+            return
+        if not manual and not report.load_history(self.cfg.resolved_out_dir()):
+            return                                                     # chưa gửi báo cáo nào: không gọi máy chủ
+        self._rep_busy = True
+        if manual:
+            self.var_rep_net.set("Đang tải…")
+
+        def run():
+            try:
+                self.q.put(("__repstatus__", report.fetch_status(), None, manual))
+            except Exception as e:  # noqa: BLE001
+                self.q.put(("__repstatus__", None, str(e), manual))
+        threading.Thread(target=run, daemon=True).start()
+
+    def _reports_status(self, status, err, manual):
+        self._rep_busy = False
+        if status is None:
+            if manual:
+                self.var_rep_net.set("Không tải được: " + str(err))
+            return
+        from . import report
+        before = sum(getattr(self, "_rep_unread", {}).values())
+        self._rep_status = status
+        n = self._reports_badge()
+        self.var_rep_net.set("" if not manual else "Đã tải.")
+        if n > before:
+            self._append(f"admin đã trả lời báo cáo hack của bạn ({n} tin chưa đọc): xem ở mục Lịch sử báo cáo")
+        sel = self.rep_tree.selection()
+        keep = self._rep_items.get(sel[0], {}).get("id") if sel else None
+        self._fill_reports()
+        for iid, it in self._rep_items.items():
+            if keep is not None and it.get("id") == keep:
+                self.rep_tree.selection_set(iid)
+                self.rep_tree.focus(iid)
+                break
+
+    def _reports_timer(self):
+        self._reports_fetch()
+        self.root.after(15 * 60 * 1000, self._reports_timer)
+
+    def _report_reply(self):
+        from . import report
+        sel = self.rep_tree.selection()
+        it = self._rep_items.get(sel[0]) if sel else None
+        text = self.rep_reply.get("1.0", "end").strip()
+        if not it or it.get("id") is None or not text:
+            return
+        rid = it["id"]
+        self.btn_rep_send.configure(state="disabled")
+        self.var_rep_net.set("Đang gửi…")
+
+        def run():
+            try:
+                self.q.put(("__repreply__", rid, report.send_reply(rid, text), None))
+            except Exception as e:  # noqa: BLE001
+                self.q.put(("__repreply__", rid, None, str(e)))
+        threading.Thread(target=run, daemon=True).start()
+
+    def _report_replied(self, rid, msg, err):
+        self.btn_rep_send.configure(state="normal")
+        if err:
+            self.var_rep_net.set("Không gửi được: " + err)
+            return
+        self.var_rep_net.set("Đã gửi.")
+        self.rep_reply.delete("1.0", "end")
+        st = getattr(self, "_rep_status", {}).get(rid)
+        if st is not None and msg:
+            st["msgs"].append(msg)
+        sel = self.rep_tree.selection()
+        self._report_chat(self._rep_items.get(sel[0]) if sel else None)
 
     def _report_open(self):
         sel = self.rep_tree.selection()
@@ -1938,6 +2110,10 @@ class App:
                         self._refresh_status()
                     elif kind == "__hack__":           # tiến trình ghi phát hiện hack (mapcap/hackcheck)
                         self._on_hack(item[1])
+                    elif kind == "__repstatus__":      # trạng thái + tin nhắn admin của các báo cáo đã gửi
+                        self._reports_status(item[1], item[2], item[3])
+                    elif kind == "__repreply__":
+                        self._report_replied(item[1], item[2], item[3])
                     elif kind == "__tray__":           # từ luồng khay / bản mở sau (instance.signal_show)
                         self._tray_action(item[1])
                     elif kind == "__clean__":          # tình trạng tự dọn (luồng nền)

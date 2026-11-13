@@ -442,7 +442,7 @@ class RawMatchRecorder:
         os.makedirs(self.raw_dir, exist_ok=True)
         self.path = os.path.join(self.raw_dir, f"{dt.datetime.now():%Y-%m-%d_%H%M%S}_{self.label}.aoerec")
         self.writer = RawWriter(self.path)
-        self.writer.start(snap, meta={"game_dir": self.game_dir, "capture_fps": self.cfg.capture_fps})
+        self.writer.start(snap, meta={"game_dir": self.game_dir, "capture_fps": self.cfg.capture_fps, "app": _app_ver()})
         self.start_real = time.time()
         self.written = 1
         self.log(f"ghi dữ liệu thô {self.path} ({self.cfg.capture_fps:g} mẫu/giây)")
@@ -927,3 +927,12 @@ class Engine:
                               outline_alpha=cfg.map_outline)
         self.log(f"đã nạp dữ liệu đồ hoạ từ {gdir} ({len(dat.graphics)} graphics, {len(dat.units)} unit, {time.time() - t0:.1f}s)")
         return {"dir": gdir, "video": video}
+
+
+def _app_ver():
+    """Bản app ghi file này (ghi vào meta của header từ v43)."""
+    try:
+        from .version import APP_VERSION
+        return str(APP_VERSION)
+    except Exception:  # noqa: BLE001
+        return ""

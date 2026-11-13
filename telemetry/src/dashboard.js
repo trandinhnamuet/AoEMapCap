@@ -73,7 +73,7 @@ details.an-card .an-fold{padding:0 22px 22px}
 .an-empty{text-align:center;color:var(--muted);padding:18px 0;font-size:13.5px}
 .an-tablewrap{overflow-x:auto}
 .an-reports{white-space:normal}.an-reports td{vertical-align:top}.an-reports td[data-l="Trận"]{min-width:200px;max-width:280px}
-.an-reports td[data-l="Nghi ai"],.an-reports td[data-l="App phát hiện"]{max-width:240px}.rp-dl{white-space:nowrap}.rp-admin{min-width:210px}.rp-admin .an-field{width:100%;box-sizing:border-box;margin:0 0 6px}
+.an-reports td[data-l="Nghi ai"],.an-reports td[data-l="App phát hiện"]{max-width:240px}.rp-dl{white-space:nowrap}.an-reports tr[class^="rp-s-"]>td:first-child{border-left:5px solid transparent;white-space:nowrap}.an-reports .rp-tag{display:block;margin-top:4px;font-size:11px;font-weight:700;letter-spacing:.02em}.an-reports tr.rp-s-new>td{background:rgba(255,176,32,.16)}.an-reports tr.rp-s-new>td:first-child{border-left-color:#ffb020}.an-reports tr.rp-s-new .rp-tag::after{content:"CHƯA XEM";color:#ffb020}.an-reports tr.rp-s-hack>td{background:rgba(230,70,60,.10)}.an-reports tr.rp-s-hack>td:first-child{border-left-color:#e6463c}.an-reports tr.rp-s-hack .rp-tag::after{content:"CÓ HACK";color:#e6463c}.an-reports tr.rp-s-clean>td{background:rgba(60,180,100,.09)}.an-reports tr.rp-s-clean>td:first-child{border-left-color:#3cb464}.an-reports tr.rp-s-clean .rp-tag::after{content:"KHÔNG HACK";color:#3cb464}.an-reports tr.rp-s-unsure>td{background:rgba(140,150,170,.10)}.an-reports tr.rp-s-unsure>td:first-child{border-left-color:#8c96aa}.an-reports tr.rp-s-unsure .rp-tag::after{content:"CHƯA CHẮC";color:#8c96aa}.rp-saved{font-size:11px}.rp-chat{margin:8px 0 6px;display:flex;flex-direction:column;gap:4px;max-height:220px;overflow:auto}.rp-m{padding:5px 8px;border-radius:8px;font-size:12px;line-height:1.35;max-width:92%;overflow-wrap:anywhere}.rp-m small{display:block;opacity:.65;font-size:10px;margin-bottom:1px}.rp-m-admin{align-self:flex-end;background:rgba(80,140,255,.18)}.rp-m-user{align-self:flex-start;background:rgba(255,176,32,.20)}.an-reports tr.rp-reply .rp-tag::before{content:"CÓ TRẢ LỜI MỚI";display:block;color:#ff5a4d}.an-reports tr.rp-reply>td:first-child{border-left-color:#ff5a4d}.rp-sent{font-size:11px;margin-left:6px}.rp-admin{min-width:210px}.rp-admin .an-field{width:100%;box-sizing:border-box;margin:0 0 6px}
 table{width:100%;border-collapse:collapse;font-size:13px;white-space:nowrap}
 th{text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:.03em;font-weight:600;color:var(--muted-2);padding:0 14px 10px 0;border-bottom:1px solid var(--line)}
 td{padding:11px 14px 11px 0;border-bottom:1px solid var(--line-2);color:var(--ink-2);vertical-align:top}
@@ -285,13 +285,13 @@ th.an-sort .ar{display:inline-block;margin-left:4px;font-size:10px;color:var(--b
       'trong app: file trận lưu trên Cloudflare R2 (' + mb(R.storedBytes || 0) + ' / ' + mb(R.storeLimit || 0) +
       ', đầy thì xoá file cũ nhất) · ' + fmt.format(R.total || 0) + ' báo cáo' +
       (R.r2 ? '' : ' · <b>máy chủ chưa bật R2</b>') + ' · tải file rồi mở bằng AoE-MapCap (Xem replay) để xem ai hack, hack gì</div>' +
-      '<div class="an-tablewrap"><table class="an-recent an-reports"><thead><tr><th>Thời điểm</th><th>Người báo</th><th>Trận</th>' +
+      '<div class="an-tablewrap"><table class="an-recent an-reports"><thead><tr><th>#</th><th>Thời điểm</th><th>Người báo</th><th>Trận</th>' +
       '<th>Nghi ai / ghi chú</th><th>App tự phát hiện</th><th>File</th><th>Admin đánh dấu</th></tr></thead><tbody>';
     h += rows.length ? rows.map(function (r) {
       var m = r.meta || {};
       var auto = (m.hack || []).map(function (e) { return esc(e.name) + ': ' + esc(e.label) + (e.detail ? ' <small>(' + esc(e.detail) + ')</small>' : ''); }).join('<br>');
       var players = (m.players || []).map(function (p) { return esc(p.name) + (p.civ ? ' (' + esc(p.civ) + ')' : ''); }).join(' · ');
-      return '<tr data-id="' + r.id + '"><td class="dim" data-l="Thời điểm">' + dt(r.ts, true) + '</td><td class="lead" data-l="Người báo"><span>' +
+      return '<tr data-id="' + r.id + '" class="rp-s-' + esc(r.status || 'new') + '"><td data-l="#"><b>#' + r.id + '</b><span class="rp-tag"></span></td><td class="dim" data-l="Thời điểm">' + dt(r.ts, true) + '</td><td class="lead" data-l="Người báo"><span>' +
         esc(r.name || '(chưa biết)') + ' <span class="mono dim" title="' + esc(r.install) + '">' + esc(String(r.install).slice(0, 8)) + '</span>' +
         '<small>v' + esc(r.version) + (r.country ? ' · ' + esc(r.country) : '') + '</small></span></td><td data-l="Trận"><span>' +
         esc(m.map || '') + (m.duration ? ' · ' + esc(m.duration) : '') + '<small>' + players + '</small></span></td>' +
@@ -302,11 +302,39 @@ th.an-sort .ar{display:inline-block;margin-left:4px;font-size:10px;color:var(--b
         '<td data-l="Admin" class="rp-admin"><select class="an-field rp-st">' + REPORT_STATUS.map(function (s) {
           return '<option value="' + s[0] + '"' + (r.status === s[0] ? ' selected' : '') + '>' + s[1] + '</option>'; }).join('') +
         '</select><textarea class="an-field rp-note" rows="2" placeholder="Ai hack, hack gì (để thêm luật)">' + esc(r.admin_note || '') +
-        '</textarea><button class="an-btn rp-save">Lưu</button></td></tr>';
-    }).join('') : '<tr><td colspan="7" class="an-empty">Chưa có báo cáo nào</td></tr>';
+        '</textarea><span class="rp-saved dim"></span>' +
+        '<div class="rp-chat">' + (r.msgs || []).map(msgHtml).join('') + '</div>' +
+        '<textarea class="an-field rp-msg" rows="2" placeholder="Nhắn cho người gửi báo cáo (họ thấy trong app, tab Lịch sử báo cáo)"></textarea>' +
+        '<button class="an-btn rp-send">Gửi tin</button><span class="rp-sent dim"></span></td></tr>';
+    }).join('') : '<tr><td colspan="8" class="an-empty">Chưa có báo cáo nào</td></tr>';
     return h + '</tbody></table></div></div>';
   }
+  function msgHtml(m) {
+    return '<div class="rp-m rp-m-' + (m.who === 'admin' ? 'admin' : 'user') + '"><small>' + (m.who === 'admin' ? 'Admin' : 'Người gửi') +
+      ' · ' + dt(m.ts, true) + '</small>' + esc(m.text).split(String.fromCharCode(10)).join('<br>') + '</div>';
+  }
   function bindReports() {
+    Array.prototype.forEach.call(document.querySelectorAll(".an-reports tr[data-id]"), function (tr) {
+      var id = Number(tr.getAttribute("data-id")), box = tr.querySelector(".rp-msg"), btn = tr.querySelector(".rp-send"),
+          info = tr.querySelector(".rp-sent"), chat = tr.querySelector(".rp-chat");
+      var rep = ((state.reports || {}).reports || []).filter(function (x) { return x.id === id; })[0];
+      var ms = rep && rep.msgs || [];
+      if (ms.length && ms[ms.length - 1].who !== "admin") tr.classList.add("rp-reply");      // người gửi vừa trả lời, admin chưa đáp
+      btn.onclick = function () {
+        var text = box.value.trim();
+        if (!text) return;
+        btn.disabled = true; info.textContent = "Đang gửi…";
+        fetch("/api/report/message", { method: "POST", headers: { authorization: "Bearer " + pw(), "content-type": "application/json" },
+          body: JSON.stringify({ id: id, text: text }) })
+          .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+          .then(function (j) {
+            btn.disabled = false; info.textContent = "Đã gửi"; box.value = "";
+            if (rep) { rep.msgs = (rep.msgs || []).concat([j.msg]); }
+            chat.insertAdjacentHTML("beforeend", msgHtml(j.msg)); tr.classList.remove("rp-reply");
+          })
+          .catch(function (e) { btn.disabled = false; info.textContent = "Lỗi: " + (e && e.message || e); });
+      };
+    });
     Array.prototype.forEach.call(document.querySelectorAll(".rp-dl"), function (b) {
       b.onclick = function () {
         var id = b.getAttribute("data-id"); b.disabled = true; b.textContent = "Đang tải…";
@@ -322,16 +350,27 @@ th.an-sort .ar{display:inline-block;margin-left:4px;font-size:10px;color:var(--b
         }).catch(function (e) { b.disabled = false; b.textContent = "Lỗi: " + (e && e.message || e); });
       };
     });
-    Array.prototype.forEach.call(document.querySelectorAll(".rp-save"), function (b) {
-      b.onclick = function () {
-        var tr = b.closest("tr");
-        b.disabled = true; b.textContent = "Đang lưu…";
+    // tự lưu (không có nút Lưu): đổi trạng thái lưu ngay; ghi chú lưu sau khi ngừng gõ 0,8 s hoặc rời ô
+    Array.prototype.forEach.call(document.querySelectorAll(".an-reports tr[data-id]"), function (tr) {
+      var st = tr.querySelector(".rp-st"), note = tr.querySelector(".rp-note"), msg = tr.querySelector(".rp-saved"), timer = null;
+      var id = Number(tr.getAttribute("data-id"));
+      function save() {
+        clearTimeout(timer); timer = null;
+        msg.textContent = "Đang lưu…";
+        var body = { id: id, status: st.value, admin_note: note.value };
         fetch("/api/report/update", { method: "POST", headers: { authorization: "Bearer " + pw(), "content-type": "application/json" },
-          body: JSON.stringify({ id: Number(tr.getAttribute("data-id")), status: tr.querySelector(".rp-st").value,
-                                 admin_note: tr.querySelector(".rp-note").value }) })
-          .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); b.disabled = false; b.textContent = "Đã lưu"; })
-          .catch(function (e) { b.disabled = false; b.textContent = "Lỗi: " + (e && e.message || e); });
-      };
+          body: JSON.stringify(body) })
+          .then(function (r) {
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            msg.textContent = "Đã lưu";
+            tr.className = "rp-s-" + body.status;
+            ((state.reports || {}).reports || []).forEach(function (x) { if (x.id === id) { x.status = body.status; x.admin_note = body.admin_note; } });
+          })
+          .catch(function (e) { msg.textContent = "Lỗi lưu: " + (e && e.message || e); });
+      }
+      st.onchange = save;
+      note.oninput = function () { msg.textContent = "…"; clearTimeout(timer); timer = setTimeout(save, 800); };
+      note.onblur = function () { if (timer) save(); };
     });
   }
   function paintBusy() { var b = document.getElementById("rf"); if (b) { b.disabled = true; b.textContent = "Đang tải…"; } }

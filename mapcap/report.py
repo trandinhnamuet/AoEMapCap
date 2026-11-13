@@ -121,3 +121,79 @@ def add_history(folder, rid, path, info, suspect="", note="", auto=""):
         json.dump(items[:HISTORY_MAX], f, ensure_ascii=False, indent=1)
     os.replace(tmp, history_path(folder))
     return entry
+
+
+# ---- nhắn qua lại với admin (người dùng 14/11): trạng thái + lời nhắn của admin cho từng báo cáo máy này đã gửi ----
+STATUS_VI = {"new": "Chưa xem", "hack": "Có hack", "clean": "Không hack / báo oan", "unsure": "Chưa chắc"}
+SEEN_FILE = "_report_seen.json"            # mã báo cáo -> id tin admin mới nhất đã đọc
+
+
+def _call(sub, params=None, body=None, timeout=20):
+    """Gọi <địa chỉ báo cáo>/<sub>; trả dict. Lỗi mạng / máy chủ -> ReportError."""
+    from . import telemetry
+    u = urllib.parse.urlsplit(endpoint())
+    path = u.path.rstrip("/") + "/" + sub
+    conn_cls = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
+    conn = conn_cls(u.hostname, u.port, timeout=timeout)
+    try:
+        hdr = {"User-Agent": f"AoE-MapCap/{APP_VERSION}"}
+        if body is None:
+            q = urllib.parse.urlencode({"id": telemetry.install_id(), **(params or {})})
+            conn.request("GET", f"{path}?{q}", headers=hdr)
+        else:
+            data = json.dumps({"id": telemetry.install_id(), **body}, ensure_ascii=False).encode("utf-8")
+            conn.request("POST", path, body=data, headers={**hdr, "Content-Type": "application/json"})
+        r = conn.getresponse()
+        text = r.read().decode("utf-8", "replace")
+    except (OSError, http.client.HTTPException) as e:
+        raise ReportError(f"không kết nối được máy chủ: {e}") from None
+    finally:
+        conn.close()
+    try:
+        j = json.loads(text)
+    except ValueError:
+        j = {}
+    if r.status != 200 or not j.get("ok"):
+        raise ReportError(j.get("error") or f"máy chủ trả lỗi {r.status}")
+    return j
+
+
+def fetch_status():
+    """{mã báo cáo: {"status": ..., "msgs": [{"id", "ts" (ms), "who": "admin" | "user", "text"}]}} của máy này."""
+    j = _call("status")
+    return {int(r["id"]): {"status": r.get("status") or "new", "msgs": list(r.get("msgs") or [])}
+            for r in j.get("reports") or [] if r.get("id") is not None}
+
+
+def send_reply(rid, text):
+    """Người gửi báo cáo trả lời admin; trả tin vừa lưu."""
+    return _call("reply", body={"report": int(rid), "text": str(text)[:1000]}).get("msg") or {}
+
+
+def load_seen(folder):
+    try:
+        with open(os.path.join(folder, SEEN_FILE), encoding="utf-8") as f:
+            return {int(k): int(v) for k, v in json.load(f).items()}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {}
+
+
+def save_seen(folder, seen):
+    try:
+        os.makedirs(folder, exist_ok=True)
+        tmp = os.path.join(folder, SEEN_FILE) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({str(k): int(v) for k, v in seen.items()}, f)
+        os.replace(tmp, os.path.join(folder, SEEN_FILE))
+    except OSError:
+        pass
+
+
+def unread(status, seen):
+    """{mã báo cáo: số tin admin chưa đọc}."""
+    out = {}
+    for rid, st in (status or {}).items():
+        n = sum(1 for m in st.get("msgs") or [] if m.get("who") == "admin" and int(m.get("id") or 0) > seen.get(rid, 0))
+        if n:
+            out[rid] = n
+    return out
