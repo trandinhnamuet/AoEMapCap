@@ -221,7 +221,115 @@ class Exporter:
         return p
 
 
-def make_handler(token, folder, exporter, log):
+class Phones:
+    """Điện thoại đã liên kết với máy tính này + trận đã lên từng máy + trận người dùng chọn gửi (trang Điện thoại của
+    app Windows, người dùng 13/11). Lưu ở <thư mục Web>\\phones.json. App điện thoại v10+ gửi mã máy (cid), tên máy khi hỏi
+    danh sách / lấy file ghi và báo các trận nó đang lưu (api/saved); app bản cũ không gửi nên không hiện ở đây.
+        devices: {cid: {"name", "app", "first", "last", "via" ("lan" | "relay"), "saved": {file: giờ}, "got": {file: giờ}}}
+        push:    [tên file] - trận chọn gửi: app tự lưu về lần kết nối tới, dù ngoài khoảng ngày tự lưu của nó."""
+
+    ONLINE_S = 90                    # hỏi danh sách / lấy trận trong bấy nhiêu giây gần đây = đang kết nối
+
+    def __init__(self, cache):
+        self.path = os.path.join(cache, "phones.json")
+        self.lock = threading.Lock()
+        self.devices, self.push = {}, []
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                j = json.load(f)
+            self.devices = {str(k): v for k, v in (j.get("devices") or {}).items() if isinstance(v, dict)}
+            self.push = [str(x) for x in (j.get("push") or [])]
+        except (OSError, ValueError, AttributeError):
+            pass
+
+    def _save(self):
+        tmp = self.path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"devices": self.devices, "push": self.push}, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, self.path)
+        except OSError:
+            pass
+
+    def _dev(self, cid):
+        d = self.devices.get(cid)
+        if d is None:
+            d = self.devices[cid] = {"name": "Điện thoại", "app": 0, "first": int(time.time()), "last": 0, "via": "lan",
+                                     "saved": {}, "got": {}}
+        return d
+
+    @staticmethod
+    def valid(cid):
+        return bool(cid) and len(cid) <= 32 and cid.isalnum()
+
+    def seen(self, cid, name=None, app=None, via="lan"):
+        if not self.valid(cid):
+            return
+        with self.lock:
+            d = self._dev(cid)
+            if name:
+                d["name"] = str(name)[:40]
+            if app:
+                d["app"] = int(app) if str(app).isdigit() else 0
+            d["via"] = via
+            flush = time.time() - d["last"] > 30         # không ghi file ở mọi yêu cầu
+            d["last"] = int(time.time())
+            if flush:
+                self._save()
+
+    def got(self, cid, name, via="lan"):
+        """Điện thoại vừa lấy xong file ghi của một trận (đang dựng / sẽ lưu)."""
+        if not self.valid(cid):
+            return
+        with self.lock:
+            d = self._dev(cid)
+            d["got"][name] = d["last"] = int(time.time())
+            d["via"] = via
+            self._save()
+
+    def saved(self, cid, files, reset=False, via="lan"):
+        """Điện thoại báo các trận nó đang lưu; reset = danh sách đầy đủ (trận không còn trong đó là đã bị xoá bên đó)."""
+        if not self.valid(cid):
+            return
+        now = int(time.time())
+        with self.lock:
+            d = self._dev(cid)
+            if reset:
+                d["saved"] = {f: d["saved"].get(f, now) for f in files}
+            else:
+                for f in files:
+                    d["saved"].setdefault(f, now)
+            for f in files:
+                d["got"].pop(f, None)
+                if f in self.push and all(f in x["saved"] for x in self.devices.values()):
+                    self.push.remove(f)                    # mọi máy đã liên kết đều đã có: thôi chờ gửi
+            d["last"], d["via"] = now, via
+            self._save()
+
+    def set_push(self, files, on=True):
+        with self.lock:
+            for f in files:
+                if on and f not in self.push:
+                    self.push.append(f)
+                elif not on and f in self.push:
+                    self.push.remove(f)
+            self._save()
+
+    def forget(self, cid):
+        with self.lock:
+            self.devices.pop(cid, None)
+            self._save()
+
+    def snapshot(self):
+        """Bản sao để giao diện đọc: (danh sách máy mới dùng trước, tập trận chờ gửi)."""
+        now = time.time()
+        with self.lock:
+            devs = [dict(d, cid=c, online=now - d.get("last", 0) < self.ONLINE_S, saved=dict(d["saved"]), got=dict(d["got"]))
+                    for c, d in self.devices.items()]
+            return sorted(devs, key=lambda d: -d.get("last", 0)), set(self.push)
+
+
+def make_handler(token, folder, exporter, log, phones=None):
     prefix = f"/{token}/"
 
     class H(BaseHTTPRequestHandler):
@@ -262,6 +370,12 @@ def make_handler(token, folder, exporter, log):
                 return None
             return name
 
+        def _who(self, qs):
+            """(mã máy điện thoại, đường kết nối): yêu cầu qua trạm chuyển tiếp đi từ relay_client (User-Agent "relay")."""
+            cid = (qs.get("cid") or [""])[0]
+            via = "relay" if self.headers.get("User-Agent") == "relay" else "lan"
+            return (cid if phones is not None and Phones.valid(cid) else ""), via
+
         def do_GET(self):  # noqa: N802
             u = urllib.parse.urlsplit(self.path)
             if u.path == f"/{token}":
@@ -275,7 +389,24 @@ def make_handler(token, folder, exporter, log):
             qs = urllib.parse.parse_qs(u.query)
             try:
                 if rel == "api/matches":
-                    return self._send(200, list_matches(folder))
+                    items = list_matches(folder)
+                    cid, via = self._who(qs)
+                    if phones is not None:
+                        if cid:
+                            phones.seen(cid, (qs.get("dev") or [""])[0], (qs.get("app") or [""])[0], via)
+                        devs, push = phones.snapshot()
+                        mine = next((d["saved"] for d in devs if d["cid"] == cid), {})
+                        for it in items:                 # trận người dùng chọn gửi mà máy này chưa có
+                            if it["file"] in push and it["file"] not in mine:
+                                it["push"] = True
+                    return self._send(200, items)
+                if rel == "api/saved":
+                    cid, via = self._who(qs)
+                    if not cid:
+                        return self._send(404, {"error": "không có"})
+                    files = [os.path.basename(x) for x in (qs.get("f") or [""])[0].split("|") if x.lower().endswith(".aoerec")]
+                    phones.saved(cid, files[:400], reset="reset" in qs, via=via)
+                    return self._send(200, {"ok": True, "n": len(files)})
                 if rel == "api/match":
                     name = self._match_name(qs)
                     if name is None:
@@ -303,7 +434,11 @@ def make_handler(token, folder, exporter, log):
                         open(path, "rb").close()
                     except PermissionError:
                         return self._send(409, {"error": "trận này đang được ghi: xem được khi trận kết thúc"})
-                    return self._file(path, "application/octet-stream")
+                    self._file(path, "application/octet-stream")
+                    cid, via = self._who(qs)
+                    if cid:
+                        phones.got(cid, name, via)           # gửi xong trọn file
+                    return
                 if rel.startswith("api/"):
                     return self._send(404, {"error": "không có"})
                 root = web_root()
@@ -380,12 +515,14 @@ def serve(folder, game_dir, port=8765, token=None, log=print, cache=None, host="
     cache = cache or os.path.join(os.path.dirname(os.path.abspath(folder)), "Web")
     token = token or stable_token(cache)
     exporter = Exporter(folder, cache, game_dir, log, busy, prefetch)
+    phones = Phones(cache)
     try:
-        srv = _Server((host, port), make_handler(token, folder, exporter, log))
+        srv = _Server((host, port), make_handler(token, folder, exporter, log, phones))
     except OSError:
         exporter.stop()
         raise
     srv.exporter = exporter
+    srv.phones = phones
     srv.cache, srv.token = cache, token
     url = f"http://{lan_ip() if host == '0.0.0.0' else host}:{srv.server_address[1]}/{token}/"
     return srv, url

@@ -151,11 +151,21 @@ class ReportDialog:
         self.var_suspect = tk.StringVar(value="Không rõ")
         self.cb_suspect = ttk.Combobox(top, textvariable=self.var_suspect, values=["Không rõ"], state="readonly")
         self.cb_suspect.pack(fill="x", pady=(4, 10), **pad)
-        tk.Label(top, text="Ghi chú (hack gì, phút thứ mấy...)", font=theme.F(10, "bold"), bg=C["bg"], fg=C["text"],
-                 anchor="w").pack(fill="x", **pad)
+        from . import vietinput
+        nrow = tk.Frame(top, bg=C["bg"])
+        nrow.pack(fill="x", **pad)
+        tk.Label(nrow, text="Ghi chú (hack gì, phút thứ mấy...)", font=theme.F(10, "bold"), bg=C["bg"], fg=C["text"],
+                 anchor="w").pack(side="left")
+        # App chạy quyền Admin nên UniKey / EVKey (quyền thường) không gõ dấu vào được (Windows chặn): app tự ghép dấu
+        # theo kiểu gõ đang đặt trong UniKey (mapcap/vietinput.py; người dùng 13/11)
+        method = vietinput.unikey_settings()[0]
+        self.var_viet = tk.BooleanVar(value=True)
+        ttk.Checkbutton(nrow, text=f"Gõ tiếng Việt ({'VNI' if method == 'vni' else 'Telex'})", variable=self.var_viet,
+                        style="TCheckbutton").pack(side="right")
         self.txt = tk.Text(top, height=4, width=62, wrap="word", font=theme.F(10), padx=8, pady=6,
                            **theme.text_widget_colors())
         self.txt.pack(fill="x", pady=(4, 8), **pad)                # thẳng hàng với nhãn và ô chọn ở trên
+        self.viet = vietinput.attach(self.txt, enabled=self.var_viet.get)
         tk.Label(top, text="Gửi lên máy chủ của AoE-MapCap: file trận này, mã máy, phiên bản, tên trong game của bạn và "
                            "nội dung ở trên. Admin xem lại trận để xác định hack và bổ sung luật phát hiện.",
                  font=theme.F(9), bg=C["bg"], fg=C["muted"], anchor="w", justify="left", wraplength=520).pack(fill="x", **pad)
@@ -670,6 +680,8 @@ class App:
                 f.pack_forget()
         if key == "reports":                      # file trận có thể đã bị xoá / dọn từ lần trước
             self._fill_reports()
+        if key == "phone" and hasattr(self, "phone_matches"):
+            self._phone_lists()
         _k, _g, title, sub = next(p for p in self.PAGES if p[0] == key)
         self.head.itemconfigure(self._head_title, text=title)
         self.head.itemconfigure(self._head_sub, text=sub)
@@ -854,8 +866,7 @@ class App:
     # ---- điện thoại: máy chủ trong mạng nhà cho app Android (docs/13) ----------------------
     def _build_phone(self):
         C = theme.C
-        tab = tk.Frame(self.content, bg=C["bg"])
-        self.pages["phone"] = tab
+        tab = self._scroll_page("phone")              # dài hơn cửa sổ từ khi có danh sách máy đã liên kết / trận đã gửi
         self.var_phone_auto = tk.BooleanVar(value=self.cfg.phone_server)
         self.var_phone_addr = tk.StringVar(value="")
         body = self._card(tab, "Cho điện thoại xem trận")
@@ -888,10 +899,160 @@ class App:
         ttk.Label(right, text=steps, style="Card.TLabel", justify="left", wraplength=600).pack(fill="x", anchor="w")
         ttk.Label(right, text="Hình game lấy từ bộ cài game trên máy này và chỉ gửi sang điện thoại của bạn: cùng "
                               "mạng thì gửi thẳng, khác mạng thì đi qua trạm chuyển tiếp của AoE-MapCap (không lưu lại). "
-                              "Mã QR là chìa khoá vào máy này, đừng chia sẻ. Lần đầu mở một trận, máy tính cần khoảng một phút để chuẩn bị; khi đang ghi trận, việc "
-                              "chuẩn bị đợi tới hết trận để không làm game giật.",
+                              "Mã QR là chìa khoá vào máy này, đừng chia sẻ. Máy tính chỉ gửi file ghi trận; điện thoại (app v7 "
+                              "trở lên) tự dựng và phát được sau vài giây.",
                   style="CardMuted.TLabel", justify="left", wraplength=600).pack(fill="x", anchor="w", pady=(10, 0))
+
+        # ---- điện thoại đã liên kết (người dùng 13/11): máy nào, lần cuối kết nối, đường nào, đang lưu mấy trận
+        dev = self._card(tab, "Điện thoại đã liên kết")
+        self.phone_dev_note = ttk.Label(dev, text="", style="CardMuted.TLabel", justify="left", wraplength=640)
+        self.phone_dev_note.pack(fill="x", anchor="w", pady=(0, 6))
+        cols = (("name", "Điện thoại", 190, "w"), ("state", "Tình trạng", 150, "w"), ("via", "Đường kết nối", 150, "w"),
+                ("last", "Lần cuối kết nối", 130, "w"), ("n", "Trận đang lưu", 100, "e"))
+        tv = self.phone_devs = ttk.Treeview(dev, columns=[c[0] for c in cols], show="headings", height=3, selectmode="browse")
+        for k, label, w, anc in cols:
+            tv.heading(k, text=label)
+            tv.column(k, width=w, anchor=anc, stretch=k == "name")
+        tv.pack(fill="x")
+        row = tk.Frame(dev, bg=C["panel"])
+        row.pack(fill="x", pady=(8, 0))
+        ttk.Button(row, text="Quên máy đang chọn", command=self._phone_forget).pack(side="left")
+        ttk.Label(row, text="Chỉ xoá khỏi danh sách này. Muốn chặn hẳn một máy thì phải đổi mã QR (chưa có nút).",
+                  style="CardMuted.TLabel").pack(side="left", padx=10)
+
+        # ---- trận trên điện thoại: trận nào đã lên máy nào, chọn trận để gửi thêm
+        mt = self._card(tab, "Trận trên điện thoại")
+        ttk.Label(mt, text="Điện thoại tự lưu các trận mới (mặc định 2 ngày gần nhất) mỗi khi kết nối. Muốn đưa thêm trận "
+                           "khác lên: chọn trận (giữ Ctrl / Shift để chọn nhiều) rồi bấm Gửi lên điện thoại; điện thoại sẽ "
+                           "lấy về ở lần mở app tới khi kết nối được máy tính.",
+                  style="CardMuted.TLabel", justify="left", wraplength=640).pack(fill="x", anchor="w", pady=(0, 6))
+        cols = (("date", "Ngày", 120, "w"), ("name", "Người chơi", 110, "w"), ("map", "Thể thức · Map", 200, "w"),
+                ("dur", "Thời gian", 70, "e"), ("st", "Trên điện thoại", 230, "w"))
+        box = tk.Frame(mt, bg=C["panel"])
+        box.pack(fill="x")
+        tv = self.phone_matches = ttk.Treeview(box, columns=[c[0] for c in cols], show="headings", height=9,
+                                               selectmode="extended")
+        for k, label, w, anc in cols:
+            tv.heading(k, text=label)
+            tv.column(k, width=w, anchor=anc, stretch=k in ("map", "st"))
+        tv.tag_configure("saved", foreground=C["green"])
+        tv.tag_configure("wait", foreground=C["gold_hi"])
+        tv.tag_configure("none", foreground=C["muted"])
+        sb = ttk.Scrollbar(box, command=tv.yview)
+        tv.configure(yscrollcommand=sb.set)
+        tv.pack(side="left", fill="x", expand=True)
+        sb.pack(side="right", fill="y")
+        row = tk.Frame(mt, bg=C["panel"])
+        row.pack(fill="x", pady=(8, 0))
+        ttk.Button(row, text="Gửi lên điện thoại", style="Accent.TButton", command=lambda: self._phone_push(True)).pack(side="left")
+        ttk.Button(row, text="Bỏ chờ gửi", command=lambda: self._phone_push(False)).pack(side="left", padx=8)
+        self.phone_push_msg = ttk.Label(row, text="", style="CardMuted.TLabel")
+        self.phone_push_msg.pack(side="left", padx=6)
+        self._phone_lists_t = 0.0
         self._phone_refresh()
+        self._phone_lists()
+
+    # ---- danh sách máy đã liên kết + trận trên điện thoại (mobile_server.Phones, <thư mục lưu>\Web\phones.json) ----
+    def _phones(self):
+        """Sổ điện thoại: của máy chủ đang chạy, hoặc đọc từ file khi máy chủ tắt (vẫn chọn trận để gửi được)."""
+        if self._phone_running() and getattr(self.phone.srv, "phones", None) is not None:
+            self._phones_off = None
+            return self.phone.srv.phones
+        from .mobile_server import Phones
+        cache = os.path.join(self.cfg.resolved_out_dir(), "Web")
+        if getattr(self, "_phones_off", None) is None or self._phones_off.path != os.path.join(cache, "phones.json"):
+            os.makedirs(cache, exist_ok=True)
+            self._phones_off = Phones(cache)
+        return self._phones_off
+
+    @staticmethod
+    def _ago(ts):
+        import time
+        if not ts:
+            return "chưa"
+        d = time.time() - ts
+        if d < 90:
+            return "vừa xong"
+        if d < 3600:
+            return f"{int(d // 60)} phút trước"
+        if d < 86400:
+            return f"{int(d // 3600)} giờ trước"
+        return time.strftime("%d/%m/%Y %H:%M", time.localtime(ts))
+
+    def _phone_lists(self):
+        """Vẽ lại hai bảng của trang Điện thoại (gọi mỗi vài giây khi trang đang mở)."""
+        import time
+
+        from replay.library import fmt_duration
+        self._phone_lists_t = time.time()
+        devs, push = self._phones().snapshot()
+        on = self._phone_running()
+        tv = self.phone_devs
+        sel = tv.selection()
+        tv.delete(*tv.get_children())
+        for d in devs:
+            state = "● đang kết nối" if (on and d["online"]) else "đã liên kết"
+            via = {"lan": "Mạng nhà (Wi-Fi)", "relay": "Qua Internet"}.get(d.get("via"), "—")
+            name = d.get("name") or "Điện thoại"
+            if d.get("app"):
+                name += f" (app v{d['app']})"
+            tv.insert("", "end", iid=d["cid"], values=(name, state, via, self._ago(d.get("last")), len(d["saved"])))
+        if sel and tv.exists(sel[0]):
+            tv.selection_set(sel[0])
+        self.phone_dev_note.configure(text=(
+            "Chưa có điện thoại nào liên kết (app từ v10 mới hiện ở đây): mở app, vào mục Máy tính, quét mã QR ở trên."
+            if not devs else f"{len(devs)} máy đã liên kết. Liên kết giữ tới khi bỏ liên kết trong app trên điện thoại."
+            + ("" if on else " Đang TẮT mục điện thoại: bật ở trên thì điện thoại mới kết nối được.")))
+        # trận
+        tv = self.phone_matches
+        sel = set(tv.selection())
+        y = tv.yview()[0]
+        tv.delete(*tv.get_children())
+        infos = getattr(self.table, "infos", {}) or {}
+        rows = sorted(((p, i) for p, i in infos.items() if "error" not in i and not i.get("recording") and i.get("players")),
+                      key=lambda x: x[1].get("created", 0), reverse=True)
+        for p, i in rows:
+            f = os.path.basename(p)
+            have = [d.get("name") or "Điện thoại" for d in devs if f in d["saved"]]
+            getting = [d.get("name") or "Điện thoại" for d in devs if f in d["got"] and f not in d["saved"]]
+            if have:
+                st, tag = "✔ Đã lưu: " + ", ".join(have), "saved"
+                if f in push:
+                    st += " · chờ máy khác"
+            elif getting:
+                st, tag = "Đang dựng trên " + ", ".join(getting), "wait"
+            elif f in push:
+                st, tag = "Chờ điện thoại kết nối để lấy", "wait"
+            else:
+                st, tag = "Chưa gửi", "none"
+            tv.insert("", "end", iid=f, tags=(tag,), values=(
+                time.strftime("%d/%m/%Y %H:%M", time.localtime(i.get("created", 0))), i.get("recorder", ""),
+                f"{i.get('format', '')} · {i.get('map', '')}", fmt_duration(i.get("duration_ms", 0)), st))
+        keep = [f for f in sel if tv.exists(f)]
+        if keep:
+            tv.selection_set(keep)
+        tv.yview_moveto(y)
+
+    def _phone_push(self, on):
+        files = list(self.phone_matches.selection())
+        if not files:
+            self.phone_push_msg.configure(text="Chọn một hoặc nhiều trận trong bảng trước.")
+            return
+        devs, _push = self._phones().snapshot()
+        if on:
+            files = [f for f in files if not devs or not all(f in d["saved"] for d in devs)]
+        self._phones().set_push(files, on)
+        self.phone_push_msg.configure(text=(f"Đã đặt {len(files)} trận chờ gửi: điện thoại lấy về ở lần kết nối tới."
+                                            if on and files else "Các trận đã chọn đã có trên mọi máy." if on
+                                            else f"Đã bỏ chờ gửi {len(files)} trận."))
+        self._phone_lists()
+
+    def _phone_forget(self):
+        sel = self.phone_devs.selection()
+        if not sel:
+            return
+        self._phones().forget(sel[0])
+        self._phone_lists()
 
     def _phone_running(self):
         return self.phone is not None and self.phone.running
@@ -1022,6 +1183,9 @@ class App:
     def _phone_tick(self):
         try:
             self._phone_net_refresh()
+            import time
+            if getattr(self, "page", None) == "phone" and time.time() - self._phone_lists_t > 3:
+                self._phone_lists()
         except tk.TclError:
             return                                        # cửa sổ đã đóng
         self.root.after(1000, self._phone_tick)

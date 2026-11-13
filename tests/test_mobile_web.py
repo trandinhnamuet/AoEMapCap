@@ -246,6 +246,8 @@ def main():
         b.wait("window.aoeViewer && document.querySelector('#v-status').hidden", timeout=120)
         # trận chưa lưu: điện thoại tự dựng dần (app v7) -> chờ dựng xong (và lưu xong) rồi mới so
         b.wait("!aoeViewer.m.meta.partial && (!window.aoeLive || document.body.dataset.built === '1')", timeout=900)
+        # app v10: mở trận là tự phát + máy quay tự động -> dừng lại để test tự điều khiển
+        b.eval("(() => { const v = aoeViewer; v.playing = false; v.setAutoCam(false, true); v.selectUnit(null); return 1; })()")
         for fi in frames[1:5]:
             js = b.eval(f"""(async () => {{ const v = aoeViewer; await v.state.seek({fi}); const s = v.state;
               const out = []; for (let i = 0; i < s.cap; i++) if (s.valid[i]) out.push([s.uid[i], s.key[i]]);

@@ -62,11 +62,17 @@ class Page:
 
     def __init__(self):
         import websocket
-        pid = adb("shell", "pidof", PKG)
-        socks = adb("shell", "cat /proc/net/unix")
-        name = next(m.group(1) for m in re.finditer(r"@(webview_devtools_remote_\d+)", socks) if m.group(1).endswith("_" + pid))
-        adb("forward", "tcp:9333", "localabstract:" + name)
-        tabs = json.load(urllib.request.urlopen("http://127.0.0.1:9333/json"))
+        name, t0 = None, time.time()
+        while name is None:                          # app vừa mở: WebView chưa kịp mở cổng DevTools
+            pid = adb("shell", "pidof", PKG, check=False)
+            socks = adb("shell", "cat /proc/net/unix", check=False)
+            name = next((m.group(1) for m in re.finditer(r"@(webview_devtools_remote_\d+)", socks)
+                         if pid and m.group(1).endswith("_" + pid)), None)
+            if name is None:
+                assert time.time() - t0 < 90, "WebView của app không mở cổng DevTools (app chưa chạy?)"
+                time.sleep(1)
+        self.port = int(adb("forward", "tcp:0", "localabstract:" + name))     # cổng trống do adb chọn
+        tabs = json.load(urllib.request.urlopen(f"http://127.0.0.1:{self.port}/json"))
         page = next(t for t in tabs if t.get("type") == "page")
         self.ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=300, suppress_origin=True)
         self._id = 0
@@ -108,10 +114,17 @@ class Page:
             self.ws.close()
         except Exception:  # noqa: BLE001
             pass
-        adb("forward", "--remove", "tcp:9333", check=False)
+        adb("forward", "--remove", f"tcp:{self.port}", check=False)
 
 
 def main():
+    # 12-13/11/2026: 3 lần máy người dùng TREO CỨNG (đơ hình, tiếng rè lặp, phải giữ nút nguồn) vài phút sau khi giả lập
+    # khởi động (AEHD 2.2 trên CPU lai i5-12500H, -gpu host). Không tự chạy nữa: chỉ chạy khi người dùng đồng ý rõ ràng
+    # và đã lưu công việc (đặt AOEMAPCAP_ALLOW_EMULATOR=1). Mặc định vẽ bằng CPU (không đụng driver card đồ hoạ).
+    if os.environ.get("AOEMAPCAP_ALLOW_EMULATOR") != "1":
+        print("KHÔNG CHẠY: giả lập Android từng làm treo cứng máy này (xem docs/08, 13/11/2026). Chỉ chạy khi người dùng "
+              "đồng ý: đặt AOEMAPCAP_ALLOW_EMULATOR=1.")
+        return 3
     if playing():
         print("bỏ qua: người dùng đang chơi game")
         return 2
@@ -140,7 +153,7 @@ def main():
 
     emu = None
     if "emulator-" not in adb("devices"):
-        emu = subprocess.Popen([EMU, "-avd", AVD, "-no-window", "-no-audio", "-no-boot-anim", "-gpu", "host", "-no-snapshot-save"],
+        emu = subprocess.Popen([EMU, "-avd", AVD, "-no-window", "-no-audio", "-no-boot-anim", "-gpu", os.environ.get("AOEMAPCAP_EMU_GPU", "swiftshader_indirect"), "-no-snapshot-save"],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         adb("wait-for-device", timeout=300)

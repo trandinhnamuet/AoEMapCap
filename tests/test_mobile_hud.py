@@ -83,6 +83,8 @@ def main():
         b.wait("window.aoeViewer && document.querySelector('#v-status').hidden", timeout=300)
         # trận chưa lưu: điện thoại tự dựng dần (app v7) -> chờ dựng xong (và lưu xong) rồi mới so
         b.wait("!aoeViewer.m.meta.partial && (!window.aoeLive || document.body.dataset.built === '1')", timeout=900)
+        # app v10: mở trận là tự phát + máy quay tự động -> dừng lại để test tự điều khiển
+        b.eval("(() => { const v = aoeViewer; v.playing = false; v.setAutoCam(false, true); v.selectUnit(null); return 1; })()")
         V = "aoeViewer"
         assert b.eval(f"{V}.hud.ok"), "file .aoeweb phải có dữ liệu HUD (phiên bản 2)"
         # tới 60% trận

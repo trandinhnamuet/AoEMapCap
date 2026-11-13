@@ -107,6 +107,7 @@ def main():
         st = b.eval("""({live: !!window.aoeLive, partial: !!aoeViewer.m.meta.partial, frames: aoeViewer.m.frames,
                          badge: document.querySelector('.v-build').textContent})""")
         assert st["live"], "phải dùng cách điện thoại tự dựng"
+        b.eval("(() => { const v = aoeViewer; v.playing = false; v.setAutoCam(false, true); v.selectUnit(null); return 1; })()")
         assert not [f for f in os.listdir(web) if f.endswith(".aoeweb")], "máy tính không được chuyển trận"
         print(f"[CPU chậm {THR:g}x] có hình sau {t_first:.1f} s: đã dựng {st['frames']}/{n} mẫu, "
               f"partial={st['partial']}, nhãn '{st['badge']}'")

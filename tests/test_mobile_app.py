@@ -145,6 +145,8 @@ def main():
                timeout=180)
         # trận chưa lưu: điện thoại tự dựng dần (app v7) -> chờ dựng xong (và lưu xong) rồi mới so
         b.wait("!aoeViewer.m.meta.partial && (!window.aoeLive || document.body.dataset.built === '1')", timeout=900)
+        # app v10: mở trận là tự phát + máy quay tự động -> dừng lại để test tự điều khiển
+        b.eval("(() => { const v = aoeViewer; v.playing = false; v.setAutoCam(false, true); v.selectUnit(null); return 1; })()")
         b.screenshot(os.path.join(OUT, "app_viewer.png"))
         keys = b.eval("(async () => (await (await caches.open('aoe-web-1')).keys())"
                       ".map(r => new URL(r.url).pathname))()")
@@ -174,14 +176,25 @@ def main():
         b.goto(origin + "/app/index.html")
         b.wait("!document.querySelector('#list').hidden && document.querySelectorAll('.match').length", timeout=60)
         b.eval("document.querySelector('.match').click(); 1")
+        # ghi lại mọi lần trang báo "thử lại" (thông báo chỉ hiện ~2 s, hỏi 0,25 s một lần có thể lỡ)
+        b.call("Page.addScriptToEvaluateOnNewDocument", source="""addEventListener('DOMContentLoaded', () => {
+            const el = document.querySelector('#v-status'); if (!el) return;
+            new MutationObserver(() => { if ((el.textContent || '').includes('thử lại')) window.__retrySeen = true; })
+              .observe(el, {childList: true, characterData: true, subtree: true}); });""")
         # máy tính rớt khỏi trạm giữa lúc tải (mạng chập chờn): nối lại sau 2 s, điện thoại tự thử lại (mobile-v5)
-        b.wait("(document.querySelector('#v-status').textContent || '').includes('Đang tải trận')", timeout=120)
+        b.wait("/Đang lấy file ghi trận từ máy tính… \d/.test(document.querySelector('#v-status').textContent || '')", timeout=120)
         relay.ws.abort()
-        b.wait("(document.querySelector('#v-status').textContent || '').includes('thử lại')", timeout=30)
+        try:
+            b.wait("(document.querySelector('#v-status').textContent || '').includes('thử lại') || window.__retrySeen", timeout=30)
+        except TimeoutError:
+            print("  trạng thái lúc hết giờ:", b.eval("[document.querySelector('#v-status').textContent, document.querySelector('#v-status').hidden, JSON.stringify(window.aoeTimes), document.title]", await_promise=False))
+            raise
         b.wait("location.search.startsWith('?m=') && window.aoeViewer && document.querySelector('#v-status').hidden",
                timeout=300)
         # trận chưa lưu: điện thoại tự dựng dần (app v7) -> chờ dựng xong (và lưu xong) rồi mới so
         b.wait("!aoeViewer.m.meta.partial && (!window.aoeLive || document.body.dataset.built === '1')", timeout=900)
+        # app v10: mở trận là tự phát + máy quay tự động -> dừng lại để test tự điều khiển
+        b.eval("(() => { const v = aoeViewer; v.playing = false; v.setAutoCam(false, true); v.selectUnit(null); return 1; })()")
         assert b.eval("(async () => !!(await (await caches.open('aoe-web-1')).match('/m/" + enc + "')))()")
         print(f"khác mạng: mạng nhà không vào được -> danh sách + trận qua trạm Cloudflare, máy tính rớt khỏi trạm "
               f"giữa lúc tải thì tự thử lại ({__import__('time').time() - t0:.0f} s): OK")
@@ -211,6 +224,8 @@ def main():
         b.wait("window.aoeViewer && document.querySelector('#v-status').hidden", timeout=120)
         # trận chưa lưu: điện thoại tự dựng dần (app v7) -> chờ dựng xong (và lưu xong) rồi mới so
         b.wait("!aoeViewer.m.meta.partial && (!window.aoeLive || document.body.dataset.built === '1')", timeout=900)
+        # app v10: mở trận là tự phát + máy quay tự động -> dừng lại để test tự điều khiển
+        b.eval("(() => { const v = aoeViewer; v.playing = false; v.setAutoCam(false, true); v.selectUnit(null); return 1; })()")
         res = b.eval("aoeViewer.selftest()")
         assert res["units"][-1] > 0, res
         print("máy tính tắt: danh sách trận đã lưu, mở trận từ bộ nhớ điện thoại: OK")

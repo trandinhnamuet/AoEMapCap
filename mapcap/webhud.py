@@ -151,11 +151,13 @@ class HudExport:
 
             def a(i, attrs=attrs):
                 return _num(attrs[i]) if i < len(attrs) else None
-            kills, ratio = a(O.ATTR_KILLS), a(O.ATTR_KILL_RATIO)
+            kills = a(O.ATTR_KILLS)
             stt = 3 if p.ptype == 2 and p.resigned else STATUS.get(p.ptype, 0)
             tribute = a(O.ATTR_TRIBUTE_GIVEN)
+            # cột 6 / 7 (từ .aoeweb phiên bản 3): unit đã chết mọi nguyên nhân / unit phù được, đếm từ dữ liệu unit
+            # (replay.data.FrameState.lost / conv) - trước là kill - tỉ lệ kill (sai) và số nhà phá
             P[p.index] = [a(O.ATTR_AGE), vill.get(p.index, 0), a(O.ATTR_POP), a(O.ATTR_POP_ROOM), a(40), kills,
-                          (kills - ratio) if kills is not None and ratio is not None else None, a(O.ATTR_RAZINGS),
+                          int(st.lost.get(p.index, 0)), int(st.conv.get(p.index, 0)),
                           a(O.ATTR_GOLD_COLLECTED), max(tribute, 0) if tribute is not None else None,
                           a(O.ATTR_FOOD), a(O.ATTR_WOOD), a(O.ATTR_GOLD), a(O.ATTR_STONE), stt]
             res = []

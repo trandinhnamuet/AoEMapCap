@@ -32,7 +32,7 @@ import numpy as np
 from .rawrec import UNIT_DT
 
 MAGIC = b"AOEWEB01"
-WEB_VERSION = 2                 # 2: thêm dữ liệu HUD (webhud)
+WEB_VERSION = 3                 # 2: thêm dữ liệu HUD (webhud); 3: cột người chơi 6 = unit chết, 7 = unit phù được
 CHUNK = 250                     # mẫu mỗi khối (10 s): tua = mở một khối + áp tối đa 249 mẫu
 TERRAIN_BUDGET = 12e6           # ảnh địa hình trên điện thoại tối đa ~12 MP
 TILE = 2048                     # cắt ảnh địa hình thành ô 2048 px (mọi GPU điện thoại đều nhận)

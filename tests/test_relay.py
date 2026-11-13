@@ -56,7 +56,7 @@ def raw_relay_checks(room):
     assert r == 1 and kind == RC.ERR, (r, kind, b[:80])
     ws.send(json.dumps({"r": 2, "p": "api/sprites", "k": 3}))
     got, t0 = [], time.time()
-    ws.settimeout(4)
+    ws.settimeout(12)                 # mạng chậm: khung 64 KB có lúc tới sau vài giây
     try:
         while True:
             op, b = ws.recv_data()
@@ -121,6 +121,8 @@ def main():
                timeout=600)
         # trận chưa lưu: điện thoại tự dựng dần (app v7) -> chờ dựng xong (và lưu xong) rồi mới so
         b.wait("!aoeViewer.m.meta.partial && (!window.aoeLive || document.body.dataset.built === '1')", timeout=900)
+        # app v10: mở trận là tự phát + máy quay tự động -> dừng lại để test tự điều khiển
+        b.eval("(() => { const v = aoeViewer; v.playing = false; v.setAutoCam(false, true); v.selectUnit(null); return 1; })()")
         dt = time.time() - t0
         res = b.eval("aoeViewer.selftest()")
         assert res["units"][-1] > 0, res
@@ -142,6 +144,8 @@ def main():
         b.wait("window.aoeViewer && document.querySelector('#v-status').hidden", timeout=120)
         # trận chưa lưu: điện thoại tự dựng dần (app v7) -> chờ dựng xong (và lưu xong) rồi mới so
         b.wait("!aoeViewer.m.meta.partial && (!window.aoeLive || document.body.dataset.built === '1')", timeout=900)
+        # app v10: mở trận là tự phát + máy quay tự động -> dừng lại để test tự điều khiển
+        b.eval("(() => { const v = aoeViewer; v.playing = false; v.setAutoCam(false, true); v.selectUnit(null); return 1; })()")
         b.screenshot(os.path.join(OUT, "cloud_offline.png"))
         print("tắt máy tính: trang hiện trận đã lưu, mở được từ bộ nhớ điện thoại: OK")
         assert not [c for c in b.console if c.startswith("EXC")], b.console
