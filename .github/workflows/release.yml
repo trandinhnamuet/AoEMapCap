@@ -19,10 +19,6 @@ on:
     tags: ['v*']
     paths-ignore:
       - '**.md'
-      - 'mobile/android/**'         # app Android: .github/workflows/mobile.yml (mobile/web nằm cả trong exe)
-      - 'mobile/notes/**'
-      - '.github/workflows/mobile.yml'
-      - 'relay/**'                  # trạm chuyển tiếp Cloudflare: triển khai bằng wrangler
   workflow_dispatch:
 
 concurrency:

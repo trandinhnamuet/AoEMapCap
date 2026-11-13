@@ -143,6 +143,8 @@ def main():
         b.eval("document.querySelector('.match').click(); 1")
         b.wait("location.search.startsWith('?m=') && window.aoeViewer && document.querySelector('#v-status').hidden",
                timeout=180)
+        # trận chưa lưu: điện thoại tự dựng dần (app v7) -> chờ dựng xong (và lưu xong) rồi mới so
+        b.wait("!aoeViewer.m.meta.partial && (!window.aoeLive || document.body.dataset.built === '1')", timeout=900)
         b.screenshot(os.path.join(OUT, "app_viewer.png"))
         keys = b.eval("(async () => (await (await caches.open('aoe-web-1')).keys())"
                       ".map(r => new URL(r.url).pathname))()")
@@ -178,6 +180,8 @@ def main():
         b.wait("(document.querySelector('#v-status').textContent || '').includes('thử lại')", timeout=30)
         b.wait("location.search.startsWith('?m=') && window.aoeViewer && document.querySelector('#v-status').hidden",
                timeout=300)
+        # trận chưa lưu: điện thoại tự dựng dần (app v7) -> chờ dựng xong (và lưu xong) rồi mới so
+        b.wait("!aoeViewer.m.meta.partial && (!window.aoeLive || document.body.dataset.built === '1')", timeout=900)
         assert b.eval("(async () => !!(await (await caches.open('aoe-web-1')).match('/m/" + enc + "')))()")
         print(f"khác mạng: mạng nhà không vào được -> danh sách + trận qua trạm Cloudflare, máy tính rớt khỏi trạm "
               f"giữa lúc tải thì tự thử lại ({__import__('time').time() - t0:.0f} s): OK")
@@ -205,6 +209,8 @@ def main():
         b.screenshot(os.path.join(OUT, "app_offline.png"))
         b.eval("document.querySelector('.match').click(); 1")
         b.wait("window.aoeViewer && document.querySelector('#v-status').hidden", timeout=120)
+        # trận chưa lưu: điện thoại tự dựng dần (app v7) -> chờ dựng xong (và lưu xong) rồi mới so
+        b.wait("!aoeViewer.m.meta.partial && (!window.aoeLive || document.body.dataset.built === '1')", timeout=900)
         res = b.eval("aoeViewer.selftest()")
         assert res["units"][-1] > 0, res
         print("máy tính tắt: danh sách trận đã lưu, mở trận từ bộ nhớ điện thoại: OK")

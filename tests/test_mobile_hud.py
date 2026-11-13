@@ -81,6 +81,8 @@ def main():
         b.goto(url + "?m=" + urllib.parse.quote(name))
         # máy tính chuyển trận lần đầu: hỏi lại tới khi xong (trang tự làm)
         b.wait("window.aoeViewer && document.querySelector('#v-status').hidden", timeout=300)
+        # trận chưa lưu: điện thoại tự dựng dần (app v7) -> chờ dựng xong (và lưu xong) rồi mới so
+        b.wait("!aoeViewer.m.meta.partial && (!window.aoeLive || document.body.dataset.built === '1')", timeout=900)
         V = "aoeViewer"
         assert b.eval(f"{V}.hud.ok"), "file .aoeweb phải có dữ liệu HUD (phiên bản 2)"
         # tới 60% trận

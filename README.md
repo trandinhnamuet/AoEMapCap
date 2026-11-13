@@ -40,6 +40,14 @@ có ⚠), chọn người bị nghi, ghi chú rồi gửi. File trận được 
 phát hiện. Thẻ **Lịch sử báo cáo** liệt kê các trận bạn đã báo cáo từ máy này (mã báo cáo, ngày gửi, người bị nghi, ghi
 chú) và mở lại replay được; lịch sử lưu ở `Video\_report_history.json`.
 
+## Xem trận trên điện thoại
+
+App Android **AoE-MapCap** (repo riêng: [AoEMapCap-Mobile](https://github.com/trandinhnamuet/AoEMapCap-Mobile),
+[tải APK mới nhất](https://github.com/trandinhnamuet/AoEMapCap-Mobile/releases/latest/download/AoE-MapCap.apk)) xem lại
+trận đã ghi như trình xem trên máy tính. Trên máy tính vào thẻ **Điện thoại**, bật "Cho điện thoại xem trận" rồi quét mã
+QR bằng app (hoặc bằng camera để xem trên trình duyệt). Điện thoại dùng mạng nào cũng được. Máy tính chỉ gửi file ghi
+trận, điện thoại tự dựng và phát ngay; trận đã mở được lưu trên điện thoại.
+
 ## Thống kê sử dụng
 
 Từ v6, mỗi lần mở app (có mạng) và mỗi trận ghi xong, app gửi một lượt thống kê lên Cloudflare: **mã máy ngẫu

@@ -1,4 +1,4 @@
-"""Xuất trận `.aoerec` sang định dạng `.aoeweb` cho trình xem trên điện thoại (mobile/web), và gói hình game.
+"""Xuất trận `.aoerec` sang định dạng `.aoeweb` cho trình xem trên điện thoại (repo AoEMapCap-Mobile: web/), và gói hình game.
 
 Trình xem web không chạy lại logic chọn đồ hoạ của game: máy tính tính sẵn "khoá hình" của mỗi unit (đồ hoạ, khung,
 hướng, màu, giai đoạn xây...) bằng đúng mã của trình xem máy tính (replay.world), và bảng khoá -> mảnh sprite
@@ -263,7 +263,7 @@ class _Stream:
 
 class WebBuilder:
     """.aoerec -> .aoeweb trong MỘT lượt đọc tuần tự các bản ghi (feed), giống hệt bộ chuyển trên điện thoại
-    (mobile/web/js/rec/build.js, cùng thứ tự xử lý, cùng kết quả từng byte trừ ảnh JPEG địa hình): mỗi bản ghi tĩnh
+    (AoEMapCap-Mobile web/js/rec/build.js, cùng thứ tự xử lý, cùng kết quả từng byte trừ ảnh JPEG địa hình): mỗi bản ghi tĩnh
     'S' / 'Q' xuất ngay khi gặp (áp từ mẫu kế tiếp), mỗi mẫu 'F' áp vào trạng thái rồi xuất ngay.
     Trước v19: lập chỉ mục cả file (ReplayData._index) rồi đọc lại từng mẫu, vật thể tĩnh xuất sau cùng."""
 
@@ -553,7 +553,7 @@ GAMEDATA_VERSION = 1
 
 
 def export_gamedata(game_dir, out_path):
-    """Gói dữ liệu game cho bộ chuyển trên điện thoại (mobile/web/js/rec/build.js), tạo một lần như gói hình: bảng đồ
+    """Gói dữ liệu game cho bộ chuyển trên điện thoại (AoEMapCap-Mobile web/js/rec/build.js), tạo một lần như gói hình: bảng đồ
     hoạ / unit / địa hình / viền / công nghệ / màu quân của empires.dat, chuỗi tên của language*.dll, SLP icon của
     interfac.drs. Cùng nguồn với WebBuilder (load_graphics) nên điện thoại chuyển trận ra đúng như máy tính.
         "AOEGD001" | u32 độ dài JSON | JSON | dữ liệu (icon: JSON["icons"][slp] = [vị trí, cỡ])
@@ -564,7 +564,7 @@ def export_gamedata(game_dir, out_path):
     from .webhud import ICON_SLPS
     from .gamefiles import read_group
     dat, _store, _pal = load_graphics(game_dir)
-    strings = GameStrings(game_dir)
+    strings = GameStrings(game_dir, prefer_vietnamese=False)      # tên tiếng Anh gốc, như trình xem máy tính (12/11)
     st = {}
     for sid in range(1, 65536):
         v = strings.get(sid)

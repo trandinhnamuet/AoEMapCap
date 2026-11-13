@@ -119,6 +119,8 @@ def main():
         b.eval("document.querySelector('.match').click(); 1")
         b.wait("location.search.startsWith('?m=') && window.aoeViewer && document.querySelector('#v-status').hidden",
                timeout=600)
+        # trận chưa lưu: điện thoại tự dựng dần (app v7) -> chờ dựng xong (và lưu xong) rồi mới so
+        b.wait("!aoeViewer.m.meta.partial && (!window.aoeLive || document.body.dataset.built === '1')", timeout=900)
         dt = time.time() - t0
         res = b.eval("aoeViewer.selftest()")
         assert res["units"][-1] > 0, res
@@ -138,6 +140,8 @@ def main():
         assert "trận đã lưu" in note, note
         b.eval("document.querySelector('.match').click(); 1")
         b.wait("window.aoeViewer && document.querySelector('#v-status').hidden", timeout=120)
+        # trận chưa lưu: điện thoại tự dựng dần (app v7) -> chờ dựng xong (và lưu xong) rồi mới so
+        b.wait("!aoeViewer.m.meta.partial && (!window.aoeLive || document.body.dataset.built === '1')", timeout=900)
         b.screenshot(os.path.join(OUT, "cloud_offline.png"))
         print("tắt máy tính: trang hiện trận đã lưu, mở được từ bộ nhớ điện thoại: OK")
         assert not [c for c in b.console if c.startswith("EXC")], b.console

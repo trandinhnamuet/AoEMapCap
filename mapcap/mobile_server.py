@@ -1,5 +1,7 @@
-"""Máy chủ trong mạng nhà cho app / trình xem trên điện thoại: phục vụ trang mobile/web, danh sách trận,
-trận đã chuyển sang .aoeweb (chuyển lần đầu khi điện thoại mở) và gói hình game.
+"""Máy chủ trong mạng nhà cho app trên điện thoại (mã app ở repo riêng AoEMapCap-Mobile từ v38): danh sách trận, file
+ghi trận gốc (api/rec: app v7+ tự dựng trận và phát dần), gói hình + gói dữ liệu game (một lần), và cách cũ cho app bản
+trước: trận đã chuyển sang .aoeweb (api/match, chuyển lần đầu khi điện thoại mở). Trang xem không còn đóng gói trong exe
+(web_root).
 
 App Windows bật / tắt bằng trang "Điện thoại" (PhoneServer, từ v14); chạy riêng để thử:
     python -m mapcap.mobile_server [--folder=Video\\Raw] [--game-dir=...] [--port=8765]
@@ -20,7 +22,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .webexport import WEB_VERSION, export_match, export_sprites
+from .webexport import GAMEDATA_VERSION, WEB_VERSION, export_gamedata, export_match, export_sprites
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -28,8 +30,22 @@ TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=u
 
 
 def web_root():
-    base = getattr(sys, "_MEIPASS", ROOT)
-    return os.path.join(base, "mobile", "web")
+    """Thư mục trang xem của app điện thoại. Từ 12/11/2026 mã app nằm ở repo riêng (AoEMapCap-Mobile) và KHÔNG đóng
+    gói trong exe: điện thoại xem bằng app hoặc trang trên trạm chuyển tiếp. Khi phát triển / kiểm thử: biến môi trường
+    AOEMAPCAP_MOBILE_WEB hoặc thư mục cạnh repo này (..\AoE-MapCap-Mobile\web). Không có -> None."""
+    p = os.environ.get("AOEMAPCAP_MOBILE_WEB")
+    if p:
+        return p if os.path.isdir(p) else None
+    if getattr(sys, "frozen", False):
+        return None
+    p = os.path.join(os.path.dirname(ROOT), "AoE-MapCap-Mobile", "web")
+    return p if os.path.isdir(p) else None
+
+
+NO_PAGE = ("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>"
+           "<title>AoE-MapCap</title><body style='font-family:sans-serif;background:#0f1114;color:#ddd;padding:24px'>"
+           "<h3>AoE-MapCap</h3><p>Địa chỉ này dành cho app AoE-MapCap trên điện thoại. Mở app rồi quét mã QR ở mục "
+           "<b>Điện thoại</b> của AoE-MapCap trên máy tính.</p>").encode("utf-8")
 
 
 def lan_ip():
@@ -193,6 +209,17 @@ class Exporter:
                 export_sprites(self.game_dir, p)
         return p
 
+    def gamedata(self):
+        """Gói dữ liệu game cho điện thoại tự dựng trận (bảng đồ hoạ / unit / địa hình / công nghệ, chuỗi tên, icon),
+        tạo một lần như gói hình."""
+        p = os.path.join(self.cache, f"gamedata.v{GAMEDATA_VERSION}.pack")
+        with self.sprite_lock:
+            if not os.path.exists(p):
+                tmp = p + ".tmp"
+                export_gamedata(self.game_dir, tmp)
+                os.replace(tmp, p)
+        return p
+
 
 def make_handler(token, folder, exporter, log):
     prefix = f"/{token}/"
@@ -262,8 +289,28 @@ def make_handler(token, folder, exporter, log):
                                             "waiting": st.get("waiting", False), "ahead": st["ahead"]})
                 if rel == "api/sprites":
                     return self._file(exporter.sprites(), "application/octet-stream", cache=True)
+                if rel == "api/gamedata":
+                    return self._file(exporter.gamedata(), "application/octet-stream", cache=True)
+                if rel == "api/rec":
+                    # file ghi trận gốc: điện thoại tự dựng trận (app v7+), máy tính không phải chuyển trước
+                    name = self._match_name(qs)
+                    if name is None:
+                        return self._send(404, {"error": "không thấy trận"})
+                    path = os.path.join(folder, name)
+                    try:                             # trận đang ghi: file mở độc quyền (rawrec.open_exclusive)
+                        if time.time() - os.path.getmtime(path) < 60:
+                            raise PermissionError
+                        open(path, "rb").close()
+                    except PermissionError:
+                        return self._send(409, {"error": "trận này đang được ghi: xem được khi trận kết thúc"})
+                    return self._file(path, "application/octet-stream")
+                if rel.startswith("api/"):
+                    return self._send(404, {"error": "không có"})
+                root = web_root()
+                if root is None:
+                    return self._send(200 if not rel else 404, NO_PAGE if not rel else b"", "text/html; charset=utf-8")
                 rel = rel or "index.html"
-                base = os.path.realpath(web_root())
+                base = os.path.realpath(root)
                 path = os.path.realpath(os.path.join(base, *rel.split("/")))
                 if not path.startswith(base + os.sep) or not os.path.isfile(path):
                     return self._send(404, b"", "text/plain")

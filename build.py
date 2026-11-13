@@ -72,8 +72,7 @@ DROP = ('_tcl_data/tzdata', '_tcl_data/msgs', '_tk_data/msgs', '_tk_data/images'
 a = Analysis(['run_app.py'], pathex=[], binaries=[],
              datas=[('assets/app.ico', 'assets'), ('assets/fonts', 'assets/fonts'),
                     ('build_assets/ffmpeg.exe.xz', '.'), ('build_assets/ffmpeg.exe.sha256', '.'),
-                    ('build_assets/AoE-MapCap-start.exe', 'autostart'),   # khởi động cùng Windows không màn hình chờ
-                    ('mobile/web', 'mobile/web')],     # trang cho điện thoại (mapcap/mobile_server.py, v14)
+                    ('build_assets/AoE-MapCap-start.exe', 'autostart')],  # khởi động cùng Windows không màn hình chờ
              hiddenimports=['glcontext.wgl'], excludes=['PIL._avif', 'PIL.AvifImagePlugin', 'tkinter.test'],
              noarchive=False)
 a.datas = [d for d in a.datas if not d[0].replace('\\\\', '/').startswith(DROP)]
