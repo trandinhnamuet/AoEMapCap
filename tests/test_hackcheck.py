@@ -174,6 +174,32 @@ def test_l7_locked():
     print("L7 nghiên cứu / ra quân thứ chưa mở (unit vừa mở trong vài giây thì không báo): OK")
 
 
+def test_vs_computer():
+    # đánh với máy (một người thật): không kiểm tra gì; lệnh của máy do máy người chơi gửi (báo cáo #13, #14 ngày 14/11)
+    w = World({"cheats": 0, "humans": [1]})
+    w.step(humans())
+    evs = w.step([(0, 1, 3, struct.pack("<BBBxf", C.ADD_ATTR, 2, 0, 10000.0))])     # game cấp 10.000 thực cho máy
+    evs += w.step([(0, 1, 4, train(250, 93, pl=2))])                                # máy ra quân, lệnh mang số người gửi 1
+    w.players[1].attrs = (9000.0, 200.0, 150.0, 0.0, 4.0)
+    evs += w.run(20_000)
+    assert not evs and not w.det.finish() and not w.det.summary(), evs
+    # 2 người thật + 1 máy: lệnh của máy (P3) do P1 gửi không tính cho P1, lệnh cheat của chính P1 vẫn tính
+    w = World({"cheats": 0, "humans": [1, 2]})
+    w.step(humans())
+    evs = w.step([(0, 1, 3, struct.pack("<BBBxf", C.ADD_ATTR, 3, 0, 10000.0)), (0, 1, 4, train(350, 93, pl=3))])
+    evs += w.run(8000)
+    assert not evs, evs
+    evs = w.step([(0, 1, 5, struct.pack("<BBBxf", C.ADD_ATTR, 1, 0, 10000.0))])
+    assert rules(evs) == [(1, "L5")], evs
+    from mapcap.hackcheck import humans_of, single_player
+    raw13 = bytes.fromhex("fa08000001010101080003000000000000000004")
+    raw8 = bytes.fromhex("fa08000001000101080003030303030303030000")
+    assert humans_of({"raw": raw13, "teams": [1, 2]}) == {1} and single_player({"raw": raw13, "teams": [1, 2]})
+    assert humans_of({"raw": raw8, "teams": [1] * 8}) == set(range(1, 9)) and not single_player({"raw": raw8, "teams": [1] * 8})
+    assert humans_of(None) is None and not single_player(None)
+    print("đánh với máy: không kiểm tra; trận có cả người và máy: lệnh của máy không tính cho máy chủ phòng: OK")
+
+
 def test_resources():
     w = World()
     w.step(humans())
@@ -243,6 +269,7 @@ if __name__ == "__main__":
     test_conversion_grace()
     test_l5_cheat_commands()
     test_l7_locked()
+    test_vs_computer()
     test_resources()
     test_cheat_units()
     print("OK test_hackcheck")

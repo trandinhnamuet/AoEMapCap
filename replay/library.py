@@ -13,8 +13,8 @@ from mapcap.rawrec import FORMAT_VERSION, MAGIC, file_version, read_end, read_he
 from mapcap import safeload
 
 CACHE_NAME = "_matches.json"
-from mapcap.hackcheck import drop_false as _drop_false  # noqa: E402
-CACHE_VERSION = 9                 # 3: tên quân tiếng Anh; 4: đội có người bỏ cuộc đầu tiên là đội thua; 6: "hack"; 7: "age3"
+from mapcap.hackcheck import drop_false as _drop_false, single_player as _single_player  # noqa: E402
+CACHE_VERSION = 10                 # 3: tên quân tiếng Anh; 4: đội có người bỏ cuộc đầu tiên là đội thua; 6: "hack"; 7: "age3"
 
 CIV_NAMES = {1: "Egyptian", 2: "Greek", 3: "Babylonian", 4: "Assyrian", 5: "Minoan", 6: "Hittite", 7: "Phoenician",
              8: "Sumerian", 9: "Persian", 10: "Shang", 11: "Yamato", 12: "Choson", 13: "Roman", 14: "Carthaginian",
@@ -261,7 +261,8 @@ def match_info(path):
         "first_out": None if out is None else {"index": out[0], "name": names.get(out[0], "?"), "t_ms": out[1],
                                                 "kind": "đầu hàng" if out[2] else "rớt mạng / bị loại"},
         # vi phạm phát hiện trong trận (mapcap/hackcheck, ghi ở 'E' từ 2026-11-11): [{player, name, rule, label, t, ...}]
-        "hack": _drop_false((end or {}).get("hack")),
+        # ván đánh với máy (một người thật): kết luận cũ là báo oan (lệnh của máy do máy người chơi gửi) -> bỏ
+        "hack": [] if _single_player(hdr.get("match")) else _drop_false((end or {}).get("hack")),
         "cmds": int((end or {}).get("cmds") or 0),
         "rec_index": rec,
     }

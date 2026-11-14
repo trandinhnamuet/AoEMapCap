@@ -103,10 +103,34 @@ def cheats_allowed(match):
     return False
 
 
+def humans_of(match):
+    """Tập chỉ số người chơi là NGƯỜI THẬT theo thiết lập ván, hoặc None nếu không biết.
+    Khối thiết lập (match["raw"], bắt đầu ở TRIBE_Game+0x980): byte [10 + k] của người chơi k + 1 = 3 là người, 0 là máy
+    (đối chiếu 14/11: trận 8 người thật = tám số 3; trận đánh với máy #13, #14 = 03 00; trận 1v1 người = 03 03)."""
+    if not match:
+        return None
+    if "humans" in match:                       # dùng cho kiểm thử
+        return set(match["humans"])
+    raw = match.get("raw")
+    if not raw or len(raw) < 18:
+        return None
+    n = len(match.get("teams") or []) or 8
+    return {k + 1 for k in range(min(n, 8)) if raw[10 + k] == 3}
+
+
+def single_player(match):
+    """Ván chỉ có một người thật (đánh với máy): không kiểm tra hack (người dùng 14/11). Lệnh của máy do chính máy người
+    chơi gửi (ra quân 52.954 lần ở #14, cộng 10.000 tài nguyên cho máy lúc đầu ván) nên luật L7 / L5 báo oan."""
+    h = humans_of(match)
+    return h is not None and len(h) <= 1
+
+
 class Detector:
     def __init__(self, match=None, log=None):
         self.match = match
         self.cheats = cheats_allowed(match)
+        self.humans = humans_of(match)       # người thật theo thiết lập ván (None = chưa biết)
+        self.off = single_player(match)      # đánh với máy: không kiểm tra
         self.log = log or (lambda m: None)
         self.names = {}                      # index -> tên
         self.owner = {}                      # uid -> (chủ, giờ đổi chủ ms, chủ trước)
@@ -144,6 +168,8 @@ class Detector:
 
     def summary(self):
         """Danh sách vi phạm (mỗi người chơi + luật một mục, lần đầu và số lần), theo thời gian."""
+        if self.off:
+            return []
         return sorted((dict(e) for e in self.found.values()), key=lambda e: (e["t"], e["player"], e["rule"]))
 
     def hackers(self):
@@ -161,6 +187,14 @@ class Detector:
         if self.match is None and getattr(snap, "match", None):
             self.match = snap.match
             self.cheats = cheats_allowed(self.match)
+            self.humans = humans_of(self.match)
+            if single_player(self.match) and not self.off:
+                self.off = True
+                self.found.clear()
+                self.pending = []
+                self.log("ván chỉ có một người chơi thật (đánh với máy): không kiểm tra hack")
+        if self.off:
+            return []
         out = []
         if self.n == 1 or self.n % OWNER_EVERY == 0:
             self._update_owners(snap.units, t)
@@ -186,6 +220,8 @@ class Detector:
 
     def finish(self):
         """Hết trận: xử lý nốt các vi phạm đang chờ; trả các vi phạm mới."""
+        if self.off:
+            return []
         return [e for e in self._resolve_pending(self.t + 10 ** 9, final=True) if e]
 
     # ---- chủ vật thể -------------------------------------------------------------------------
@@ -229,7 +265,9 @@ class Detector:
         # L5: lệnh cheat khi phòng không bật cheat
         if not self.cheats and (typ in (C.CREATE, C.ADD_ATTR) or
                                 (typ == C.GAME and len(data) > 1 and data[1] in (C.GAME_INSTANT_BUILD, C.GAME_CHEAT))):
-            out.append(self._report(sender, "L5", t, f"lệnh {name}"))
+            # cộng tài nguyên cho MÁY lúc đầu ván (máy mức khó được game cấp 10.000 mỗi loại; [1] = người nhận): không tính
+            if not (typ == C.ADD_ATTR and len(data) > 1 and self._is_ai(data[1], sender)):
+                out.append(self._report(sender, "L5", t, f"lệnh {name}"))
         # L4: đầu hàng thay người khác
         # TẮT từ v41 (13/11): mọi báo cáo L4 đều oan - lệnh đầu hàng mang số người khác xuất hiện cả trong trận bình thường
         # (nghi do game tự gửi thay người rớt mạng / thoát). Chưa có cách phân biệt nên không kết luận.
@@ -249,6 +287,8 @@ class Detector:
                 self.pending.append({"kind": "victim", "rule": rule, "sender": sender, "victim": owner, "t": t,
                                      "detail": f"{name} vật thể #{uid} của P{owner}"})
         # L7: ra quân / nghiên cứu thứ chưa mở (của chính người gửi)
+        if typ in (C.TRAIN, C.RESEARCH) and len(data) >= 0x0C and self._is_ai(data[8], sender):
+            return out                                   # lệnh ra quân / nghiên cứu của máy do máy chủ phòng gửi thay
         if typ == C.TRAIN and len(data) >= 0x0C:
             did = int.from_bytes(data[0xA:0xC], "little", signed=True)
             self.pending.append({"kind": "train", "rule": "L7", "sender": sender, "dat": did, "t": t,
@@ -262,6 +302,10 @@ class Detector:
                 self.pending.append({"kind": "tech", "rule": "L7", "sender": sender, "tech": tech, "t": t,
                                      "detail": f"nghiên cứu công nghệ {tech} chưa mở"})
         return out
+
+    def _is_ai(self, player, sender):
+        """Lệnh mang số người chơi khác người gửi và người đó là máy (theo thiết lập ván) -> lệnh của máy."""
+        return player != sender and self.humans is not None and player not in self.humans
 
     def _resolve_pending(self, t, final):
         out, keep = [], []

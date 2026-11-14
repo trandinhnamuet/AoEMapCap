@@ -301,10 +301,9 @@ th.an-sort .ar{display:inline-block;margin-left:4px;font-size:10px;color:var(--b
                                           : '<span class="dim">đã xoá</span>') + '</td>' +
         '<td data-l="Admin" class="rp-admin"><select class="an-field rp-st">' + REPORT_STATUS.map(function (s) {
           return '<option value="' + s[0] + '"' + (r.status === s[0] ? ' selected' : '') + '>' + s[1] + '</option>'; }).join('') +
-        '</select><textarea class="an-field rp-note" rows="2" placeholder="Ai hack, hack gì (để thêm luật)">' + esc(r.admin_note || '') +
-        '</textarea><span class="rp-saved dim"></span>' +
+        '</select><span class="rp-saved dim"></span>' +
         '<div class="rp-chat">' + (r.msgs || []).map(msgHtml).join('') + '</div>' +
-        '<textarea class="an-field rp-msg" rows="2" placeholder="Nhắn cho người gửi báo cáo (họ thấy trong app, tab Lịch sử báo cáo)"></textarea>' +
+        '<textarea class="an-field rp-msg" rows="2" placeholder="Kết luận / ghi chú, đồng thời là tin nhắn cho người gửi (họ thấy trong app, mục Lịch sử báo cáo)"></textarea>' +
         '<button class="an-btn rp-send">Gửi tin</button><span class="rp-sent dim"></span></td></tr>';
     }).join('') : '<tr><td colspan="8" class="an-empty">Chưa có báo cáo nào</td></tr>';
     return h + '</tbody></table></div></div>';
@@ -352,12 +351,13 @@ th.an-sort .ar{display:inline-block;margin-left:4px;font-size:10px;color:var(--b
     });
     // tự lưu (không có nút Lưu): đổi trạng thái lưu ngay; ghi chú lưu sau khi ngừng gõ 0,8 s hoặc rời ô
     Array.prototype.forEach.call(document.querySelectorAll(".an-reports tr[data-id]"), function (tr) {
-      var st = tr.querySelector(".rp-st"), note = tr.querySelector(".rp-note"), msg = tr.querySelector(".rp-saved"), timer = null;
+      var st = tr.querySelector(".rp-st"), msg = tr.querySelector(".rp-saved");
       var id = Number(tr.getAttribute("data-id"));
       function save() {
-        clearTimeout(timer); timer = null;
         msg.textContent = "Đang lưu…";
-        var body = { id: id, status: st.value, admin_note: note.value };
+        // ô ghi chú riêng đã bỏ (người dùng 14/11: dùng luôn phần nhắn tin làm ghi chú); giữ nguyên ghi chú cũ trong DB
+        var old = ((state.reports || {}).reports || []).filter(function (x) { return x.id === id; })[0];
+        var body = { id: id, status: st.value, admin_note: old && old.admin_note || "" };
         fetch("/api/report/update", { method: "POST", headers: { authorization: "Bearer " + pw(), "content-type": "application/json" },
           body: JSON.stringify(body) })
           .then(function (r) {
@@ -369,8 +369,6 @@ th.an-sort .ar{display:inline-block;margin-left:4px;font-size:10px;color:var(--b
           .catch(function (e) { msg.textContent = "Lỗi lưu: " + (e && e.message || e); });
       }
       st.onchange = save;
-      note.oninput = function () { msg.textContent = "…"; clearTimeout(timer); timer = setTimeout(save, 800); };
-      note.onblur = function () { if (timer) save(); };
     });
   }
   function paintBusy() { var b = document.getElementById("rf"); if (b) { b.disabled = true; b.textContent = "Đang tải…"; } }
